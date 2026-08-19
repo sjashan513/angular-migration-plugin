@@ -1,9 +1,19 @@
 {
+  "name": "sjashan513-plugins",
+  "owner": {
+    "name": "sjashan513",
+    "email": "noreply@github.com"
+  },
+  "metadata": {
+    "description": "Plugin de migración Angular automática con pipeline de 5 agentes.",
+    "version": "1.0.0"
+  },
   "plugins": [
     {
       "name": "angular-migration",
       "description": "Pipeline de 5 agentes que migra proyectos Angular de v7 a cualquier versión objetivo. Invoca con @Hermes <version>.",
-      "path": "."
+      "version": "1.0.0",
+      "source": "."
     }
   ]
 }

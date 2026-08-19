@@ -16,6 +16,37 @@ Tu contrato: al terminar escribes **exactamente un JSON de reporte** en `.angula
 
 El output del script y la KB (`docs/migration/_errors-knowledge.md`, si existe) son tus únicas fuentes de verdad durante la ejecución. Si no lo dice el script, no lo sabes. Nunca asumas el estado del repo.
 
+## Paso 0 — Resolver la ruta del script (lo primero de todo)
+
+El script **no está en el repo del usuario** — vive dentro del plugin instalado. El agente siempre ejecuta comandos desde la raíz del repo del usuario, así que una ruta relativa `.\angular-migration.ps1` nunca funcionará. Debes resolver la ruta absoluta antes de cualquier otra cosa:
+
+```powershell
+# Intento 1: variable de entorno que Copilot inyecta en agentes de plugin
+if ($env:PLUGIN_ROOT) {
+    $SCRIPT = Join-Path $env:PLUGIN_ROOT 'scripts\angular-migration.ps1'
+}
+# Intento 2: ruta de instalación estándar en Windows (via marketplace)
+elseif (Test-Path "$env:LOCALAPPDATA\copilot\installed-plugins\sjashan513\angular-migration\scripts\angular-migration.ps1") {
+    $SCRIPT = "$env:LOCALAPPDATA\copilot\installed-plugins\sjashan513\angular-migration\scripts\angular-migration.ps1"
+}
+# Intento 3: ruta de instalación directa (sin marketplace)
+elseif (Test-Path "$env:LOCALAPPDATA\copilot\installed-plugins\_direct\sjashan513-angular-migration-plugin\scripts\angular-migration.ps1") {
+    $SCRIPT = "$env:LOCALAPPDATA\copilot\installed-plugins\_direct\sjashan513-angular-migration-plugin\scripts\angular-migration.ps1"
+}
+else {
+    # No encontrado: escribe reporte failed y para
+    # { "status": "failed", "error": "Script no encontrado. Reinstala: copilot plugin install angular-migration@sjashan513" }
+}
+```
+
+Una vez resuelto, **todas las llamadas al script usan `$SCRIPT`** en lugar de `.\angular-migration.ps1`:
+
+```powershell
+& $SCRIPT -Command node-version -AngularMajor {to}
+```
+
+Si no puedes resolver la ruta por ninguna de las tres vías: escribe el reporte con `status: failed` y el mensaje de error indicado. No continúes.
+
 ## Guard de entrada — lo primero que haces
 
 Lee `.angular-migration/plan-v{to}.json` (la ruta viene en tu prompt). Comprueba que existe y tiene todos estos campos antes de ejecutar nada:
@@ -43,7 +74,7 @@ Carga antes de empezar:
 ## Contrato con el script
 
 ```powershell
-.\angular-migration.ps1 -Command <nombre> [parámetros]
+& $SCRIPT -Command <nombre> [parámetros]
 ```
 
 Output: JSON comprimido `{command, exit_code, data}`. El script ya filtra los `npm WARN`; si ves stderr, es señal real. `exit_code != 0` bloquea; todo lo demás continúa.
@@ -69,7 +100,7 @@ Gates primero, trabajo después, persistencia al final. No reordenes.
 ### Gate 1 — Node
 
 ```powershell
-.\angular-migration.ps1 -Command node-version -AngularMajor {to}
+& $SCRIPT -Command node-version -AngularMajor {to}
 ```
 
 Si `data.compatible == false`: informa `Node incompatible. Activo: {node_version}, requerido: {required}. Ejecuta: {switch_hint}`, **espera**, y re-verifica hasta `compatible == true`. Solo entonces avanza.
@@ -77,7 +108,7 @@ Si `data.compatible == false`: informa `Node incompatible. Activo: {node_version
 ### Gate 2 — Working tree ⟨solo si NO es retry⟩
 
 ```powershell
-.\angular-migration.ps1 -Command git-status
+& $SCRIPT -Command git-status
 ```
 
 Si `data.clean == false`: muestra `data.dirty_files`, pide commit o stash, **espera**, y re-verifica hasta `clean == true`.
@@ -85,7 +116,7 @@ Si `data.clean == false`: muestra `data.dirty_files`, pide commit o stash, **esp
 ### Paso 1 — Crear la rama ⟨solo si NO es retry⟩
 
 ```powershell
-.\angular-migration.ps1 -Command create-branch -AngularMajor {to}
+& $SCRIPT -Command create-branch -AngularMajor {to}
 ```
 
 Si el script devuelve error porque la rama ya existe, ignóralo: ya estás en la rama correcta y continúas.
@@ -93,7 +124,7 @@ Si el script devuelve error porque la rama ya existe, ignóralo: ya estás en la
 ### Paso 2 — Paquetes runtime
 
 ```powershell
-.\angular-migration.ps1 -Command install-angular `
+& $SCRIPT -Command install-angular `
   -AngularVersion {packages.angular_core} `
   -ZoneVersion {packages.zone_js} `
   -RxjsVersion {packages.rxjs}
@@ -116,7 +147,7 @@ Resuelto → Paso 3. Sin resolver en 3 intentos → reporte `status: failed` con
 ### Paso 3 — devDependencies
 
 ```powershell
-.\angular-migration.ps1 -Command install-devdeps `
+& $SCRIPT -Command install-devdeps `
   -AngularVersion {packages.angular_core} `
   -CliVersion {packages.angular_cli} `
   -BuildVersion {packages.build_angular} `
@@ -144,8 +175,8 @@ Aplica los `manual_changes` del plan. Sin cambios aplicables → salta al Paso 6
 Si `features.ionic` es `false`, salta ambos sin comentario.
 
 ```powershell
-.\angular-migration.ps1 -Command install-ionic -IonicVersion {packages.ionic}
-.\angular-migration.ps1 -Command commit -CommitMessage "chore: install Ionic {packages.ionic} for Angular {to}"
+& $SCRIPT -Command install-ionic -IonicVersion {packages.ionic}
+& $SCRIPT -Command commit -CommitMessage "chore: install Ionic {packages.ionic} for Angular {to}"
 ```
 
 ### Paso 8 — Build

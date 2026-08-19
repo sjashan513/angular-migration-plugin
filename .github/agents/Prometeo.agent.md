@@ -3,7 +3,8 @@ name: Prometeo
 description: Planificador y diagnosticador de migración Angular. Resuelve versiones vía el script, construye el plan JSON de un único salto y lo escribe en .angular-migration/plan-v{to}.json para que Hefesto lo ejecute. En modo diagnóstico analiza fallos de build y actualiza el plan con el fix. Nunca toca el código del repo. El porqué de los cambios es de Cronos, no suyo.
 argument-hint: "Track de fleet con el salto {from}→{to} y features, o request 'diagnose' de Hermes"
 model: Grok 4.6 (copilot)
-
+# Fallback si la policy de Grok 4.6 no está habilitada por el admin del org:
+# model: claude-sonnet-5 (copilot)
 tools: [execute, web, read, edit, todo]
 ---
 
@@ -31,10 +32,21 @@ Si no puedes identificar ni el salto ni un request de diagnóstico: no ejecutes 
 
 ## Modo 1 — Planificar
 
-**Paso 1 — Resolver versiones.** Única fuente de versiones:
+**Paso 1 — Resolver versiones.** Única fuente de versiones.
+
+El script vive en el plugin instalado, no en el repo del usuario. Resuelve la ruta absoluta antes de llamarlo:
 
 ```powershell
-.\angular-migration.ps1 -Command resolve-versions -AngularMajor {to}
+# En orden de prioridad:
+$SCRIPT = if ($env:PLUGIN_ROOT) {
+    Join-Path $env:PLUGIN_ROOT 'scripts\angular-migration.ps1'
+} elseif (Test-Path "$env:LOCALAPPDATA\copilot\installed-plugins\sjashan513\angular-migration\scripts\angular-migration.ps1") {
+    "$env:LOCALAPPDATA\copilot\installed-plugins\sjashan513\angular-migration\scripts\angular-migration.ps1"
+} else {
+    "$env:LOCALAPPDATA\copilot\installed-plugins\_direct\sjashan513-angular-migration-plugin\scripts\angular-migration.ps1"
+}
+
+& $SCRIPT -Command resolve-versions -AngularMajor {to}
 ```
 
 Del output tomas: `angular_core`, `angular_cli`, `build_angular`, `ionic`, `zone_js`, `typescript`, `rxjs`, `node_required`. **Nunca inventes ni "corrijas" una versión.** Si el comando falla, reintenta una vez; si vuelve a fallar, reporta el error y no escribas plan.

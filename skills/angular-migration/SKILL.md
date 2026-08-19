@@ -1,6 +1,7 @@
 ---
 name: angular-migration
 description: Contexto de migración Angular. Carga este skill cuando trabajes con el plugin angular-migration — proporciona las restricciones de versión, la convención de ramas y la estructura de handoff entre agentes.
+user-invocable: false
 ---
 
 # angular-migration — Contexto del plugin

@@ -4,46 +4,50 @@ Pipeline de 5 agentes que migra proyectos Angular de v7 a cualquier versión obj
 
 ## Agentes
 
-| Agente       | Rol                                                               | Modelo          |
-| ------------ | ----------------------------------------------------------------- | --------------- |
-| **Hermes**   | Orquestador. El único que invocas.                                | GPT-5.6 Luna    |
-| **Cronos**   | Investiga qué cambió entre versiones y redacta el doc del porqué. | claude-sonnet-5 |
-| **Prometeo** | Resuelve versiones y construye el plan de ejecución.              | Grok 4.6 \*     |
-| **Hefesto**  | Ejecuta el plan sobre el repo (instala, edita, build, commits).   | GPT-5.6 Luna    |
-| **Clío**     | Consolida la documentación en `docs/migration/`.                  | GPT-5.6 Luna    |
+| Agente       | Rol                                                               | Modelo       |
+| ------------ | ----------------------------------------------------------------- | ------------ |
+| **Hermes**   | Orquestador. Gestiona saltos y fleet.                             | GPT-5.6 Luna |
+| **Cronos**   | Investiga qué cambió entre versiones y redacta el doc del porqué. | GPT-5.6 Luna |
+| **Prometeo** | Resuelve versiones y construye el plan de ejecución.              | Grok 4.6 \*  |
+| **Hefesto**  | Ejecuta el plan sobre el repo (instala, edita, build, commits).   | GPT-5.6 Luna |
+| **Clío**     | Consolida la documentación en `docs/migration/`.                  | GPT-5.6 Luna |
 
 \* Requiere activar la policy de Grok 4.6 en Copilot Business/Enterprise. Fallback: edita el frontmatter de `Prometeo.agent.md` y cambia el modelo a `claude-sonnet-5 (copilot)`.
 
-Por cada salto (p. ej. v8→v9), Hermes lanza un `/fleet` interno con Cronos y Prometeo en paralelo, Hefesto en la segunda oleada y Clío al final.
+Por cada salto (p. ej. v8→v9), Hermes lanza un `/fleet` con Cronos y Prometeo en paralelo, Hefesto en la segunda oleada y Clío al final.
 
 ## Prerequisitos
 
 - GitHub Copilot Business o Enterprise con `/fleet` habilitado
 - `chat.subagents.allowInvocationsFromSubagents: true` en VS Code
-- PowerShell 5.1+ (Windows) en la raíz del repo Angular a migrar
+- PowerShell 5.1+ (Windows) — el script vive en el plugin, no necesitas copiarlo
 - Node.js y npm instalados; `fnm` o `nvm` para gestionar versiones de Node
 
 ## Instalación
 
 ```bash
-# Desde Copilot CLI
-copilot plugin install angular-migration@jasIPS-dev
+# Registrar marketplace (solo la primera vez)
+copilot plugin marketplace add sjashan513/angular-migration-plugin
 
-# O manualmente: clona este repo y añade la ruta en settings.json
-# "chat.pluginLocations": { "/ruta/a/angular-migration-plugin": true }
+# Instalar el plugin
+copilot plugin install angular-migration@sjashan513-plugins
 ```
-
-Copia `scripts/angular-migration.ps1` a la **raíz del repo Angular** que quieres migrar.
 
 ## Uso
 
 Abre Copilot en la raíz del repo Angular y escribe:
 
 ```
+/update 17
+```
+
+O directamente con el agente:
+
+```
 @Hermes 17
 ```
 
-Hermes detecta la versión actual, calcula los saltos pendientes (p. ej. 7→8→9→…→17) y ejecuta la pipeline completa. Solo te parará si:
+Hermes detecta la versión actual, calcula los saltos pendientes (p. ej. 7→8→…→17) y ejecuta la pipeline completa. Solo te parará si:
 
 1. El working tree está sucio → haz commit o stash y confirma.
 2. Un salto falla 3 veces → te expone el historial completo para que decidas.
@@ -69,10 +73,27 @@ Cada salto crea su rama `migration/v{N}` con commits atómicos por paso.
 
 ```
 angular-migration-plugin/
-├── plugin.json                  ← manifiesto del plugin
-├── .github/agents/              ← los 5 agentes
-├── skills/angular-migration/    ← skill de contexto
-├── scripts/angular-migration.ps1
+├── plugin.json
+├── agents/                      ← los 5 agentes del plugin
+│   ├── Hermes.agent.md          ← orquestador (@Hermes 17)
+│   ├── Cronos.agent.md
+│   ├── Prometeo.agent.md
+│   ├── Hefesto.agent.md
+│   └── Clio.agent.md
+├── skills/
+│   ├── update/                  ← slash command /update
+│   │   └── SKILL.md
+│   ├── angular-migration/       ← contexto del plugin
+│   │   └── SKILL.md
+│   ├── karpathy-guidelines/     ← incluida en el plugin
+│   │   └── SKILL.md
+│   └── ponytail/                ← incluida en el plugin
+│       └── SKILL.md
+├── scripts/
+│   └── angular-migration.ps1
+├── .github/
+│   └── plugin/
+│       └── marketplace.json
 └── README.md
 ```
 

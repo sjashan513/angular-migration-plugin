@@ -1,0 +1,12 @@
+{
+  "name": "angular-migration",
+  "version": "1.0.0",
+  "description": "Multi-agent pipeline that migrates Angular projects from v7 to any target version. Invoke with @Hermes <version>.",
+  "author": {
+    "name": "IPS",
+    "url": "https://github.com/jasIPS-dev"
+  },
+  "repository": "https://github.com/jasIPS-dev/angular-migration-plugin",
+  "license": "MIT",
+  "keywords": ["angular", "migration", "copilot", "multi-agent", "ionic"]
+}

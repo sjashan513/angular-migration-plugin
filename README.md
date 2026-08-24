@@ -4,13 +4,13 @@ Pipeline de 5 agentes que migra proyectos Angular de v7 a cualquier versión obj
 
 ## Agentes
 
-| Agente       | Rol                                                                            | Modelo       |
-| ------------ | ------------------------------------------------------------------------------ | ------------ |
-| **Hermes**   | Orquestador. Gates, rama, snapshot de versiones, fleet y verificación.         | GPT-5.6 Luna |
-| **Cronos**   | Documenta el porqué del salto a partir del snapshot.                           | GPT-5.6 Luna |
-| **Prometeo** | Construye el plan ejecutable a partir del snapshot.                            | Grok 4.6 \*  |
-| **Hefesto**  | Ejecuta el plan: `ng update` vía script, cambios manuales, build, warnings.    | GPT-5.6 Luna |
-| **Clío**     | Consolida la documentación en `docs/migration/` (changelog, diff, índice, KB). | GPT-5.6 Luna |
+| Agente       | Rol                                                                            | Modelo          |
+| ------------ | ------------------------------------------------------------------------------ | --------------- |
+| **Hermes**   | Orquestador. Gates, rama, snapshot de versiones, fleet y verificación.         | GPT-5.6 Luna    |
+| **Cronos**   | Documenta el porqué del salto a partir del snapshot.                           | GPT-5.6 Luna    |
+| **Prometeo** | Construye el plan ejecutable a partir del snapshot.                            | Grok 4.6 \*     |
+| **Hefesto**  | Ejecuta el plan: `ng update` vía script, cambios manuales, build, warnings.    | Claude Sonnet 5 |
+| **Clío**     | Consolida la documentación en `docs/migration/` (changelog, diff, índice, KB). | GPT-5.6 Luna    |
 
 \* Requiere activar la policy de Grok 4.6 en Copilot Business/Enterprise. Fallback: edita el frontmatter de `Prometeo.agent.md` y cambia el modelo a `claude-sonnet-5 (copilot)`.
 

@@ -2,8 +2,8 @@
 name: Hefesto
 description: Ejecutor de un único salto de migración Angular (v2). Lee el plan de .angular-migration/plan-v{to}.json y lo ejecuta - ng update vía script (nunca comandos propios), cambios manuales sobre el código, build con reparación de errores, clasificación de warnings, commits atómicos, diff del salto, complete-step y reporte en .angular-migration/report-v{to}.json. La rama ya la creó Hermes. Nunca resuelve versiones, nunca escribe en docs/migration/.
 argument-hint: "Prompt de Hermes indicando la ruta del plan a ejecutar"
-model: GPT-5.6 Luna (copilot)
-user-invocable: false
+model: claude-sonnet-5 (copilot)
+user-invocable: true
 tools: [execute, read, edit, todo]
 ---
 
@@ -120,6 +120,8 @@ Antes de editar, lee la KB (`docs/migration/_errors-knowledge.md`; si no existe,
 ```powershell
 & $SCRIPT -Command build -AngularMajor {to}
 ```
+
+El script ejecuta el CLI en modo no interactivo, sin barra de progreso y con un timeout de 15 minutos. Un timeout devuelve `exit_code: 124` y mata el árbol de procesos; trátalo como build fallido y entra en el bucle de reparación, nunca esperes indefinidamente.
 
 **`status: ok`** → clasifica los warnings (abajo) y sigue al Paso 7.
 

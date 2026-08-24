@@ -105,15 +105,35 @@ function Emit($exitCode, $data) {
 }
 
 function Invoke-Slow {
-    param([string]$exe, [string[]]$argList)
-    $outFile = "$env:TEMP\mig-out-$PID.txt"
-    $errFile = "$env:TEMP\mig-err-$PID.txt"
-    $proc = Start-Process $exe -ArgumentList $argList -NoNewWindow -Wait -PassThru `
-        -RedirectStandardOutput $outFile -RedirectStandardError $errFile
-    $stdout = if (Test-Path $outFile) { Get-Content $outFile -Raw } else { '' }
-    $stderr = if (Test-Path $errFile) { Get-Content $errFile -Raw } else { '' }
-    Remove-Item $outFile, $errFile -ErrorAction SilentlyContinue
-    return @($proc.ExitCode, $stdout, $stderr)
+    param([string]$exe, [string[]]$argList, [int]$TimeoutSeconds = 0)
+    $runId = [guid]::NewGuid().ToString('N')
+    $outFile = "$env:TEMP\mig-out-$runId.txt"
+    $errFile = "$env:TEMP\mig-err-$runId.txt"
+    try {
+        $proc = Start-Process $exe -ArgumentList $argList -NoNewWindow -PassThru `
+            -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+        # PowerShell 5.1 only populates ExitCode reliably if the handle is materialized before waiting.
+        $processHandle = $proc.Handle
+        if ($TimeoutSeconds -gt 0 -and -not $proc.WaitForExit($TimeoutSeconds * 1000)) {
+            & taskkill.exe /PID $proc.Id /T /F 2>$null | Out-Null
+            if (-not $proc.WaitForExit(5000)) {
+                try { $proc.Kill() } catch { }
+                [void]$proc.WaitForExit(5000)
+            }
+            $proc.Refresh()
+            $stdout = if (Test-Path $outFile) { Get-Content $outFile -Raw } else { '' }
+            $stderr = if (Test-Path $errFile) { Get-Content $errFile -Raw } else { '' }
+            return @(124, $stdout, ($stderr + "`nTimeout tras $TimeoutSeconds segundos; proceso terminado."))
+        }
+        $proc.WaitForExit()
+        $proc.Refresh()
+        $stdout = if (Test-Path $outFile) { Get-Content $outFile -Raw } else { '' }
+        $stderr = if (Test-Path $errFile) { Get-Content $errFile -Raw } else { '' }
+        return @($proc.ExitCode, $stdout, $stderr)
+    }
+    finally {
+        Remove-Item $outFile, $errFile -ErrorAction SilentlyContinue
+    }
 }
 
 # Filtra npm WARN pero conserva ERR — el agente necesita los errores reales
@@ -620,7 +640,9 @@ switch ($Command) {
         $ngBin = '.\node_modules\.bin\ng.cmd'
         if (-not (Test-Path $ngBin)) { Emit 1 @{ error = "$ngBin no encontrado" } }
 
-        $exit, $stdout, $stderr = Invoke-Slow $ngBin @('build', '--prod')
+        $env:CI = 'true'
+        $env:NG_CLI_ANALYTICS = 'false'
+        $exit, $stdout, $stderr = Invoke-Slow $ngBin @('build', '--prod', '--progress=false') -TimeoutSeconds 900
 
         $allLines = ($stdout + "`n" + $stderr) -split "`n"
         $errors = @($allLines | Where-Object { $_ -match 'ERROR' })
@@ -709,9 +731,20 @@ switch ($Command) {
         if (-not $AngularMajor) { Emit 1 @{ error = '-AngularMajor requerido' } }
 
         $branch = "migration/v$AngularMajor"
-        $out = (& git checkout -b $branch 2>&1) -join "`n"
-        Write-MigLog 'hermes' "create-branch: $branch"
-        Emit $LASTEXITCODE ([PSCustomObject]@{ branch = $branch; output = $out })
+        $branchExistsExit, $null, $null = Invoke-Slow 'git.exe' @('show-ref', '--verify', '--quiet', "refs/heads/$branch")
+        if ($branchExistsExit -eq 0) {
+            $checkoutExit, $stdout, $stderr = Invoke-Slow 'git.exe' @('checkout', $branch)
+        }
+        else {
+            $checkoutExit, $stdout, $stderr = Invoke-Slow 'git.exe' @('checkout', '-b', $branch)
+        }
+        $out = ($stdout + "`n" + $stderr).Trim()
+        $activeBranch = if ($checkoutExit -eq 0) { (& git branch --show-current 2>$null) } else { $null }
+        if ($checkoutExit -eq 0 -and $activeBranch -ne $branch) {
+            Emit 1 ([PSCustomObject]@{ branch = $branch; active_branch = $activeBranch; output = $out; error = 'La rama destino no quedo activa' })
+        }
+        Write-MigLog 'hermes' "create-branch: $branch (active=$activeBranch)"
+        Emit $checkoutExit ([PSCustomObject]@{ branch = $branch; active_branch = $activeBranch; output = $out })
     }
 
     # ── analyze-project ──────────────────────────────────────────

@@ -91,6 +91,8 @@ Estilo: español claro, sin jerga innecesaria, párrafos medios. Explica como a 
 
 ## Reporte al orquestador
 
+Antes de responder, vuelve a leer `docs/migration/v{to}/v{to}-why.md` y comprueba que existe y no está vacío. **No des el trabajo por terminado solo por haber emitido una operación de edición.** Si la verificación falla, reintenta la escritura una vez; si vuelve a fallar, devuelve `documented: false`.
+
 ```json
 {
   "documented": true,
@@ -99,6 +101,8 @@ Estilo: español claro, sin jerga innecesaria, párrafos medios. Explica como a 
   "error": null
 }
 ```
+
+Tu respuesta final debe ser únicamente ese JSON, incluyendo siempre `path` cuando `documented` sea `true`. El fichero escrito y verificado es el producto; una explicación en el chat no lo sustituye.
 
 Si algo falla (web caída, snapshot ausente, no puedes escribir), reporta `{ "documented": false, "error": "..." }`. Tu fallo nunca bloquea la migración.
 

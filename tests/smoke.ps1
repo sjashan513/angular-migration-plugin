@@ -59,7 +59,30 @@ try {
         Check "$agent contempla copilot\marketplaces" ($agentSrc -match 'copilot\\marketplaces\\sjashan513-angular-migration-plugin')
     }
 
-    Write-Host '6. ensure-node (gestión de Node)' -ForegroundColor Cyan
+    Write-Host '6. guards de orquestacion y procesos' -ForegroundColor Cyan
+    $hermesSrc = Get-Content (Join-Path $PSScriptRoot '..\agents\Hermes.agent.md') -Raw
+    $cronosSrc = Get-Content (Join-Path $PSScriptRoot '..\agents\Cronos.agent.md') -Raw
+    $hefestoSrc = Get-Content (Join-Path $PSScriptRoot '..\agents\Hefesto.agent.md') -Raw
+    Check 'build tiene timeout y mata el arbol' ($src -match 'TimeoutSeconds 900' -and $src -match 'taskkill\.exe /PID')
+    Check 'build desactiva progreso del CLI' ($src -match "'--progress=false'")
+    Check 'Hermes exige rama antes del resto' ($hermesSrc -match 'primer paso obligatorio del salto')
+    Check 'Hermes verifica el why fisico' ($hermesSrc -match 'El `why` debe existir y no estar vacío')
+    Check 'Cronos relee el why antes de responder' ($cronosSrc -match 'vuelve a leer `docs/migration/v\{to\}/v\{to\}-why\.md`')
+    Check 'Hefesto usa el modelo de implementacion' ($hefestoSrc -match 'model: claude-sonnet-5 \(copilot\)')
+
+    & git init --quiet
+    & git config user.email 'smoke@example.invalid'
+    & git config user.name 'Migration Smoke'
+    & git add .
+    & git commit --quiet -m 'initial'
+    $branchOut = (& powershell -NoProfile -File $SCRIPT -Command create-branch -AngularMajor 8) | ConvertFrom-Json
+    if ($branchOut.exit_code -ne 0 -or $branchOut.data.active_branch -ne 'migration/v8') { Write-Host ($branchOut | ConvertTo-Json -Depth 5) }
+    Check 'create-branch crea y activa migration/v8' ($branchOut.exit_code -eq 0 -and $branchOut.data.active_branch -eq 'migration/v8')
+    $branchAgainOut = (& powershell -NoProfile -File $SCRIPT -Command create-branch -AngularMajor 8) | ConvertFrom-Json
+    if ($branchAgainOut.exit_code -ne 0 -or $branchAgainOut.data.active_branch -ne 'migration/v8') { Write-Host ($branchAgainOut | ConvertTo-Json -Depth 5) }
+    Check 'create-branch existente sigue siendo idempotente' ($branchAgainOut.exit_code -eq 0 -and $branchAgainOut.data.active_branch -eq 'migration/v8')
+
+    Write-Host '7. ensure-node (gestión de Node)' -ForegroundColor Cyan
     $nodeMajor = [int]((& node --version) -replace 'v(\d+)\..*', '$1')
     $nodeOut = (& powershell -NoProfile -File $SCRIPT -Command ensure-node -AngularMajor $nodeMajor) | ConvertFrom-Json
     Check 'ensure-node no-op con el major activo' ($nodeOut.exit_code -eq 0 -and $nodeOut.data.ok -eq $true -and $nodeOut.data.action -eq 'none')

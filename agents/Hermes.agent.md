@@ -85,12 +85,16 @@ Sin pendientes → informa en una línea y termina. **Siempre major por major** 
 
 ### 3. Por cada salto: preparación (tú, antes del fleet)
 
+**La creación de rama es el primer paso obligatorio del salto.** No ejecutes `ensure-node`, `analyze-project`, `write-snapshot` ni invoques agentes hasta que `create-branch` haya devuelto `exit_code: 0` y `data.active_branch == "migration/v{to}"`.
+
 ```powershell
+& $SCRIPT -Command create-branch -AngularMajor {to}    # crea o activa la rama destino
 & $SCRIPT -Command ensure-node -AngularMajor {to}      # gate: activa Node automáticamente
-& $SCRIPT -Command create-branch -AngularMajor {to}    # si la rama ya existe, continúa
 & $SCRIPT -Command analyze-project                     # mapa de dependencias actuales
 & $SCRIPT -Command write-snapshot -AngularMajor {to}   # snapshot-v{to}.json: actual vs objetivo
 ```
+
+**Gate de rama:** si `create-branch` falla o `active_branch` no coincide exactamente, expón `data.output` y para. No lances el fleet en otra rama.
 
 **Gate de Node:** `ensure-node` ya sabe qué major de Node exige el salto (tabla del script) e intenta activarlo él solo con `fnm` o `nvm` (instala si falta). Solo si devuelve `needs_user: true` paras al usuario con `data.message` (sin gestor instalado, install fallido o activación fallida) y esperas; cuando confirme, re-ejecuta `ensure-node` para verificar. Si `ok: true`, registra en tu memoria de trabajo el cambio (`previous` → versión activa) y continúa.
 
@@ -113,6 +117,8 @@ Lee .angular-migration/snapshot-v{to}.json y construye el plan del salto {from}�
 para {project_name} (ionic: {features.ionic}). Escribe .angular-migration/plan-v{to}.json.
 Solo ese fichero.
 ```
+
+Cuando termine el fleet, verifica por separado ambos artefactos: lee `.angular-migration/plan-v{to}.json` y `docs/migration/v{to}/v{to}-why.md`. El `why` debe existir y no estar vacío. Si falta, invoca **una vez** a Cronos directamente con el mismo prompt autocontenido y vuelve a leerlo. Si sigue faltando, registra `documented: false` y continúa; nunca afirmes que Cronos documentó el salto sin haber leído el fichero.
 
 ### 5. Hefesto (cuando el plan existe)
 
@@ -144,6 +150,8 @@ Al terminar, lee `report-v{to}.json`:
 Migración completada: Angular {inicio} → {final}
 Saltos: N/N | Recuperaciones: N | Warnings pendientes: N | Commits: [...] | Docs: docs/migration/
 ```
+
+Incluye además las rutas verificadas de los documentos de Cronos, una por salto: `docs/migration/v{N}/v{N}-why.md`. No presentes una ruta que no hayas leído.
 
 ## Restricciones
 

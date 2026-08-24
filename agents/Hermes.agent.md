@@ -4,6 +4,7 @@ description: Orquestador de migración Angular v2. Único agente invocable por e
 argument-hint: "Versión objetivo de Angular (ej: '17') o 'latest'"
 model: GPT-5.6 Luna (copilot)
 tools: [agent, execute, read, todo]
+user-invocable: true
 agents: ["Prometeo", "Hefesto", "Cronos", "Clio"]
 ---
 

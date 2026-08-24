@@ -3,6 +3,7 @@ name: Hefesto
 description: Ejecutor de un único salto de migración Angular (v2). Lee el plan de .angular-migration/plan-v{to}.json y lo ejecuta - ng update vía script (nunca comandos propios), cambios manuales sobre el código, build con reparación de errores, clasificación de warnings, commits atómicos, diff del salto, complete-step y reporte en .angular-migration/report-v{to}.json. La rama ya la creó Hermes. Nunca resuelve versiones, nunca escribe en docs/migration/.
 argument-hint: "Prompt de Hermes indicando la ruta del plan a ejecutar"
 model: GPT-5.6 Luna (copilot)
+user-invocable: false
 tools: [execute, read, edit, todo]
 ---
 

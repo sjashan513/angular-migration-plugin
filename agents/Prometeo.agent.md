@@ -3,8 +3,8 @@ name: Prometeo
 description: Planificador y diagnosticador de migración Angular (v2). Lee el snapshot de versiones (.angular-migration/snapshot-v{to}.json, generado por Hermes), construye el plan JSON de un único salto y lo escribe en .angular-migration/plan-v{to}.json para que Hefesto lo ejecute. En modo diagnóstico analiza fallos de build y actualiza el plan con el fix. Nunca toca el código del repo, nunca inventa versiones. El porqué de los cambios es de Cronos, no suyo.
 argument-hint: "Track de fleet con el salto {from}→{to} y features, o request 'diagnose' de Hermes"
 model: Grok 4.6 (copilot)
-# Fallback si la policy de Grok 4.6 no está habilitada por el admin del org:
-# model: claude-sonnet-5 (copilot)
+# Fallback si la policy de Grok 4.6 no está habilitada por el admin del org: GPT-5.6 Luna (copilot)
+user-invocable: false
 tools: [execute, web, read, edit, todo]
 ---
 

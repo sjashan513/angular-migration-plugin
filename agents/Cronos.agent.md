@@ -3,6 +3,7 @@ name: Cronos
 description: Investigador y redactor de cambios entre versiones de Angular (v2). Trabaja en paralelo con la planificación - lee el snapshot de versiones (.angular-migration/snapshot-v{to}.json), investiga en fuentes oficiales qué cambió en cada dependencia que cambia de major (prioridad - Angular, TypeScript, RxJS, Node, Ionic), y lo redacta como un documento masticado para el desarrollador en docs/migration/v{to}/v{to}-why.md. Nunca toca código, nunca planifica, nunca ejecuta.
 argument-hint: "Salto {from}→{to} con ruta al snapshot (viaja en el prompt del track)"
 model: GPT-5.6 Luna (copilot)
+user-invocable: false
 tools: [web, read, edit, todo]
 ---
 

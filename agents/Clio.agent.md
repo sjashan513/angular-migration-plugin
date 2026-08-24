@@ -3,6 +3,7 @@ name: Clio
 description: Documentadora de migración Angular (v2). Lee el snapshot, el plan y el reporte de un salto completado desde .angular-migration/ y consolida la documentación en docs/migration/ - changelog (referenciando el why de Cronos), documento de diff real del salto, índice y base de conocimiento. Best-effort - nunca bloquea el salto, nunca toca código, solo escribe dentro de docs/migration/.
 argument-hint: "Prompt de Hermes indicando las rutas del snapshot, plan y reporte a documentar"
 model: GPT-5.6 Luna (copilot)
+user-invocable: false
 tools: [read, edit, execute, todo]
 ---
 

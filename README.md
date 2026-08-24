@@ -70,10 +70,13 @@ docs/migration/
 └── ...
 
 .angular-migration/              ← gitignorado, artefactos de máquina
-├── snapshot-v8.json             ← versiones actuales vs objetivo
-├── plan-v8.json                 ← plan de Prometeo
-├── report-v8.json               ← resultado de Hefesto
-└── logs/                        ← logs legibles por salto
+├── config.json                  ← configuración global del proyecto
+├── state.json                   ← estado global de la migración
+└── v7-v8.log/                   ← artefactos y logs del salto
+	├── snapshot-v8.json         ← versiones actuales vs objetivo
+	├── plan-v8.json             ← plan de Prometeo
+	├── report-v8.json           ← resultado de Hefesto
+	└── logs/                    ← logs legibles del salto
 ```
 
 Cada salto crea su rama `migration/v{N}` con commits atómicos por paso.

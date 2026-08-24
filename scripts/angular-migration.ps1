@@ -7,7 +7,7 @@
    - Cada comando hace SOLO su trabajo. Nada de side-effects globales.
    - State lazy: solo se lee/escribe cuando el comando lo necesita.
    - Output JSON comprimido (-Compress): menos tokens para el agente.
-   - Logs legibles por salto en .angular-migration/logs/.
+    - Logs y handoff agrupados por salto en .angular-migration/v{from}-v{to}.log/.
    - Documentación humana: docs/migration/ (commiteada). Aquí solo state de máquina.
 #>
 
@@ -46,7 +46,6 @@ $env:GIT_TERMINAL_PROMPT = '0'
 # pertenecen al repo del usuario. Usar $PSScriptRoot aquí era el bug de v1.
 $PROJECT_ROOT = (Get-Location).Path
 $MIGRATION_DIR = Join-Path $PROJECT_ROOT '.angular-migration'
-$LOGS_DIR = Join-Path $MIGRATION_DIR 'logs'
 $CONFIG_FILE = Join-Path $MIGRATION_DIR 'config.json'
 $STATE_FILE = Join-Path $MIGRATION_DIR 'state.json'
 $GITIGNORE_FILE = Join-Path $PROJECT_ROOT '.gitignore'
@@ -94,6 +93,53 @@ function Get-AngularMajorLocal {
     return [int]($ver.Split('.')[0])
 }
 
+function Get-InstalledPackageVersion([string]$PackageName) {
+    $packagePath = Join-Path 'node_modules' (($PackageName -replace '/', '\') + '\package.json')
+    if (-not (Test-Path $packagePath)) { return $null }
+    return (Get-Content $packagePath -Raw | ConvertFrom-Json).version
+}
+
+function Get-DirectDependencies($pkg) {
+    $dependencies = [ordered]@{}
+    foreach ($section in @(@('dependencies', 'runtime'), @('devDependencies', 'dev'))) {
+        $property = $section[0]
+        $type = $section[1]
+        if ($pkg.$property) {
+            foreach ($name in ($pkg.$property.PSObject.Properties.Name | Sort-Object)) {
+                $dependencies[$name] = [PSCustomObject]@{
+                    version = $pkg.$property.$name
+                    type    = $type
+                }
+            }
+        }
+    }
+    return $dependencies
+}
+
+function Get-MigrationStepDirectory([string]$To) {
+    if (-not $To) { return $null }
+
+    $packageMajor = $null
+    if (Test-Path 'package.json') {
+        try { $packageMajor = Get-AngularMajorLocal } catch { }
+    }
+    $stateMajor = $null
+    if (Test-Path $STATE_FILE) {
+        try {
+            $state = Read-MigState
+            if ($state.angular_current -gt 0) { $stateMajor = [int]$state.angular_current }
+        }
+        catch { }
+    }
+    $from = if ($stateMajor -and $packageMajor -eq [int]$To) { $stateMajor } else { $packageMajor }
+    if (-not $from) { $from = $stateMajor }
+    if (-not $from) { return $null }
+
+    $stepDir = Join-Path $MIGRATION_DIR "v$from-v$To.log"
+    if (-not (Test-Path $stepDir)) { New-Item -ItemType Directory -Path $stepDir -Force | Out-Null }
+    return $stepDir
+}
+
 # Output: JSON comprimido, SIN echo del state (solo read-state lo devuelve)
 function Emit($exitCode, $data) {
     [PSCustomObject]@{
@@ -105,7 +151,7 @@ function Emit($exitCode, $data) {
 }
 
 function Invoke-Slow {
-    param([string]$exe, [string[]]$argList, [int]$TimeoutSeconds = 0)
+    param([string]$exe, [string[]]$argList, [int]$TimeoutSeconds = 0, [string]$ProgressLabel = '')
     $runId = [guid]::NewGuid().ToString('N')
     $outFile = "$env:TEMP\mig-out-$runId.txt"
     $errFile = "$env:TEMP\mig-err-$runId.txt"
@@ -114,18 +160,27 @@ function Invoke-Slow {
             -RedirectStandardOutput $outFile -RedirectStandardError $errFile
         # PowerShell 5.1 only populates ExitCode reliably if the handle is materialized before waiting.
         $processHandle = $proc.Handle
-        if ($TimeoutSeconds -gt 0 -and -not $proc.WaitForExit($TimeoutSeconds * 1000)) {
-            & taskkill.exe /PID $proc.Id /T /F 2>$null | Out-Null
-            if (-not $proc.WaitForExit(5000)) {
-                try { $proc.Kill() } catch { }
-                [void]$proc.WaitForExit(5000)
+        $watch = [System.Diagnostics.Stopwatch]::StartNew()
+        $nextNotice = 15
+        while (-not $proc.HasExited) {
+            if ($ProgressLabel -and $watch.Elapsed.TotalSeconds -ge $nextNotice) {
+                [Console]::Error.WriteLine("[$ProgressLabel] proceso en curso: $([int]$watch.Elapsed.TotalSeconds)s")
+                $nextNotice += 15
             }
-            $proc.Refresh()
-            $stdout = if (Test-Path $outFile) { Get-Content $outFile -Raw } else { '' }
-            $stderr = if (Test-Path $errFile) { Get-Content $errFile -Raw } else { '' }
-            return @(124, $stdout, ($stderr + "`nTimeout tras $TimeoutSeconds segundos; proceso terminado."))
+            if ($TimeoutSeconds -gt 0 -and $watch.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
+                & taskkill.exe /PID $proc.Id /T /F 2>$null | Out-Null
+                if (-not $proc.WaitForExit(5000)) {
+                    try { $proc.Kill() } catch { }
+                    [void]$proc.WaitForExit(5000)
+                }
+                $proc.Refresh()
+                $stdout = if (Test-Path $outFile) { Get-Content $outFile -Raw } else { '' }
+                $stderr = if (Test-Path $errFile) { Get-Content $errFile -Raw } else { '' }
+                return @(124, $stdout, ($stderr + "`nTimeout tras $TimeoutSeconds segundos; proceso terminado."))
+            }
+            [void]$proc.WaitForExit(500)
         }
-        $proc.WaitForExit()
+        [void]$proc.WaitForExit()
         $proc.Refresh()
         $stdout = if (Test-Path $outFile) { Get-Content $outFile -Raw } else { '' }
         $stderr = if (Test-Path $errFile) { Get-Content $errFile -Raw } else { '' }
@@ -222,15 +277,17 @@ function Invoke-NodeUse {
     finally { $ErrorActionPreference = $prev }
 }
 
-# Log legible por salto. Fichero: logs/v{N}-<source>.log (o <source>.log sin major).
+# Log legible por salto. Fichero: v{from}-v{to}.log/logs/<source>.log.
 # Nunca rompe el comando: un fallo de logging no puede tumbar una migración.
 function Write-MigLog {
     param([string]$Source, [string]$Message)
     try {
-        if (-not (Test-Path $LOGS_DIR)) { New-Item -ItemType Directory -Path $LOGS_DIR -Force | Out-Null }
+        $stepDir = Get-MigrationStepDirectory $AngularMajor
+        if (-not $stepDir) { return }
+        $logsDir = Join-Path $stepDir 'logs'
+        if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
         $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-        $file = if ($AngularMajor) { "v$AngularMajor-$Source.log" } else { "$Source.log" }
-        Add-Content (Join-Path $LOGS_DIR $file) "$stamp $Message" -Encoding UTF8
+        Add-Content (Join-Path $logsDir "$Source.log") "$stamp $Message" -Encoding UTF8
     }
     catch { }
 }
@@ -310,6 +367,74 @@ function Get-TargetVersions {
         rxjs          = "^$($RXJS_MIN[$Major])"
         node_required = $NODE_MIN[$Major]
         ionic_major   = $ionMajor
+    }
+}
+
+# Consulta metadata de npm para TODAS las dependencias directas del proyecto.
+# Solo guarda el resumen necesario para que Prometeo y Cronos evalúen compatibilidad.
+function Get-DirectDependencyMetadata($dependencies) {
+    Add-Type -AssemblyName System.Net.Http
+    $client = [System.Net.Http.HttpClient]::new()
+    $client.DefaultRequestHeaders.Accept.ParseAdd('application/vnd.npm.install-v1+json')
+    $client.Timeout = [TimeSpan]::FromSeconds(30)
+
+    $tasks = [ordered]@{}
+    $failures = [ordered]@{}
+    foreach ($name in $dependencies.Keys) {
+        try {
+            $urlName = $name -replace '/','%2F'
+            $tasks[$name] = $client.GetStringAsync("https://registry.npmjs.org/$urlName")
+        }
+        catch {
+            $failures[$name] = $_.Exception.Message
+        }
+    }
+
+    if ($tasks.Count -gt 0) {
+        try { [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($tasks.Values)) }
+        catch { }
+    }
+
+    $metadata = [ordered]@{}
+    foreach ($name in $dependencies.Keys) {
+        if (-not $tasks.Contains($name)) { continue }
+        try {
+            $doc = $null
+            try { $doc = $tasks[$name].Result | ConvertFrom-Json } catch { }
+            if (-not $doc) {
+                $viewExit, $viewOut, $viewErr = Invoke-Slow 'npm.cmd' @('view', $name, '--json') -TimeoutSeconds 60
+                if ($viewExit -ne 0 -or -not $viewOut) { throw $viewErr }
+                $doc = $viewOut | ConvertFrom-Json
+            }
+            $requested = [string]$dependencies[$name].version
+            $currentVersion = if ($requested -match '(\d+\.\d+\.\d+)') { $Matches[1] } else { $null }
+            $latestVersion = if ($doc.'dist-tags'.latest) { [string]$doc.'dist-tags'.latest } else { $null }
+            $currentDoc = if ($currentVersion -and $doc.versions.PSObject.Properties[$currentVersion]) { $doc.versions.PSObject.Properties[$currentVersion].Value } else { $null }
+            $latestDoc = if ($latestVersion -and $doc.versions.PSObject.Properties[$latestVersion]) { $doc.versions.PSObject.Properties[$latestVersion].Value } else { $null }
+            $metadata[$name] = [PSCustomObject]@{
+                requested                  = $requested
+                type                       = $dependencies[$name].type
+                registry_status             = 'ok'
+                current_version             = $currentVersion
+                current_peer_dependencies  = if ($currentDoc) { $currentDoc.peerDependencies } else { $null }
+                latest                     = $latestVersion
+                latest_peer_dependencies   = if ($latestDoc) { $latestDoc.peerDependencies } else { $null }
+                latest_engines             = if ($latestDoc) { $latestDoc.engines } else { $null }
+                latest_deprecated          = if ($latestDoc) { $latestDoc.deprecated } else { $null }
+            }
+        }
+        catch {
+            $failures[$name] = $_.Exception.Message
+        }
+    }
+    $client.Dispose()
+
+    return [PSCustomObject]@{
+        complete = ($failures.Count -eq 0 -and $metadata.Count -eq $dependencies.Count)
+        queried  = $metadata.Count
+        total    = $dependencies.Count
+        packages = [PSCustomObject]$metadata
+        failures = [PSCustomObject]$failures
     }
 }
 
@@ -569,9 +694,6 @@ switch ($Command) {
         $exit, $stdout, $stderr = Invoke-Slow 'npm.cmd' (@('install') + $pkgs)
 
         if ($exit -eq 0) {
-            $state = Read-MigState
-            $state.angular_current = Get-AngularMajorLocal
-            Save-MigState $state
             $summary = ($stdout -split "`n" | Where-Object { $_ } | Select-Object -Last 2) -join ' | '
             Emit 0 ([PSCustomObject]@{ summary = $summary })
         }
@@ -640,9 +762,27 @@ switch ($Command) {
         $ngBin = '.\node_modules\.bin\ng.cmd'
         if (-not (Test-Path $ngBin)) { Emit 1 @{ error = "$ngBin no encontrado" } }
 
+        $installedCore = Get-InstalledPackageVersion '@angular/core'
+        $installedCli = Get-InstalledPackageVersion '@angular/cli'
+        $installedBuild = Get-InstalledPackageVersion '@angular-devkit/build-angular'
+        $installedCoreMajor = if ($installedCore) { [int]$installedCore.Split('.')[0] } else { $null }
+        $installedCliMajor = if ($installedCli) { [int]$installedCli.Split('.')[0] } else { $null }
+        if ($AngularMajor -and (($installedCoreMajor -ne [int]$AngularMajor) -or ($installedCliMajor -ne [int]$AngularMajor))) {
+            Emit 1 ([PSCustomObject]@{
+                    error = 'Dependencias Angular instaladas no coinciden con el major solicitado'
+                    requested_major = [int]$AngularMajor
+                    installed = [PSCustomObject]@{
+                        angular_core = $installedCore
+                        angular_cli = $installedCli
+                        build_angular = $installedBuild
+                    }
+                    hint = 'node_modules esta mezclado. Restaura las dependencias del package.json/package-lock antes de reintentar el build.'
+                })
+        }
+
         $env:CI = 'true'
         $env:NG_CLI_ANALYTICS = 'false'
-        $exit, $stdout, $stderr = Invoke-Slow $ngBin @('build', '--prod', '--progress=false') -TimeoutSeconds 900
+        $exit, $stdout, $stderr = Invoke-Slow $ngBin @('build', '--prod', '--progress=false') -TimeoutSeconds 900 -ProgressLabel "build Angular $AngularMajor"
 
         $allLines = ($stdout + "`n" + $stderr) -split "`n"
         $errors = @($allLines | Where-Object { $_ -match 'ERROR' })
@@ -662,11 +802,13 @@ switch ($Command) {
             time     = $time
         }
 
-        # Log completo del build por salto: logs/v{N}-build.log
+        # Log completo del build por salto: v{from}-v{to}.log/logs/build.log
         if ($AngularMajor) {
             try {
-                if (-not (Test-Path $LOGS_DIR)) { New-Item -ItemType Directory -Path $LOGS_DIR -Force | Out-Null }
-                ($stdout + "`n" + $stderr) | Set-Content (Join-Path $LOGS_DIR "v$AngularMajor-build.log") -Encoding UTF8
+            $stepDir = Get-MigrationStepDirectory $AngularMajor
+            $logsDir = Join-Path $stepDir 'logs'
+            if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
+            ($stdout + "`n" + $stderr) | Set-Content (Join-Path $logsDir 'build.log') -Encoding UTF8
             }
             catch { }
         }
@@ -755,17 +897,7 @@ switch ($Command) {
         }
 
         $pkg = Get-Content 'package.json' -Raw | ConvertFrom-Json
-        $deps = [ordered]@{}
-        if ($pkg.dependencies) {
-            foreach ($name in ($pkg.dependencies.PSObject.Properties.Name | Sort-Object)) {
-                $deps[$name] = [PSCustomObject]@{ version = $pkg.dependencies.$name; type = 'runtime' }
-            }
-        }
-        if ($pkg.devDependencies) {
-            foreach ($name in ($pkg.devDependencies.PSObject.Properties.Name | Sort-Object)) {
-                $deps[$name] = [PSCustomObject]@{ version = $pkg.devDependencies.$name; type = 'dev' }
-            }
-        }
+        $deps = Get-DirectDependencies $pkg
 
         Write-MigLog 'hermes' "analyze-project: $($deps.Count) dependencias directas"
         Emit 0 ([PSCustomObject]@{
@@ -777,13 +909,25 @@ switch ($Command) {
     }
 
     # ── write-snapshot ───────────────────────────────────────────
-    # Persiste .angular-migration/snapshot-v{N}.json: versiones actuales vs objetivo.
+    # Persiste .angular-migration/v{from}-v{to}.log/snapshot-v{N}.json: versiones actuales vs objetivo.
     # Lo consume Cronos (documentación) y Prometeo (plan) — es su única fuente de versiones.
     'write-snapshot' {
         if (-not $AngularMajor) { Emit 1 @{ error = '-AngularMajor requerido' } }
         if (-not (Test-Path 'package.json')) { Emit 1 @{ error = 'No package.json' } }
 
         $pkg = Get-Content 'package.json' -Raw | ConvertFrom-Json
+        $dependencies = Get-DirectDependencies $pkg
+        $metadata = Get-DirectDependencyMetadata $dependencies
+        if (-not $metadata.complete) {
+            Emit 1 ([PSCustomObject]@{
+                error    = 'No se pudo consultar npm para todas las dependencias directas'
+                queried  = $metadata.queried
+                total    = $metadata.total
+                failures = $metadata.failures
+                hint     = 'Corrige el acceso al registry o la configuracion de npm y vuelve a ejecutar write-snapshot.'
+            })
+        }
+
         $tracked = @('@angular/core', '@angular/cli', '@angular-devkit/build-angular', '@angular/compiler-cli', '@ionic/angular', 'zone.js', 'typescript', 'rxjs')
         $current = [ordered]@{}
         foreach ($name in $tracked) {
@@ -805,12 +949,15 @@ switch ($Command) {
             from       = $fromMajor
             to         = [int]$AngularMajor
             current    = [PSCustomObject]$current
+            direct_dependencies = [PSCustomObject]$dependencies
+            dependency_metadata = $metadata.packages
+            dependency_metadata_complete = $metadata.complete
             target     = $target
             node       = [PSCustomObject]@{ active = (& node --version 2>$null); required = $target.node_required }
         }
 
-        if (-not (Test-Path $MIGRATION_DIR)) { New-Item -ItemType Directory -Path $MIGRATION_DIR -Force | Out-Null }
-        $snapFile = Join-Path $MIGRATION_DIR "snapshot-v$AngularMajor.json"
+        $stepDir = Get-MigrationStepDirectory $AngularMajor
+        $snapFile = Join-Path $stepDir "snapshot-v$AngularMajor.json"
         $snapshot | ConvertTo-Json -Depth 10 | Set-Content $snapFile -Encoding UTF8
         Write-MigLog 'hermes' "write-snapshot: v$fromMajor -> v$AngularMajor"
 

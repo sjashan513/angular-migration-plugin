@@ -50,18 +50,18 @@ El script es una API estable para los agentes. Cada comando devuelve JSON estruc
 
 ### Comandos nuevos / actualizados
 
-| Comando            | Propósito                                                                                 | Parámetros                                        |
-| ------------------ | ----------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| `analyze-project`  | Lee `package.json`, detecta dependencias directas, genera snapshot de versiones actuales. | `-AngularMajor` (opcional, para filtrar)          |
-| `resolve-versions` | Calcula versiones objetivo compatibles con el major destino.                              | `-AngularMajor`                                   |
-| `write-snapshot`   | Persiste `.angular-migration/snapshot-v{N}.json` con versiones actuales y objetivo.       | `-AngularMajor`                                   |
-| `ng-update`        | Ejecuta `ng update` controlado con versiones específicas.                                 | `-AngularVersion`, `-CliVersion`, `-BuildVersion` |
-| `build`            | Ejecuta build, captura errores y warnings en JSON.                                        | —                                                 |
-| `diff`             | Devuelve archivos modificados, estadísticas y diff resumido.                              | `-BaseRef`                                        |
-| `commit`           | Commit atómico con mensaje y hash devueltos.                                              | `-CommitMessage`                                  |
-| `complete-step`    | Registra salto en state.json.                                                             | `-AngularMajor`                                   |
-| `read-state`       | Devuelve config + state + git status.                                                     | —                                                 |
-| `init`             | Crea `.angular-migration/` en el repo del usuario (no en el plugin).                      | —                                                 |
+| Comando            | Propósito                                                                                            | Parámetros                                        |
+| ------------------ | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `analyze-project`  | Lee `package.json`, detecta dependencias directas, genera snapshot de versiones actuales.            | `-AngularMajor` (opcional, para filtrar)          |
+| `resolve-versions` | Calcula versiones objetivo compatibles con el major destino.                                         | `-AngularMajor`                                   |
+| `write-snapshot`   | Persiste `.angular-migration/v{from}-v{N}.log/snapshot-v{N}.json` con versiones actuales y objetivo. | `-AngularMajor`                                   |
+| `ng-update`        | Ejecuta `ng update` controlado con versiones específicas.                                            | `-AngularVersion`, `-CliVersion`, `-BuildVersion` |
+| `build`            | Ejecuta build, captura errores y warnings en JSON.                                                   | —                                                 |
+| `diff`             | Devuelve archivos modificados, estadísticas y diff resumido.                                         | `-BaseRef`                                        |
+| `commit`           | Commit atómico con mensaje y hash devueltos.                                                         | `-CommitMessage`                                  |
+| `complete-step`    | Registra salto en state.json.                                                                        | `-AngularMajor`                                   |
+| `read-state`       | Devuelve config + state + git status.                                                                | —                                                 |
+| `init`             | Crea `.angular-migration/` en el repo del usuario (no en el plugin).                                 | —                                                 |
 
 ### Cambio crítico: rutas de estado
 
@@ -104,14 +104,15 @@ sequenceDiagram
     H->>S: resolve-versions -AngularMajor 8
     S-->>H: versiones objetivo
     H->>S: write-snapshot -AngularMajor 8
-    S-->>H: snapshot guardado
+    S->>S: consultar npm para todas las dependencias directas
+    S-->>H: snapshot completo o errores por paquete
 
     par Fleet
         H->>C: documentar v8 (usa snapshot)
         H->>P: planificar v8 (usa snapshot)
     end
 
-    P-->>H: plan-v8.json
+    P-->>H: v7-v8.log/plan-v8.json
     C-->>H: v8-why.md
 
     H->>HE: ejecutar plan
@@ -119,7 +120,7 @@ sequenceDiagram
     HE->>S: build
     HE->>HE: editar archivos manuales
     HE->>S: build (reintento)
-    HE-->>H: report-v8.json
+    HE-->>H: v7-v8.log/report-v8.json
 
     H->>CL: documentar
     CL->>CL: changelog + índice + KB
@@ -132,17 +133,20 @@ sequenceDiagram
 
 ## 5. Mejoras de logging y observabilidad
 
-### Estructura de logs por salto
+### Estructura de artefactos y logs por salto
 
 ```
 .angular-migration/
-├── snapshot-v8.json          # versiones actuales vs objetivo
-├── plan-v8.json              # plan de Prometeo
-├── report-v8.json            # resultado de Hefesto
-└── logs/
-    ├── v8-hermes.log         # decisiones del orquestador
-    ├── v8-hefesto.log        # comandos ejecutados y salidas
-    └── v8-build.log          # stdout/stderr completos del build
+├── config.json               # configuración global del proyecto
+├── state.json                # estado global de la migración
+└── v7-v8.log/
+    ├── snapshot-v8.json      # versiones actuales vs objetivo
+    ├── plan-v8.json          # plan de Prometeo
+    ├── report-v8.json        # resultado de Hefesto
+    └── logs/
+        ├── hermes.log       # decisiones del orquestador
+        ├── hefesto.log      # comandos ejecutados y salidas
+        └── build.log        # stdout/stderr completos del build
 ```
 
 ### Logging en agentes
@@ -251,7 +255,7 @@ docs/migration/
 - [ ] Corregir `$PSScriptRoot` → `Get-Location` en script
 - [ ] Añadir `analyze-project` y `write-snapshot`
 - [ ] Añadir `ng-update` con flags controlados
-- [ ] Logging estructurado en `logs/`
+- [x] Logging estructurado en `.angular-migration/v{from}-v{to}.log/logs/`
 
 ### Fase 2 — Agentes
 

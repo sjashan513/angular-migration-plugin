@@ -19,14 +19,14 @@ Nunca se hace push — solo commits locales hasta el merge manual.
 
 ## Estructura de handoff (`.angular-migration/`, gitignorada, en el repo del usuario)
 
-| Fichero              | Escritor        | Lectores               |
-| -------------------- | --------------- | ---------------------- |
-| `config.json`        | script (init)   | Hermes                 |
-| `state.json`         | script          | Hermes                 |
-| `snapshot-v{N}.json` | script (Hermes) | Cronos, Prometeo, Clío |
-| `plan-v{N}.json`     | Prometeo        | Hefesto, Clío          |
-| `report-v{N}.json`   | Hefesto         | Hermes, Clío           |
-| `logs/`              | script          | todos (diagnóstico)    |
+| Fichero                                | Escritor        | Lectores               |
+| -------------------------------------- | --------------- | ---------------------- |
+| `config.json`                          | script (init)   | Hermes                 |
+| `state.json`                           | script          | Hermes                 |
+| `v{from}-v{to}.log/snapshot-v{N}.json` | script (Hermes) | Cronos, Prometeo, Clío |
+| `v{from}-v{to}.log/plan-v{N}.json`     | Prometeo        | Hefesto, Clío          |
+| `v{from}-v{to}.log/report-v{N}.json`   | Hefesto         | Hermes, Clío           |
+| `v{from}-v{to}.log/logs/`              | script          | todos (diagnóstico)    |
 
 ## Documentación generada (`docs/migration/`, commiteada)
 

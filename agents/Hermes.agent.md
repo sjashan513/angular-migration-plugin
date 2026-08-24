@@ -56,10 +56,10 @@ Contrato: output JSON comprimido `{command, exit_code, data}`. `exit_code != 0` 
 Los subagentes de un fleet **no ven tu historial de chat**. Todo viaja por prompt autocontenido y ficheros en `.angular-migration/` (gitignorada por `init`):
 
 - `config.json`, `state.json` — los escribe el script; tú los lees vía `read-state`.
-- `snapshot-v{to}.json` — lo escribes tú vía `write-snapshot`; lo leen Cronos y Prometeo.
-- `plan-v{to}.json` — lo escribe Prometeo; lo leen Hefesto y Clío.
-- `report-v{to}.json` — lo escribe Hefesto; lo lee Clío.
-- `logs/` — logs legibles por salto; los consultas tú para diagnosticar.
+- `v{from}-v{to}.log/snapshot-v{to}.json` — lo escribe el script vía `write-snapshot`; lo leen Cronos y Prometeo.
+- `v{from}-v{to}.log/plan-v{to}.json` — lo escribe Prometeo; lo leen Hefesto y Clío.
+- `v{from}-v{to}.log/report-v{to}.json` — lo escribe Hefesto; lo lee Clío.
+- `v{from}-v{to}.log/logs/` — logs legibles del salto; los consultas tú para diagnosticar.
 
 La documentación humana va a `docs/migration/` (commiteada): el `why` de Cronos, y changelog/índice/KB/diff de Clío.
 
@@ -91,7 +91,7 @@ Sin pendientes → informa en una línea y termina. **Siempre major por major** 
 & $SCRIPT -Command create-branch -AngularMajor {to}    # crea o activa la rama destino
 & $SCRIPT -Command ensure-node -AngularMajor {to}      # gate: activa Node automáticamente
 & $SCRIPT -Command analyze-project                     # mapa de dependencias actuales
-& $SCRIPT -Command write-snapshot -AngularMajor {to}   # snapshot-v{to}.json: actual vs objetivo
+& $SCRIPT -Command write-snapshot -AngularMajor {to}   # v{from}-v{to}.log/snapshot-v{to}.json
 ```
 
 **Gate de rama:** si `create-branch` falla o `active_branch` no coincide exactamente, expón `data.output` y para. No lances el fleet en otra rama.
@@ -100,48 +100,50 @@ Sin pendientes → informa en una línea y termina. **Siempre major por major** 
 
 Si `write-snapshot` falla (registry caído, versión inexistente): reintenta una vez; si vuelve a fallar, expón el error y para ese salto.
 
+El snapshot solo es válido si `direct_dependencies` y `dependency_metadata` contienen el mismo inventario completo de dependencias directas y `dependency_metadata_complete == true`. No continúes con el fleet si falta cualquiera de esos campos o si la metadata no está completa. Para scopes privados, el script usa `npm view` como fallback y respeta la configuración/autenticación de npm; si ambas consultas fallan, expone los paquetes afectados y detiene el salto.
+
 ### 4. Fleet: Cronos + Prometeo en paralelo
 
 ```
 /fleet Migración Angular {from}→{to} del proyecto {project_name} (ionic: {features.ionic}).
 Fronteras de fichero estrictas — ningún track toca ficheros de otro.
-El snapshot de versiones está en .angular-migration/snapshot-v{to}.json — es la única fuente de versiones.
+El snapshot de versiones está en `.angular-migration/v{from}-v{to}.log/snapshot-v{to}.json` — es la única fuente de versiones.
 
 Track A (sin dependencias) — usa @Cronos:
-Lee .angular-migration/snapshot-v{to}.json. Documenta qué cambió de Angular {from} a {to}
+Lee `.angular-migration/v{from}-v{to}.log/snapshot-v{to}.json`. Documenta qué cambió de Angular {from} a {to}
 y en cada dependencia del snapshot que cambie de major (prioridad: Angular, TypeScript,
 RxJS, Node, Ionic, resto). Escribe docs/migration/v{to}/v{to}-why.md. Solo ese fichero.
 
 Track B (sin dependencias) — usa @Prometeo:
-Lee .angular-migration/snapshot-v{to}.json y construye el plan del salto {from}→{to}
-para {project_name} (ionic: {features.ionic}). Escribe .angular-migration/plan-v{to}.json.
+Lee `.angular-migration/v{from}-v{to}.log/snapshot-v{to}.json` y construye el plan del salto {from}→{to}
+para {project_name} (ionic: {features.ionic}). Escribe `.angular-migration/v{from}-v{to}.log/plan-v{to}.json`.
 Solo ese fichero.
 ```
 
-Cuando termine el fleet, verifica por separado ambos artefactos: lee `.angular-migration/plan-v{to}.json` y `docs/migration/v{to}/v{to}-why.md`. El `why` debe existir y no estar vacío. Si falta, invoca **una vez** a Cronos directamente con el mismo prompt autocontenido y vuelve a leerlo. Si sigue faltando, registra `documented: false` y continúa; nunca afirmes que Cronos documentó el salto sin haber leído el fichero.
+Cuando termine el fleet, verifica por separado ambos artefactos: lee `.angular-migration/v{from}-v{to}.log/plan-v{to}.json` y `docs/migration/v{to}/v{to}-why.md`. El `why` debe existir y no estar vacío. Si falta, invoca **una vez** a Cronos directamente con el mismo prompt autocontenido y vuelve a leerlo. Si sigue faltando, registra `documented: false` y continúa; nunca afirmes que Cronos documentó el salto sin haber leído el fichero.
 
 ### 5. Hefesto (cuando el plan existe)
 
-Verifica que `plan-v{to}.json` existe. Delegación directa a Hefesto con prompt autocontenido:
+Verifica que `.angular-migration/v{from}-v{to}.log/plan-v{to}.json` existe. Delegación directa a Hefesto con prompt autocontenido:
 
-> "Lee .angular-migration/plan-v{to}.json y ejecuta el salto completo (ng-update, cambios manuales, build, warnings, commits, complete-step). La rama migration/v{to} ya existe. Escribe tu reporte en .angular-migration/report-v{to}.json."
+> "Lee `.angular-migration/v{from}-v{to}.log/plan-v{to}.json` y ejecuta el salto completo (ng-update, cambios manuales, build, warnings, commits, complete-step). La rama migration/v{to} ya existe. Escribe tu reporte en `.angular-migration/v{from}-v{to}.log/report-v{to}.json`."
 
-Al terminar, lee `report-v{to}.json`:
+Al terminar, lee `.angular-migration/v{from}-v{to}.log/report-v{to}.json`:
 
 - `status: ok` → paso 6.
 - `status: failed` → ciclo de recuperación (§6).
 
 ### 6. Clío (documentación, best-effort)
 
-> "Lee .angular-migration/snapshot-v{to}.json, plan-v{to}.json y report-v{to}.json. Escribe el changelog docs/migration/v{to}/v{to}-changelog.md (referenciando v{to}-why.md), el diff docs/migration/v{to}/v{to}-diff.md (desde report.diff), actualiza \_index.md y la KB. Solo escribes dentro de docs/migration/."
+> "Lee `.angular-migration/v{from}-v{to}.log/snapshot-v{to}.json`, `.angular-migration/v{from}-v{to}.log/plan-v{to}.json` y `.angular-migration/v{from}-v{to}.log/report-v{to}.json`. Escribe el changelog docs/migration/v{to}/v{to}-changelog.md (referenciando v{to}-why.md), el diff docs/migration/v{to}/v{to}-diff.md (desde report.diff), actualiza \_index.md y la KB. Solo escribes dentro de docs/migration/."
 
 `documented: false` o fallo de Cronos nunca son motivo de stop — anótalo y sigue con el siguiente salto.
 
 ### 7. Ciclo de recuperación (máx 2 por salto — fuera del fleet)
 
 1. **Prometeo** (delegación directa): `{ "request": "diagnose", "to": {to}, "failure": { "errors": [...íntegros del reporte...] } }`
-2. Prometeo actualiza `plan-v{to}.json` con `retry: N` y el fix en `manual_changes`.
-3. **Hefesto**: "Lee .angular-migration/plan-v{to}.json (retry: N) y reintenta. Escribe report-v{to}.json."
+2. Prometeo actualiza `v{from}-v{to}.log/plan-v{to}.json` con `retry: N` y el fix en `manual_changes`.
+3. **Hefesto**: "Lee `.angular-migration/v{from}-v{to}.log/plan-v{to}.json` (retry: N) y reintenta. Escribe `.angular-migration/v{from}-v{to}.log/report-v{to}.json`."
 4. `ok` → Clío y siguiente salto. Segundo `failed` → un ciclo más. **Tercer `failed` → stop**: expón los 3 reportes, los 2 diagnósticos y los commits creados.
 
 ### 8. Cierre

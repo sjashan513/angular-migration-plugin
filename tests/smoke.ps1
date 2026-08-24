@@ -26,7 +26,7 @@ New-Item -ItemType Directory -Path $tmp | Out-Null
 @'
 {
   "name": "fake-app",
-  "dependencies": { "@angular/core": "^7.2.0", "@ionic/angular": "^4.0.0", "rxjs": "~6.3.3", "zone.js": "~0.8.26" },
+    "dependencies": { "@angular/core": "^7.2.0", "@ionic/angular": "^4.0.0", "rxjs": "~6.3.3", "zone.js": "~0.8.26", "lodash": "^4.17.0" },
   "devDependencies": { "@angular/cli": "~7.3.0", "typescript": "~3.2.2" }
 }
 '@ | Set-Content (Join-Path $tmp 'package.json') -Encoding UTF8
@@ -45,14 +45,21 @@ try {
     Write-Host '3. analyze-project' -ForegroundColor Cyan
     $anOut = (& powershell -NoProfile -File $SCRIPT -Command analyze-project) | ConvertFrom-Json
     Check 'analyze-project exit_code 0' ($anOut.exit_code -eq 0)
-    Check 'dependency_count = 6' ($anOut.data.dependency_count -eq 6)
+    Check 'dependency_count = 7' ($anOut.data.dependency_count -eq 7)
     Check 'typescript marcada como dev' ($anOut.data.dependencies.'typescript'.type -eq 'dev')
+    Check 'dependencia externa incluida' ($anOut.data.dependencies.'lodash'.version -eq '^4.17.0')
 
     Write-Host '4. comandos v2 existen en ValidateSet' -ForegroundColor Cyan
     $src = Get-Content $SCRIPT -Raw
     foreach ($cmd in @('analyze-project', 'write-snapshot', 'ng-update', 'diff', 'ensure-node')) {
         Check "ValidateSet contiene '$cmd'" ($src -match "'$cmd'")
     }
+    Check 'snapshot consulta todas las dependencias directas' ($src -match 'Get-DirectDependencyMetadata \$dependencies')
+    Check 'snapshot guarda inventario completo' ($src -match 'direct_dependencies =')
+    Check 'snapshot guarda metadata npm' ($src -match 'dependency_metadata =')
+    Check 'snapshot marca metadata completa' ($src -match 'dependency_metadata_complete =')
+    Check 'snapshot se escribe dentro del salto' ($src -match '\$snapFile = Join-Path \$stepDir "snapshot-v\$AngularMajor\.json"')
+    Check 'usa npm view para registry privado' ($src -match "Invoke-Slow 'npm\.cmd'.*'view'.*\$name.*'--json'")
     Write-Host '5. resolver de script contempla la instalacion por marketplace' -ForegroundColor Cyan
     foreach ($agent in @('Hermes', 'Prometeo', 'Hefesto')) {
         $agentSrc = Get-Content (Join-Path $PSScriptRoot "..\agents\$agent.agent.md") -Raw
@@ -62,12 +69,15 @@ try {
     Write-Host '6. guards de orquestacion y procesos' -ForegroundColor Cyan
     $hermesSrc = Get-Content (Join-Path $PSScriptRoot '..\agents\Hermes.agent.md') -Raw
     $cronosSrc = Get-Content (Join-Path $PSScriptRoot '..\agents\Cronos.agent.md') -Raw
+    $prometeoSrc = Get-Content (Join-Path $PSScriptRoot '..\agents\Prometeo.agent.md') -Raw
     $hefestoSrc = Get-Content (Join-Path $PSScriptRoot '..\agents\Hefesto.agent.md') -Raw
     Check 'build tiene timeout y mata el arbol' ($src -match 'TimeoutSeconds 900' -and $src -match 'taskkill\.exe /PID')
     Check 'build desactiva progreso del CLI' ($src -match "'--progress=false'")
     Check 'Hermes exige rama antes del resto' ($hermesSrc -match 'primer paso obligatorio del salto')
     Check 'Hermes verifica el why fisico' ($hermesSrc -match 'El `why` debe existir y no estar vacío')
+    Check 'Hermes exige metadata completa' ($hermesSrc -match 'direct_dependencies.*dependency_metadata')
     Check 'Cronos relee el why antes de responder' ($cronosSrc -match 'vuelve a leer `docs/migration/v\{to\}/v\{to\}-why\.md`')
+    Check 'Prometeo audita todas las dependencias' ($prometeoSrc -match 'Auditoría de dependencias')
     Check 'Hefesto usa el modelo de implementacion' ($hefestoSrc -match 'model: claude-sonnet-5 \(copilot\)')
 
     & git init --quiet
@@ -81,6 +91,14 @@ try {
     $branchAgainOut = (& powershell -NoProfile -File $SCRIPT -Command create-branch -AngularMajor 8) | ConvertFrom-Json
     if ($branchAgainOut.exit_code -ne 0 -or $branchAgainOut.data.active_branch -ne 'migration/v8') { Write-Host ($branchAgainOut | ConvertTo-Json -Depth 5) }
     Check 'create-branch existente sigue siendo idempotente' ($branchAgainOut.exit_code -eq 0 -and $branchAgainOut.data.active_branch -eq 'migration/v8')
+    $stepDir = Join-Path $tmp '.angular-migration\v7-v8.log'
+    Check 'crea directorio fisico por salto' (Test-Path $stepDir -PathType Container)
+    Check 'log de Hermes queda dentro del salto' (Test-Path (Join-Path $stepDir 'logs\hermes.log'))
+    $rootMigrationFiles = @(Get-ChildItem (Join-Path $tmp '.angular-migration') -File | Select-Object -ExpandProperty Name)
+    Check 'config y state siguen en la raiz de migracion' ($rootMigrationFiles -contains 'config.json' -and $rootMigrationFiles -contains 'state.json')
+    Check 'no crea handoff en la raiz de migracion' ($rootMigrationFiles -notcontains 'snapshot-v8.json' -and $rootMigrationFiles -notcontains 'plan-v8.json' -and $rootMigrationFiles -notcontains 'report-v8.json')
+    $hermesPaths = Get-Content (Join-Path $PSScriptRoot '..\agents\Hermes.agent.md') -Raw
+    Check 'Hermes usa handoff por salto' ($hermesPaths -match 'v\{from\}-v\{to\}\.log/snapshot-v\{to\}\.json')
 
     Write-Host '7. ensure-node (gestión de Node)' -ForegroundColor Cyan
     $nodeMajor = [int]((& node --version) -replace 'v(\d+)\..*', '$1')

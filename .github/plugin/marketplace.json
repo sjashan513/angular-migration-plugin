@@ -6,13 +6,13 @@
   },
   "metadata": {
     "description": "Plugin de migración Angular automática con pipeline de 5 agentes.",
-    "version": "1.0.0"
+    "version": "2.0.0"
   },
   "plugins": [
     {
       "name": "angular-migration",
-      "description": "Pipeline de 5 agentes que migra proyectos Angular de v7 a cualquier versión objetivo. Invoca con @Hermes <version>.",
-      "version": "1.0.0",
+      "description": "Pipeline de 5 agentes que migra proyectos Angular de v7 a cualquier versión objetivo, major por major, vía ng update. Invoca con /update-angular <version> o @Hermes <version>.",
+      "version": "2.0.0",
       "source": "."
     }
   ]

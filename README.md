@@ -1,20 +1,20 @@
-# angular-migration — Plugin para GitHub Copilot
+# angular-migration — Plugin para GitHub Copilot (v2)
 
-Pipeline de 5 agentes que migra proyectos Angular de v7 a cualquier versión objetivo de forma autónoma. Tú solo supervisas el arranque.
+Pipeline de 5 agentes que migra proyectos Angular de v7 a cualquier versión objetivo de forma autónoma, **major por major vía `ng update`**. Tú solo supervisas el arranque.
 
 ## Agentes
 
-| Agente       | Rol                                                               | Modelo       |
-| ------------ | ----------------------------------------------------------------- | ------------ |
-| **Hermes**   | Orquestador. Gestiona saltos y fleet.                             | GPT-5.6 Luna |
-| **Cronos**   | Investiga qué cambió entre versiones y redacta el doc del porqué. | GPT-5.6 Luna |
-| **Prometeo** | Resuelve versiones y construye el plan de ejecución.              | Grok 4.6 \*  |
-| **Hefesto**  | Ejecuta el plan sobre el repo (instala, edita, build, commits).   | GPT-5.6 Luna |
-| **Clío**     | Consolida la documentación en `docs/migration/`.                  | GPT-5.6 Luna |
+| Agente       | Rol                                                                            | Modelo       |
+| ------------ | ------------------------------------------------------------------------------ | ------------ |
+| **Hermes**   | Orquestador. Gates, rama, snapshot de versiones, fleet y verificación.         | GPT-5.6 Luna |
+| **Cronos**   | Documenta el porqué del salto a partir del snapshot.                           | GPT-5.6 Luna |
+| **Prometeo** | Construye el plan ejecutable a partir del snapshot.                            | Grok 4.6 \*  |
+| **Hefesto**  | Ejecuta el plan: `ng update` vía script, cambios manuales, build, warnings.    | GPT-5.6 Luna |
+| **Clío**     | Consolida la documentación en `docs/migration/` (changelog, diff, índice, KB). | GPT-5.6 Luna |
 
 \* Requiere activar la policy de Grok 4.6 en Copilot Business/Enterprise. Fallback: edita el frontmatter de `Prometeo.agent.md` y cambia el modelo a `claude-sonnet-5 (copilot)`.
 
-Por cada salto (p. ej. v8→v9), Hermes lanza un `/fleet` con Cronos y Prometeo en paralelo, Hefesto en la segunda oleada y Clío al final.
+Por cada salto (p. ej. v8→v9): Hermes valida gates, crea la rama, genera el **snapshot de versiones** con el script, lanza un `/fleet` con Cronos y Prometeo en paralelo, invoca a Hefesto para ejecutar el plan y a Clío para documentar.
 
 ## Prerequisitos
 
@@ -38,7 +38,7 @@ copilot plugin install angular-migration@sjashan513-plugins
 Abre Copilot en la raíz del repo Angular y escribe:
 
 ```
-/update 17
+/update-angular 17
 ```
 
 O directamente con el agente:
@@ -50,9 +50,14 @@ O directamente con el agente:
 Hermes detecta la versión actual, calcula los saltos pendientes (p. ej. 7→8→…→17) y ejecuta la pipeline completa. Solo te parará si:
 
 1. El working tree está sucio → haz commit o stash y confirma.
-2. Un salto falla 3 veces → te expone el historial completo para que decidas.
+2. Node no se pudo activar solo (sin `fnm`/`nvm` o fallo de instalación) → te da el comando exacto a ejecutar.
+3. Un salto falla 3 veces → te expone el historial completo para que decidas.
+
+> **Gestión de Node automática:** cada salto exige un major de Node (p. ej. 10 para Angular 8, 18 para Angular 17). El plugin lo detecta con `fnm` o `nvm`, lo instala si falta y lo activa sin que hagas nada.
 
 ## Qué genera
+
+En el repo del usuario (nunca en el plugin):
 
 ```
 docs/migration/
@@ -60,11 +65,15 @@ docs/migration/
 ├── _errors-knowledge.md         ← base de conocimiento de fixes acumulados
 ├── v8/
 │   ├── v8-why.md                ← qué cambió en Angular 8 y por qué (Cronos)
-│   └── v8-changelog.md          ← versiones instaladas, cambios, build (Clío)
-├── v9/
-│   ├── v9-why.md
-│   └── v9-changelog.md
+│   ├── v8-changelog.md          ← versiones, ng update, warnings, build (Clío)
+│   └── v8-diff.md               ← diff real del salto (Clío)
 └── ...
+
+.angular-migration/              ← gitignorado, artefactos de máquina
+├── snapshot-v8.json             ← versiones actuales vs objetivo
+├── plan-v8.json                 ← plan de Prometeo
+├── report-v8.json               ← resultado de Hefesto
+└── logs/                        ← logs legibles por salto
 ```
 
 Cada salto crea su rama `migration/v{N}` con commits atómicos por paso.
@@ -81,7 +90,7 @@ angular-migration-plugin/
 │   ├── Hefesto.agent.md
 │   └── Clio.agent.md
 ├── skills/
-│   ├── update/                  ← slash command /update
+│   ├── update-angular/          ← slash command /update-angular
 │   │   └── SKILL.md
 │   ├── angular-migration/       ← contexto del plugin
 │   │   └── SKILL.md
@@ -90,7 +99,11 @@ angular-migration-plugin/
 │   └── ponytail/                ← incluida en el plugin
 │       └── SKILL.md
 ├── scripts/
-│   └── angular-migration.ps1
+│   └── angular-migration.ps1    ← API determinista para los agentes
+├── tests/
+│   └── smoke.ps1                ← smoke test del script
+├── docs/
+│   └── v2-plan.md               ← documento de diseño v2
 ├── .github/
 │   └── plugin/
 │       └── marketplace.json

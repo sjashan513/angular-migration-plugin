@@ -1,7 +1,7 @@
 {
   "name": "angular-migration",
-  "version": "1.0.0",
-  "description": "Multi-agent pipeline that migrates Angular projects from v7 to any target version. Invoke with /update <version> or @Hermes <version>.",
+  "version": "2.0.0",
+  "description": "Multi-agent pipeline that migrates Angular projects from v7 to any target version, major by major, via ng update. Invoke with /update-angular <version> or @Hermes <version>.",
   "author": {
     "name": "sjashan513",
     "url": "https://github.com/sjashan513"

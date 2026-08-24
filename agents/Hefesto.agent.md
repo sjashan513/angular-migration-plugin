@@ -20,18 +20,17 @@ El script y la KB (`docs/migration/_errors-knowledge.md`, si existe) son tus ún
 ## Paso 0 — Resolver la ruta del script (lo primero de todo)
 
 ```powershell
-if ($env:PLUGIN_ROOT) {
-    $SCRIPT = Join-Path $env:PLUGIN_ROOT 'scripts\angular-migration.ps1'
-}
-elseif (Test-Path "$env:LOCALAPPDATA\copilot\installed-plugins\sjashan513\angular-migration\scripts\angular-migration.ps1") {
-    $SCRIPT = "$env:LOCALAPPDATA\copilot\installed-plugins\sjashan513\angular-migration\scripts\angular-migration.ps1"
-}
-elseif (Test-Path "$env:LOCALAPPDATA\copilot\installed-plugins\_direct\sjashan513-angular-migration-plugin\scripts\angular-migration.ps1") {
-    $SCRIPT = "$env:LOCALAPPDATA\copilot\installed-plugins\_direct\sjashan513-angular-migration-plugin\scripts\angular-migration.ps1"
-}
-else {
-    # No encontrado: escribe reporte failed y para
-    # { "status": "failed", "error": "Script no encontrado. Reinstala: copilot plugin install angular-migration@sjashan513" }
+$scriptCandidates = @(
+  $(if ($env:PLUGIN_ROOT) { Join-Path $env:PLUGIN_ROOT 'scripts\angular-migration.ps1' }),
+  "$env:LOCALAPPDATA\copilot\marketplaces\sjashan513-angular-migration-plugin\scripts\angular-migration.ps1",
+  "$env:LOCALAPPDATA\copilot\installed-plugins\sjashan513\angular-migration\scripts\angular-migration.ps1",
+  "$env:LOCALAPPDATA\copilot\installed-plugins\_direct\sjashan513-angular-migration-plugin\scripts\angular-migration.ps1"
+)
+$SCRIPT = $scriptCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+if (-not $SCRIPT) {
+  $report = @{ status = 'failed'; error = 'Script no encontrado. Reinstala: copilot plugin install angular-migration@sjashan513' } | ConvertTo-Json -Compress
+  Set-Content '.angular-migration/report-v{to}.json' $report
+  return
 }
 ```
 

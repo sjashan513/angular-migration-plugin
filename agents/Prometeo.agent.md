@@ -37,12 +37,15 @@ Si no puedes identificar ni el salto ni un request de diagnóstico: no ejecutes 
 El script vive en el plugin instalado, no en el repo del usuario:
 
 ```powershell
-$SCRIPT = if ($env:PLUGIN_ROOT) {
-    Join-Path $env:PLUGIN_ROOT 'scripts\angular-migration.ps1'
-} elseif (Test-Path "$env:LOCALAPPDATA\copilot\installed-plugins\sjashan513\angular-migration\scripts\angular-migration.ps1") {
-    "$env:LOCALAPPDATA\copilot\installed-plugins\sjashan513\angular-migration\scripts\angular-migration.ps1"
-} else {
-    "$env:LOCALAPPDATA\copilot\installed-plugins\_direct\sjashan513-angular-migration-plugin\scripts\angular-migration.ps1"
+$scriptCandidates = @(
+  $(if ($env:PLUGIN_ROOT) { Join-Path $env:PLUGIN_ROOT 'scripts\angular-migration.ps1' }),
+  "$env:LOCALAPPDATA\copilot\marketplaces\sjashan513-angular-migration-plugin\scripts\angular-migration.ps1",
+  "$env:LOCALAPPDATA\copilot\installed-plugins\sjashan513\angular-migration\scripts\angular-migration.ps1",
+  "$env:LOCALAPPDATA\copilot\installed-plugins\_direct\sjashan513-angular-migration-plugin\scripts\angular-migration.ps1"
+)
+$SCRIPT = $scriptCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+if (-not $SCRIPT) {
+  throw 'Script no encontrado. Reinstala: copilot plugin install angular-migration@sjashan513'
 }
 ```
 

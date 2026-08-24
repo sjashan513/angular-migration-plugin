@@ -53,8 +53,13 @@ try {
     foreach ($cmd in @('analyze-project', 'write-snapshot', 'ng-update', 'diff', 'ensure-node')) {
         Check "ValidateSet contiene '$cmd'" ($src -match "'$cmd'")
     }
+    Write-Host '5. resolver de script contempla la instalacion por marketplace' -ForegroundColor Cyan
+    foreach ($agent in @('Hermes', 'Prometeo', 'Hefesto')) {
+        $agentSrc = Get-Content (Join-Path $PSScriptRoot "..\agents\$agent.agent.md") -Raw
+        Check "$agent contempla copilot\marketplaces" ($agentSrc -match 'copilot\\marketplaces\\sjashan513-angular-migration-plugin')
+    }
 
-    Write-Host '5. ensure-node (gestión de Node)' -ForegroundColor Cyan
+    Write-Host '6. ensure-node (gestión de Node)' -ForegroundColor Cyan
     $nodeMajor = [int]((& node --version) -replace 'v(\d+)\..*', '$1')
     $nodeOut = (& powershell -NoProfile -File $SCRIPT -Command ensure-node -AngularMajor $nodeMajor) | ConvertFrom-Json
     Check 'ensure-node no-op con el major activo' ($nodeOut.exit_code -eq 0 -and $nodeOut.data.ok -eq $true -and $nodeOut.data.action -eq 'none')

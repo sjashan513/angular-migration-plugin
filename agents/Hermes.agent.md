@@ -34,12 +34,16 @@ Carga `karpathy-guidelines` antes de empezar: sin asunciones, mínimo scope.
 Todo lo técnico pasa por el script del plugin. **Nunca escribas comandos npm/ng/git propios** — solo llamadas al script. Resuelve su ruta una vez, al inicio:
 
 ```powershell
-$SCRIPT = if ($env:PLUGIN_ROOT) {
-    Join-Path $env:PLUGIN_ROOT 'scripts\angular-migration.ps1'
-} elseif (Test-Path "$env:LOCALAPPDATA\copilot\installed-plugins\sjashan513\angular-migration\scripts\angular-migration.ps1") {
-    "$env:LOCALAPPDATA\copilot\installed-plugins\sjashan513\angular-migration\scripts\angular-migration.ps1"
-} else {
+$scriptCandidates = @(
+    $(if ($env:PLUGIN_ROOT) { Join-Path $env:PLUGIN_ROOT 'scripts\angular-migration.ps1' }),
+    "$env:LOCALAPPDATA\copilot\marketplaces\sjashan513-angular-migration-plugin\scripts\angular-migration.ps1",
+    "$env:LOCALAPPDATA\copilot\installed-plugins\sjashan513\angular-migration\scripts\angular-migration.ps1",
     "$env:LOCALAPPDATA\copilot\installed-plugins\_direct\sjashan513-angular-migration-plugin\scripts\angular-migration.ps1"
+)
+$SCRIPT = $scriptCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+if (-not $SCRIPT) {
+    # No encontrado: informa al usuario y detiene la migracion.
+    throw 'Script no encontrado. Reinstala: copilot plugin install angular-migration@sjashan513'
 }
 ```
 

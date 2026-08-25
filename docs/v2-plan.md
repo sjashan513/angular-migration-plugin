@@ -57,6 +57,8 @@ El script es una API estable para los agentes. Cada comando devuelve JSON estruc
 | `write-snapshot`   | Persiste `.angular-migration/v{from}-v{N}.log/snapshot-v{N}.json` con versiones actuales y objetivo. | `-AngularMajor`                                   |
 | `ng-update`        | Ejecuta `ng update` controlado con versiones específicas.                                            | `-AngularVersion`, `-CliVersion`, `-BuildVersion` |
 | `build`            | Ejecuta build, captura errores y warnings en JSON.                                                   | —                                                 |
+| `runtime-install`  | Instala Node 20+ si falta y Playwright/Chromium en un runtime aislado del plugin.                    | —                                                 |
+| `runtime-check`    | Abre la app con Playwright y captura errores de consola, página y red.                               | `-AngularMajor`, `-RuntimeUrl`, `-StartServer`    |
 | `diff`             | Devuelve archivos modificados, estadísticas y diff resumido.                                         | `-BaseRef`                                        |
 | `commit`           | Commit atómico con mensaje y hash devueltos.                                                         | `-CommitMessage`                                  |
 | `complete-step`    | Registra salto en state.json.                                                                        | `-AngularMajor`                                   |
@@ -99,6 +101,7 @@ sequenceDiagram
     S-->>H: config + state + git
     H->>H: calcular saltos pendientes
     H->>S: create-branch -AngularMajor 8
+    H->>S: runtime-install (Node 20 + Playwright + Chromium aislados)
     H->>S: analyze-project
     S-->>H: versiones actuales
     H->>S: resolve-versions -AngularMajor 8
@@ -120,6 +123,7 @@ sequenceDiagram
     HE->>S: build
     HE->>HE: editar archivos manuales
     HE->>S: build (reintento)
+    HE->>S: runtime-check (Playwright)
     HE-->>H: v7-v8.log/report-v8.json
 
     H->>CL: documentar
@@ -147,6 +151,7 @@ sequenceDiagram
         ├── hermes.log       # decisiones del orquestador
         ├── hefesto.log      # comandos ejecutados y salidas
         └── build.log        # stdout/stderr completos del build
+        └── runtime.log      # consola, page errors y red capturados por Playwright
 ```
 
 ### Logging en agentes

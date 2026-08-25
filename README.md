@@ -22,6 +22,10 @@ Por cada salto (p. ej. v8→v9): Hermes valida gates, crea la rama, genera el **
 - `chat.subagents.allowInvocationsFromSubagents: true` en VS Code
 - PowerShell 5.1+ (Windows) — el script vive en el plugin, no necesitas copiarlo
 - Node.js y npm instalados; `fnm` o `nvm` para gestionar versiones de Node
+- `fnm` o `nvm` disponibles para que el runtime aislado pueda instalar Node 20+
+  si falta; el plugin instala Playwright y Chromium en
+  `%LOCALAPPDATA%\angular-migration-plugin\playwright-runtime` durante el primer
+  salto, sin modificar `package.json` ni `node_modules` de la app
 
 ## Instalación
 
@@ -51,7 +55,8 @@ Hermes detecta la versión actual, calcula los saltos pendientes (p. ej. 7→8�
 
 1. El working tree está sucio → haz commit o stash y confirma.
 2. Node no se pudo activar solo (sin `fnm`/`nvm` o fallo de instalación) → te da el comando exacto a ejecutar.
-3. Un salto falla 3 veces → te expone el historial completo para que decidas.
+3. No se puede instalar Node 20+ para preparar Playwright → te da el error para resolverlo.
+4. Un salto falla 3 veces → te expone el historial completo para que decidas.
 
 > **Gestión de Node automática:** cada salto exige un major de Node (p. ej. 10 para Angular 8, 18 para Angular 17). El plugin lo detecta con `fnm` o `nvm`, lo instala si falta y lo activa sin que hagas nada.
 
@@ -76,7 +81,7 @@ docs/migration/
 	├── snapshot-v8.json         ← versiones actuales vs objetivo
 	├── plan-v8.json             ← plan de Prometeo
 	├── report-v8.json           ← resultado de Hefesto
-	└── logs/                    ← logs legibles del salto
+	└── logs/                    ← logs legibles del salto, incluido runtime.log
 ```
 
 Cada salto crea su rama `migration/v{N}` con commits atómicos por paso.
@@ -102,7 +107,8 @@ angular-migration-plugin/
 │   └── ponytail/                ← incluida en el plugin
 │       └── SKILL.md
 ├── scripts/
-│   └── angular-migration.ps1    ← API determinista para los agentes
+│   ├── angular-migration.ps1    ← API determinista para los agentes
+│   └── playwright-runtime-check.js ← runner Playwright headless
 ├── tests/
 │   └── smoke.ps1                ← smoke test del script
 ├── docs/

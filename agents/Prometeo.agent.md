@@ -59,13 +59,14 @@ Si falta, está corrupto o le faltan campos de `target`, `direct_dependencies` o
 
 **Paso 2 — Cambios manuales conocidos.** Añade a `manual_changes` los del major destino:
 
-| Major | Cambios                                                                                                                                                                                                                                                                                                                     |
-| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 8     | `loadChildren` string → dynamic import (`() => import('./x.module').then(m => m.XModule)`) en todos los routing modules; `tsconfig` module `es2015` → `esnext`; **`@ViewChild`/`@ContentChild` de un argumento → segundo argumento `{ static: true\|false }`** (`true` si la ref se usa en `ngOnInit`, `false` en el resto) |
-| 9     | `{ static: false }` vuelve a ser default (se puede omitir); verificar `enableIvy` ≠ `false`                                                                                                                                                                                                                                 |
-| 12    | eliminar `enableIvy: false` y scripts `ngcc` de `package.json`                                                                                                                                                                                                                                                              |
-| 13    | `.toPromise()` → `lastValueFrom()` (import desde `rxjs`)                                                                                                                                                                                                                                                                    |
-| 15    | eliminar `relativeLinkResolution` de `RouterModule.forRoot()`                                                                                                                                                                                                                                                               |
+| Major   | Cambios                                                                                                                                                                                                                                                                                                                     |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 8       | `loadChildren` string → dynamic import (`() => import('./x.module').then(m => m.XModule)`) en todos los routing modules; `tsconfig` module `es2015` → `esnext`; **`@ViewChild`/`@ContentChild` de un argumento → segundo argumento `{ static: true\|false }`** (`true` si la ref se usa en `ngOnInit`, `false` en el resto) |
+| 9       | `{ static: false }` vuelve a ser default (se puede omitir); verificar `enableIvy` ≠ `false`                                                                                                                                                                                                                                 |
+| 12      | eliminar `enableIvy: false` y scripts `ngcc` de `package.json`                                                                                                                                                                                                                                                              |
+| 13      | `.toPromise()` → `lastValueFrom()` (import desde `rxjs`)                                                                                                                                                                                                                                                                    |
+| 15      | eliminar `relativeLinkResolution` de `RouterModule.forRoot()`                                                                                                                                                                                                                                                               |
+| Ionic 7 | si `features.ionic == true`: sustituir `main` en `ion-menu`/`ion-split-pane` por `contentId` y conservar el `id` del contenido referenciado; sustituir atributos CSS Ionic como `padding-end` por clases `ion-*` equivalentes                                                                                               |
 
 Los majors sin fila no llevan cambios manuales conocidos (`manual_changes: []`).
 
@@ -118,11 +119,20 @@ Input de Hermes:
 {
   "request": "diagnose",
   "to": 8,
-  "failure": { "errors": ["...errores de build íntegros..."] }
+  "failure": {
+    "errors": ["...errores de build o runtime íntegros..."],
+    "runtime": {
+      "console_errors": [],
+      "console_warnings": [],
+      "page_errors": [],
+      "failed_requests": [],
+      "http_errors": []
+    }
+  }
 }
 ```
 
-**Paso 1 — Reconocer.** Lee los errores contra tu conocimiento de breaking changes de Angular {to}. Muchos ya están en la tabla del Modo 1 y en la tabla de auto-fix de Hefesto. Si ayuda, puedes leer el log completo en `.angular-migration/v{from}-v{to}.log/logs/build.log`.
+**Paso 1 — Reconocer.** Lee los errores de build y los eventos de Playwright contra tu conocimiento de breaking changes de Angular {to}. Muchos ya están en la tabla del Modo 1 y en la tabla de auto-fix de Hefesto. Si ayuda, puedes leer `.angular-migration/v{from}-v{to}.log/logs/build.log` y `runtime.log`.
 
 **Paso 2 — Investigar si no reconoces.** Aquí, y **solo aquí**, usas `web`:
 

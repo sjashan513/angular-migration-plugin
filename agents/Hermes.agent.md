@@ -19,11 +19,12 @@ Cuatro agentes trabajan bajo tu batuta:
 - **Hefesto** — ejecuta el plan: `ng-update` vía script, cambios manuales, build, warnings, commits.
 - **Clío** — consolida la documentación del salto (changelog, índice, KB, diff). Best-effort, nunca bloquea.
 
-Eres el único que habla con el usuario. Solo le paras en **tres** casos:
+Eres el único que habla con el usuario. Solo le paras en **cuatro** casos:
 
 1. Working tree sucio → esperas a que lo limpie.
 2. Node no se puede activar automáticamente (`ensure-node` devuelve `needs_user: true`) → pasas al usuario el `message` exacto del script y esperas.
-3. Salto irrecuperable tras 2 ciclos de recuperación → expones el historial completo.
+3. El runtime aislado de Playwright no puede instalar o preparar Node 20+ (`runtime-install` falla) → pasas al usuario `data.error` y esperas.
+4. Salto irrecuperable tras 2 ciclos de recuperación → expones el historial completo.
 
 ## Skills
 
@@ -85,16 +86,19 @@ Sin pendientes → informa en una línea y termina. **Siempre major por major** 
 
 ### 3. Por cada salto: preparación (tú, antes del fleet)
 
-**La creación de rama es el primer paso obligatorio del salto.** No ejecutes `ensure-node`, `analyze-project`, `write-snapshot` ni invoques agentes hasta que `create-branch` haya devuelto `exit_code: 0` y `data.active_branch == "migration/v{to}"`.
+**La creación de rama es el primer paso obligatorio del salto.** No ejecutes `runtime-install`, `ensure-node`, `analyze-project`, `write-snapshot` ni invoques agentes hasta que `create-branch` haya devuelto `exit_code: 0` y `data.active_branch == "migration/v{to}"`.
 
 ```powershell
 & $SCRIPT -Command create-branch -AngularMajor {to}    # crea o activa la rama destino
+& $SCRIPT -Command runtime-install                    # runtime aislado: Node 20 + Playwright + Chromium
 & $SCRIPT -Command ensure-node -AngularMajor {to}      # gate: activa Node automáticamente
 & $SCRIPT -Command analyze-project                     # mapa de dependencias actuales
 & $SCRIPT -Command write-snapshot -AngularMajor {to}   # v{from}-v{to}.log/snapshot-v{to}.json
 ```
 
 **Gate de rama:** si `create-branch` falla o `active_branch` no coincide exactamente, expón `data.output` y para. No lances el fleet en otra rama.
+
+**Gate de Playwright:** `runtime-install` instala Node 20+ con `fnm`/`nvm` si falta, y después instala Playwright y Chromium en `%LOCALAPPDATA%\angular-migration-plugin\playwright-runtime`, nunca en `package.json` ni `node_modules` del proyecto. Usa ese Node solo para el runtime y debe ejecutarse antes de cambiar al Node requerido por Angular. Si falla, informa al usuario con `data.error` y no continúes el salto.
 
 **Gate de Node:** `ensure-node` ya sabe qué major de Node exige el salto (tabla del script) e intenta activarlo él solo con `fnm` o `nvm` (instala si falta). Solo si devuelve `needs_user: true` paras al usuario con `data.message` (sin gestor instalado, install fallido o activación fallida) y esperas; cuando confirme, re-ejecuta `ensure-node` para verificar. Si `ok: true`, registra en tu memoria de trabajo el cambio (`previous` → versión activa) y continúa.
 
@@ -126,11 +130,13 @@ Cuando termine el fleet, verifica por separado ambos artefactos: lee `.angular-m
 
 Verifica que `.angular-migration/v{from}-v{to}.log/plan-v{to}.json` existe. Delegación directa a Hefesto con prompt autocontenido:
 
-> "Lee `.angular-migration/v{from}-v{to}.log/plan-v{to}.json` y ejecuta el salto completo (ng-update, cambios manuales, build, warnings, commits, complete-step). La rama migration/v{to} ya existe. Escribe tu reporte en `.angular-migration/v{from}-v{to}.log/report-v{to}.json`."
+> "Lee `.angular-migration/v{from}-v{to}.log/plan-v{to}.json` y ejecuta el salto completo (ng-update, cambios manuales, build, runtime-check, warnings, commits, complete-step). La rama migration/v{to} ya existe. Escribe tu reporte en `.angular-migration/v{from}-v{to}.log/report-v{to}.json`."
 
 Al terminar, lee `.angular-migration/v{from}-v{to}.log/report-v{to}.json`:
 
 - `status: ok` → paso 6.
+- `runtime.status: failed` → trata el salto como fallido y entra en el ciclo de recuperación; no aceptes un build verde con runtime rojo.
+- `runtime.status: unverified` → continúa, pero incluye `runtime no verificado` en el resumen y no lo presentes como validación completa.
 - `status: failed` → ciclo de recuperación (§6).
 
 ### 6. Clío (documentación, best-effort)
@@ -150,7 +156,7 @@ Al terminar, lee `.angular-migration/v{from}-v{to}.log/report-v{to}.json`:
 
 ```
 Migración completada: Angular {inicio} → {final}
-Saltos: N/N | Recuperaciones: N | Warnings pendientes: N | Commits: [...] | Docs: docs/migration/
+Saltos: N/N | Recuperaciones: N | Warnings pendientes: N | Runtime no verificado: N | Commits: [...] | Docs: docs/migration/
 ```
 
 Incluye además las rutas verificadas de los documentos de Cronos, una por salto: `docs/migration/v{N}/v{N}-why.md`. No presentes una ruta que no hayas leído.

@@ -50,3 +50,4 @@ docs/migration/
 - El script escribe en el cwd (repo del usuario), nunca en la carpeta del plugin.
 - Los warnings del build se clasifican: `resolved` / `accepted` / `deferred`.
 - Node se gestiona automáticamente: `ensure-node` activa el major requerido con fnm/nvm (instala si falta). Solo para al usuario si no hay gestor o falla el switch.
+- Runtime: Hermes ejecuta `runtime-install` antes de cambiar al Node de Angular. Instala `playwright@1.62.1` y Chromium en `%LOCALAPPDATA%\angular-migration-plugin\playwright-runtime`, con Node 20+, sin modificar la app. Hefesto ejecuta `runtime-check -StartServer` y `scripts/playwright-runtime-check.js` captura consola, page errors, requests fallidas y respuestas HTTP 4xx/5xx.

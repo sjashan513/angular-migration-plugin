@@ -19,7 +19,7 @@ param(
         'ng-update',
         'ensure-node',
         'install-angular', 'install-devdeps', 'install-ionic',
-        'build', 'commit', 'complete-step',
+        'build', 'runtime-install', 'runtime-check', 'commit', 'complete-step',
         'git-status', 'node-version', 'create-branch', 'diff'
     )]
     [string]$Command,
@@ -33,7 +33,10 @@ param(
     [string]$TypescriptVersion,
     [string]$RxjsVersion,
     [string]$CommitMessage,
-    [string]$BaseRef
+    [string]$BaseRef,
+    [string]$RuntimeUrl = 'http://127.0.0.1:4200',
+    [string]$RuntimeDir,
+    [switch]$StartServer
 )
 
 Set-StrictMode -Off
@@ -49,6 +52,10 @@ $MIGRATION_DIR = Join-Path $PROJECT_ROOT '.angular-migration'
 $CONFIG_FILE = Join-Path $MIGRATION_DIR 'config.json'
 $STATE_FILE = Join-Path $MIGRATION_DIR 'state.json'
 $GITIGNORE_FILE = Join-Path $PROJECT_ROOT '.gitignore'
+$PLAYWRIGHT_VERSION = '1.62.1'
+$RUNTIME_NODE_MAJOR = 20
+$DEFAULT_RUNTIME_DIR = Join-Path $env:LOCALAPPDATA 'angular-migration-plugin\playwright-runtime'
+if (-not $env:LOCALAPPDATA) { $DEFAULT_RUNTIME_DIR = Join-Path $env:TEMP 'angular-migration-plugin\playwright-runtime' }
 
 # ── Tablas de compatibilidad (constantes, sin coste) ─────────────
 $IONIC_COMPAT = @{ '8' = '4'; '9' = '5'; '10' = '5'; '11' = '5'; '12' = '6'; '13' = '6'; '14' = '6'; '15' = '7'; '16' = '7'; '17' = '7' }
@@ -72,6 +79,7 @@ function New-DefaultState {
     return [PSCustomObject]@{
         angular_current = 0
         last_build      = $null
+        last_runtime    = $null
         completed_steps = @()
         commits         = @()
         errors_history  = @()
@@ -159,7 +167,7 @@ function Invoke-Slow {
         $proc = Start-Process $exe -ArgumentList $argList -NoNewWindow -PassThru `
             -RedirectStandardOutput $outFile -RedirectStandardError $errFile
         # PowerShell 5.1 only populates ExitCode reliably if the handle is materialized before waiting.
-        $processHandle = $proc.Handle
+        [void]$proc.Handle
         $watch = [System.Diagnostics.Stopwatch]::StartNew()
         $nextNotice = 15
         while (-not $proc.HasExited) {
@@ -192,7 +200,7 @@ function Invoke-Slow {
 }
 
 # Filtra npm WARN pero conserva ERR — el agente necesita los errores reales
-function Clean-NpmStderr($stderr) {
+function Remove-NpmWarnings($stderr) {
     if (-not $stderr) { return '' }
     return (($stderr -split "`n") | Where-Object { $_ -and $_ -notmatch 'npm WARN' }) -join "`n"
 }
@@ -222,6 +230,90 @@ function Get-NodeManager {
     if (Get-Command fnm -ErrorAction SilentlyContinue) { return 'fnm' }
     if (Get-Command nvm -ErrorAction SilentlyContinue) { return 'nvm' }
     return $null
+}
+
+function Get-RuntimeNodeMajor {
+    $activeMajor = Get-ActiveNodeMajor
+    if ($activeMajor -and $activeMajor -ge $RUNTIME_NODE_MAJOR) { return $activeMajor }
+
+    $manager = Get-NodeManager
+    if (-not $manager) { return $null }
+    return @(Get-InstalledNodeMajors $manager | Where-Object { $_ -ge $RUNTIME_NODE_MAJOR } | Sort-Object | Select-Object -Last 1)[0]
+}
+
+function Get-RuntimeCommand {
+    param([Parameter(Mandatory)][string]$Tool)
+
+    $runtimeMajor = Get-RuntimeNodeMajor
+    if (-not $runtimeMajor) { return $null }
+
+    $activeMajor = Get-ActiveNodeMajor
+    if ($activeMajor -eq $runtimeMajor) {
+        return [PSCustomObject]@{ exe = if ($Tool -eq 'node') { 'node.exe' } else { "$Tool.cmd" }; prefix = @() }
+    }
+
+    $manager = Get-NodeManager
+    if ($manager -eq 'fnm') {
+        return [PSCustomObject]@{ exe = 'fnm.exe'; prefix = @('exec', '--using', "$runtimeMajor", $(if ($Tool -eq 'node') { 'node' } else { "$Tool.cmd" })) }
+    }
+
+    if ($manager -eq 'nvm') {
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try { $nvmRoot = ((& nvm root 2>$null) | Select-Object -Last 1).ToString().Trim() }
+        finally { $ErrorActionPreference = $prev }
+        if ($nvmRoot -and (Test-Path $nvmRoot)) {
+            $versionDir = Get-ChildItem -Path $nvmRoot -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match "^v$runtimeMajor\." } |
+            Sort-Object Name -Descending | Select-Object -First 1
+            if ($versionDir) {
+                $runtimeExe = Join-Path $versionDir.FullName (if ($Tool -eq 'node') { 'node.exe' } else { "$Tool.cmd" })
+                if (Test-Path $runtimeExe) { return [PSCustomObject]@{ exe = $runtimeExe; prefix = @() } }
+            }
+        }
+    }
+
+    return $null
+}
+
+function Ensure-RuntimeNode {
+    if (Get-RuntimeCommand 'node') { return @(0, '', '') }
+
+    $manager = Get-NodeManager
+    if (-not $manager) {
+        return @(2, '', "Node $RUNTIME_NODE_MAJOR o superior es necesario para el runtime de Playwright. Instala fnm o nvm y reintenta.")
+    }
+
+    $exe = if ($manager -eq 'fnm') { 'fnm.exe' } else { 'nvm.exe' }
+    return Invoke-Slow $exe @('install', "$RUNTIME_NODE_MAJOR") -TimeoutSeconds 900 -ProgressLabel "instalacion de Node $RUNTIME_NODE_MAJOR"
+}
+
+function Invoke-RuntimeCommand {
+    param([Parameter(Mandatory)][string]$Tool, [string[]]$Arguments, [int]$TimeoutSeconds = 0, [string]$ProgressLabel = '')
+    $runtimeCommand = Get-RuntimeCommand $Tool
+    if (-not $runtimeCommand) {
+        return @(2, '', "Node $RUNTIME_NODE_MAJOR o superior es necesario para el runtime de Playwright. Instala ese major con fnm/nvm y reintenta.")
+    }
+    return Invoke-Slow $runtimeCommand.exe (@($runtimeCommand.prefix) + @($Arguments)) -TimeoutSeconds $TimeoutSeconds -ProgressLabel $ProgressLabel
+}
+
+function Wait-ForRuntimeServer {
+    param([string]$Url, [System.Diagnostics.Process]$Process, [int]$TimeoutSeconds = 60)
+
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($watch.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
+        if ($Process -and $Process.HasExited) { return $false }
+        try {
+            $request = [System.Net.WebRequest]::Create($Url)
+            $request.Timeout = 2000
+            $response = $request.GetResponse()
+            $response.Close()
+            return $true
+        }
+        catch { }
+        [System.Threading.Thread]::Sleep(500)
+    }
+    return $false
 }
 
 # Majors de Node instalados según el gestor (fnm list / nvm list).
@@ -382,7 +474,7 @@ function Get-DirectDependencyMetadata($dependencies) {
     $failures = [ordered]@{}
     foreach ($name in $dependencies.Keys) {
         try {
-            $urlName = $name -replace '/','%2F'
+            $urlName = $name -replace '/', '%2F'
             $tasks[$name] = $client.GetStringAsync("https://registry.npmjs.org/$urlName")
         }
         catch {
@@ -412,15 +504,15 @@ function Get-DirectDependencyMetadata($dependencies) {
             $currentDoc = if ($currentVersion -and $doc.versions.PSObject.Properties[$currentVersion]) { $doc.versions.PSObject.Properties[$currentVersion].Value } else { $null }
             $latestDoc = if ($latestVersion -and $doc.versions.PSObject.Properties[$latestVersion]) { $doc.versions.PSObject.Properties[$latestVersion].Value } else { $null }
             $metadata[$name] = [PSCustomObject]@{
-                requested                  = $requested
-                type                       = $dependencies[$name].type
-                registry_status             = 'ok'
-                current_version             = $currentVersion
-                current_peer_dependencies  = if ($currentDoc) { $currentDoc.peerDependencies } else { $null }
-                latest                     = $latestVersion
-                latest_peer_dependencies   = if ($latestDoc) { $latestDoc.peerDependencies } else { $null }
-                latest_engines             = if ($latestDoc) { $latestDoc.engines } else { $null }
-                latest_deprecated          = if ($latestDoc) { $latestDoc.deprecated } else { $null }
+                requested                 = $requested
+                type                      = $dependencies[$name].type
+                registry_status           = 'ok'
+                current_version           = $currentVersion
+                current_peer_dependencies = if ($currentDoc) { $currentDoc.peerDependencies } else { $null }
+                latest                    = $latestVersion
+                latest_peer_dependencies  = if ($latestDoc) { $latestDoc.peerDependencies } else { $null }
+                latest_engines            = if ($latestDoc) { $latestDoc.engines } else { $null }
+                latest_deprecated         = if ($latestDoc) { $latestDoc.deprecated } else { $null }
             }
         }
         catch {
@@ -700,7 +792,7 @@ switch ($Command) {
         else {
             # Fallo: leer el log de npm automáticamente para que Hefesto tenga el error real
             $errDetail = Get-NpmErrorDetail
-            $stderrClean = Clean-NpmStderr $stderr
+            $stderrClean = Remove-NpmWarnings $stderr
             Emit 1 ([PSCustomObject]@{
                     error      = 'install-angular fallo'
                     npm_errors = $errDetail
@@ -731,7 +823,7 @@ switch ($Command) {
             Emit 1 ([PSCustomObject]@{
                     error      = 'install-devdeps fallo'
                     npm_errors = $errDetail
-                    stderr     = Clean-NpmStderr $stderr
+                    stderr     = Remove-NpmWarnings $stderr
                     hint       = 'Revisa npm_errors para el fix.'
                 })
         }
@@ -751,7 +843,7 @@ switch ($Command) {
             Emit 1 ([PSCustomObject]@{
                     error      = 'install-ionic fallo'
                     npm_errors = $errDetail
-                    stderr     = Clean-NpmStderr $stderr
+                    stderr     = Remove-NpmWarnings $stderr
                     hint       = 'Revisa npm_errors para el fix.'
                 })
         }
@@ -769,14 +861,14 @@ switch ($Command) {
         $installedCliMajor = if ($installedCli) { [int]$installedCli.Split('.')[0] } else { $null }
         if ($AngularMajor -and (($installedCoreMajor -ne [int]$AngularMajor) -or ($installedCliMajor -ne [int]$AngularMajor))) {
             Emit 1 ([PSCustomObject]@{
-                    error = 'Dependencias Angular instaladas no coinciden con el major solicitado'
+                    error           = 'Dependencias Angular instaladas no coinciden con el major solicitado'
                     requested_major = [int]$AngularMajor
-                    installed = [PSCustomObject]@{
-                        angular_core = $installedCore
-                        angular_cli = $installedCli
+                    installed       = [PSCustomObject]@{
+                        angular_core  = $installedCore
+                        angular_cli   = $installedCli
                         build_angular = $installedBuild
                     }
-                    hint = 'node_modules esta mezclado. Restaura las dependencias del package.json/package-lock antes de reintentar el build.'
+                    hint            = 'node_modules esta mezclado. Restaura las dependencias del package.json/package-lock antes de reintentar el build.'
                 })
         }
 
@@ -805,10 +897,10 @@ switch ($Command) {
         # Log completo del build por salto: v{from}-v{to}.log/logs/build.log
         if ($AngularMajor) {
             try {
-            $stepDir = Get-MigrationStepDirectory $AngularMajor
-            $logsDir = Join-Path $stepDir 'logs'
-            if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
-            ($stdout + "`n" + $stderr) | Set-Content (Join-Path $logsDir 'build.log') -Encoding UTF8
+                $stepDir = Get-MigrationStepDirectory $AngularMajor
+                $logsDir = Join-Path $stepDir 'logs'
+                if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
+                ($stdout + "`n" + $stderr) | Set-Content (Join-Path $logsDir 'build.log') -Encoding UTF8
             }
             catch { }
         }
@@ -820,6 +912,139 @@ switch ($Command) {
         Save-MigState $state
 
         Emit $exit $buildResult
+    }
+
+    # ── runtime-install ─────────────────────────────────────────
+    # Instala Playwright fuera del repo de la app y usa un Node moderno.
+    'runtime-install' {
+        $runtimeDir = if ($RuntimeDir) { [System.IO.Path]::GetFullPath($RuntimeDir) } else { $DEFAULT_RUNTIME_DIR }
+        $nodeExit, $nodeStdout, $nodeStderr = Ensure-RuntimeNode
+        if ($nodeExit -ne 0) {
+            Emit $nodeExit ([PSCustomObject]@{
+                    status      = 'failed'
+                    runtime_dir = $runtimeDir
+                    error       = 'No se pudo preparar un Node moderno para el runtime aislado.'
+                    stderr      = Remove-NpmWarnings $nodeStderr
+                    output_tail = (($nodeStdout -split "`n" | Where-Object { $_ } | Select-Object -Last 20) -join "`n")
+                })
+        }
+        $packageFile = Join-Path $runtimeDir 'package.json'
+        $playwrightPackage = Join-Path $runtimeDir 'node_modules\playwright\package.json'
+        $browserMarker = Join-Path $runtimeDir '.chromium-installed'
+        if (-not (Test-Path $runtimeDir)) { New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null }
+        if (-not (Test-Path $packageFile)) {
+            '{"private":true,"name":"angular-migration-playwright-runtime"}' | Set-Content $packageFile -Encoding UTF8
+        }
+
+        if (-not (Test-Path $playwrightPackage)) {
+            $installExit, $installStdout, $installStderr = Invoke-RuntimeCommand 'npm' @('install', '--prefix', $runtimeDir, '--no-save', '--ignore-scripts', "playwright@$PLAYWRIGHT_VERSION") -TimeoutSeconds 900 -ProgressLabel 'instalacion de Playwright'
+            if ($installExit -ne 0) {
+                Emit $installExit ([PSCustomObject]@{
+                        status      = 'failed'
+                        runtime_dir = $runtimeDir
+                        error       = 'No se pudo instalar Playwright en el runtime aislado.'
+                        stderr      = Remove-NpmWarnings $installStderr
+                        output_tail = (($installStdout -split "`n" | Where-Object { $_ } | Select-Object -Last 20) -join "`n")
+                    })
+            }
+        }
+
+        if (-not (Test-Path $browserMarker)) {
+            $browserExit, $browserStdout, $browserStderr = Invoke-RuntimeCommand 'npx' @('--prefix', $runtimeDir, '--yes', 'playwright', 'install', 'chromium') -TimeoutSeconds 900 -ProgressLabel 'instalacion de Chromium'
+            if ($browserExit -ne 0) {
+                Emit $browserExit ([PSCustomObject]@{
+                        status      = 'failed'
+                        runtime_dir = $runtimeDir
+                        error       = 'No se pudo instalar Chromium para Playwright.'
+                        stderr      = Remove-NpmWarnings $browserStderr
+                        output_tail = (($browserStdout -split "`n" | Where-Object { $_ } | Select-Object -Last 20) -join "`n")
+                    })
+            }
+            New-Item -ItemType File -Path $browserMarker -Force | Out-Null
+        }
+
+        Emit 0 ([PSCustomObject]@{
+                status             = 'ok'
+                runtime_dir        = $runtimeDir
+                playwright         = $PLAYWRIGHT_VERSION
+                node_major         = $RUNTIME_NODE_MAJOR
+                chromium_installed = $true
+            })
+    }
+
+    # ── runtime-check ───────────────────────────────────────────
+    'runtime-check' {
+        $ngBin = '.\node_modules\.bin\ng.cmd'
+        if (-not (Test-Path $ngBin)) { Emit 1 @{ error = "$ngBin no encontrado" } }
+
+        $runner = Join-Path $PSScriptRoot 'playwright-runtime-check.js'
+        if (-not (Test-Path $runner)) { Emit 1 @{ error = 'Runner de Playwright no encontrado en el plugin' } }
+
+        $runtimeDir = if ($RuntimeDir) { [System.IO.Path]::GetFullPath($RuntimeDir) } else { $DEFAULT_RUNTIME_DIR }
+        $server = $null
+        $serverOutFile = Join-Path $env:TEMP ("mig-runtime-server-" + [guid]::NewGuid().ToString('N') + '.out')
+        $serverErrFile = Join-Path $env:TEMP ("mig-runtime-server-" + [guid]::NewGuid().ToString('N') + '.err')
+        try {
+            if ($StartServer) {
+                $port = ([System.Uri]$RuntimeUrl).Port
+                $server = Start-Process $ngBin -ArgumentList @('serve', '--host', '127.0.0.1', '--port', "$port") -NoNewWindow -PassThru `
+                    -RedirectStandardOutput $serverOutFile -RedirectStandardError $serverErrFile
+            }
+
+            $runtimeResult = $null
+            if ($StartServer -and -not (Wait-ForRuntimeServer $RuntimeUrl $server)) {
+                $runtimeResult = [PSCustomObject]@{
+                    status   = 'failed'
+                    verified = $false
+                    url      = $RuntimeUrl
+                    reason   = 'server_not_ready'
+                    error    = 'ng serve no respondio dentro del tiempo esperado.'
+                }
+            }
+            if (-not $runtimeResult) {
+                $exit, $stdout, $stderr = Invoke-RuntimeCommand 'node' @($runner, '--url', $RuntimeUrl, '--runtime-dir', $runtimeDir, '--wait-ms', '1500') -TimeoutSeconds 120 -ProgressLabel "Playwright runtime $RuntimeUrl"
+                try { $runtimeResult = $stdout | ConvertFrom-Json } catch { }
+                if (-not $runtimeResult) {
+                    $runtimeResult = [PSCustomObject]@{
+                        status   = if ($exit -eq 2) { 'unverified' } else { 'failed' }
+                        verified = $false
+                        url      = $RuntimeUrl
+                        reason   = if ($exit -eq 2 -and -not $stdout) { 'runtime_node_missing' } else { $null }
+                        error    = if ($stderr) { $stderr.Trim() } else { 'Playwright no devolvio un resultado JSON.' }
+                    }
+                }
+            }
+            if (-not $runtimeResult.url) { $runtimeResult | Add-Member -NotePropertyName url -NotePropertyValue $RuntimeUrl }
+            if ($StartServer -and (Test-Path $serverOutFile)) {
+                $serverOutput = Get-Content $serverOutFile -Raw
+                if ($serverOutput) { $runtimeResult | Add-Member -NotePropertyName server_output -NotePropertyValue (($serverOutput -split "`n" | Select-Object -Last 20) -join "`n") }
+            }
+
+            if ($AngularMajor) {
+                try {
+                    $stepDir = Get-MigrationStepDirectory $AngularMajor
+                    $logsDir = Join-Path $stepDir 'logs'
+                    if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
+                    ($stdout + "`n" + $stderr) | Set-Content (Join-Path $logsDir 'runtime.log') -Encoding UTF8
+                    if ($StartServer -and (Test-Path $serverErrFile)) { Get-Content $serverErrFile -Raw | Add-Content (Join-Path $logsDir 'runtime.log') -Encoding UTF8 }
+                }
+                catch { }
+            }
+
+            $state = Read-MigState
+            if (-not ($state.PSObject.Properties.Name -contains 'last_runtime')) {
+                $state | Add-Member -NotePropertyName last_runtime -NotePropertyValue $null
+            }
+            $state.last_runtime = $runtimeResult
+            Save-MigState $state
+            Emit $(if ($runtimeResult.status -eq 'ok') { 0 } elseif ($runtimeResult.status -eq 'unverified') { 2 } else { 1 }) $runtimeResult
+        }
+        finally {
+            if ($server) {
+                & taskkill.exe /PID $server.Id /T /F 2>$null | Out-Null
+            }
+            Remove-Item $serverOutFile, $serverErrFile -ErrorAction SilentlyContinue
+        }
     }
 
     # ── commit ───────────────────────────────────────────────────
@@ -852,12 +1077,14 @@ switch ($Command) {
         $hash = (& git rev-parse --short HEAD 2>$null)
 
         $record = [PSCustomObject]@{
-            from        = $state.angular_current
-            to          = [int]$AngularMajor
-            date        = (Get-Date -Format 'yyyy-MM-dd')
-            commits     = @($state.commits | Select-Object -Last 4)
-            bundle_main = if ($state.last_build) { $state.last_build.chunks.main } else { $null }
-            head_commit = $hash
+            from             = $state.angular_current
+            to               = [int]$AngularMajor
+            date             = (Get-Date -Format 'yyyy-MM-dd')
+            commits          = @($state.commits | Select-Object -Last 4)
+            bundle_main      = if ($state.last_build) { $state.last_build.chunks.main } else { $null }
+            runtime_status   = if ($state.last_runtime) { $state.last_runtime.status } else { 'unverified' }
+            runtime_verified = if ($state.last_runtime) { $state.last_runtime.verified } else { $false }
+            head_commit      = $hash
         }
 
         if (-not $state.completed_steps) { $state.completed_steps = @() }
@@ -920,12 +1147,12 @@ switch ($Command) {
         $metadata = Get-DirectDependencyMetadata $dependencies
         if (-not $metadata.complete) {
             Emit 1 ([PSCustomObject]@{
-                error    = 'No se pudo consultar npm para todas las dependencias directas'
-                queried  = $metadata.queried
-                total    = $metadata.total
-                failures = $metadata.failures
-                hint     = 'Corrige el acceso al registry o la configuracion de npm y vuelve a ejecutar write-snapshot.'
-            })
+                    error    = 'No se pudo consultar npm para todas las dependencias directas'
+                    queried  = $metadata.queried
+                    total    = $metadata.total
+                    failures = $metadata.failures
+                    hint     = 'Corrige el acceso al registry o la configuracion de npm y vuelve a ejecutar write-snapshot.'
+                })
         }
 
         $tracked = @('@angular/core', '@angular/cli', '@angular-devkit/build-angular', '@angular/compiler-cli', '@ionic/angular', 'zone.js', 'typescript', 'rxjs')
@@ -944,16 +1171,16 @@ switch ($Command) {
 
         $fromMajor = [int](($pkg.dependencies.'@angular/core' -replace '[~^]', '').Split('.')[0])
         $snapshot = [PSCustomObject]@{
-            created_at = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-            project    = $pkg.name
-            from       = $fromMajor
-            to         = [int]$AngularMajor
-            current    = [PSCustomObject]$current
-            direct_dependencies = [PSCustomObject]$dependencies
-            dependency_metadata = $metadata.packages
+            created_at                   = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+            project                      = $pkg.name
+            from                         = $fromMajor
+            to                           = [int]$AngularMajor
+            current                      = [PSCustomObject]$current
+            direct_dependencies          = [PSCustomObject]$dependencies
+            dependency_metadata          = $metadata.packages
             dependency_metadata_complete = $metadata.complete
-            target     = $target
-            node       = [PSCustomObject]@{ active = (& node --version 2>$null); required = $target.node_required }
+            target                       = $target
+            node                         = [PSCustomObject]@{ active = (& node --version 2>$null); required = $target.node_required }
         }
 
         $stepDir = Get-MigrationStepDirectory $AngularMajor
@@ -1009,7 +1236,7 @@ switch ($Command) {
                 allow_dirty   = $allowDirty
                 changed_files = $changedFiles
                 output_tail   = $tail
-                stderr        = Clean-NpmStderr $stderr
+                stderr        = Remove-NpmWarnings $stderr
             })
     }
 

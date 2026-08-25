@@ -108,6 +108,11 @@ project: { plan.project.name }
 {tabla con report.warnings: mensaje + disposition (resolved/accepted/deferred) + razón,
 o "Ninguno"}
 
+## Runtime
+
+{report.runtime: URL comprobada, status, errores de consola, page errors,
+requests fallidas y respuestas HTTP 4xx/5xx; si `unverified`, indicar el tooling faltante}
+
 ## Errores resueltos
 
 {lista de report.fixes_applied como "error → fix", o "Ninguno"}

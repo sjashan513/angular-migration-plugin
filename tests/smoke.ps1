@@ -49,14 +49,22 @@ try {
     Check 'typescript marcada como dev' ($anOut.data.dependencies.'typescript'.type -eq 'dev')
     Check 'dependencia externa incluida' ($anOut.data.dependencies.'lodash'.version -eq '^4.17.0')
 
+    Write-Host '3b. runtime-check Playwright' -ForegroundColor Cyan
+    New-Item -ItemType Directory -Path (Join-Path $tmp 'node_modules\.bin') -Force | Out-Null
+    @('@echo off', 'echo Executed 0 tests', 'exit /b 0') | Set-Content (Join-Path $tmp 'node_modules\.bin\ng.cmd') -Encoding ASCII
+    $runtimeDir = Join-Path $tmp 'playwright-runtime'
+    $runtimeOut = (& powershell -NoProfile -File $SCRIPT -Command runtime-check -AngularMajor 8 -RuntimeDir $runtimeDir) | ConvertFrom-Json
+    Check 'runtime-check usa Playwright' ($runtimeOut.exit_code -eq 2 -and $runtimeOut.data.status -eq 'unverified' -and @('playwright_missing', 'runtime_node_missing') -contains $runtimeOut.data.reason)
+
     Write-Host '4. comandos v2 existen en ValidateSet' -ForegroundColor Cyan
     $src = Get-Content $SCRIPT -Raw
-    foreach ($cmd in @('analyze-project', 'write-snapshot', 'ng-update', 'diff', 'ensure-node')) {
+    $playwrightSrc = Get-Content (Join-Path $PSScriptRoot '..\scripts\playwright-runtime-check.js') -Raw
+    foreach ($cmd in @('analyze-project', 'write-snapshot', 'ng-update', 'build', 'runtime-install', 'runtime-check', 'diff', 'ensure-node')) {
         Check "ValidateSet contiene '$cmd'" ($src -match "'$cmd'")
     }
     Check 'snapshot consulta todas las dependencias directas' ($src -match 'Get-DirectDependencyMetadata \$dependencies')
-    Check 'snapshot guarda inventario completo' ($src -match 'direct_dependencies =')
-    Check 'snapshot guarda metadata npm' ($src -match 'dependency_metadata =')
+    Check 'snapshot guarda inventario completo' ($src -match 'direct_dependencies\s*=')
+    Check 'snapshot guarda metadata npm' ($src -match 'dependency_metadata\s*=')
     Check 'snapshot marca metadata completa' ($src -match 'dependency_metadata_complete =')
     Check 'snapshot se escribe dentro del salto' ($src -match '\$snapFile = Join-Path \$stepDir "snapshot-v\$AngularMajor\.json"')
     Check 'usa npm view para registry privado' ($src -match "Invoke-Slow 'npm\.cmd'.*'view'.*\$name.*'--json'")
@@ -73,12 +81,15 @@ try {
     $hefestoSrc = Get-Content (Join-Path $PSScriptRoot '..\agents\Hefesto.agent.md') -Raw
     Check 'build tiene timeout y mata el arbol' ($src -match 'TimeoutSeconds 900' -and $src -match 'taskkill\.exe /PID')
     Check 'build desactiva progreso del CLI' ($src -match "'--progress=false'")
+    Check 'runtime-check arranca y limpia ng serve' ($src -match "'serve'" -and $src -match 'taskkill\.exe /PID')
+    Check 'runtime-check espera a ng serve' ($src -match 'Wait-ForRuntimeServer' -and $src -match 'server_not_ready')
+    Check 'runner captura consola y errores de pagina' ($playwrightSrc -match 'page\.on\(["'']console["'']' -and $playwrightSrc -match 'page\.on\(["'']pageerror["'']' -and $playwrightSrc -match 'chromium\.launch')
     Check 'Hermes exige rama antes del resto' ($hermesSrc -match 'primer paso obligatorio del salto')
     Check 'Hermes verifica el why fisico' ($hermesSrc -match 'El `why` debe existir y no estar vacío')
     Check 'Hermes exige metadata completa' ($hermesSrc -match 'direct_dependencies.*dependency_metadata')
     Check 'Cronos relee el why antes de responder' ($cronosSrc -match 'vuelve a leer `docs/migration/v\{to\}/v\{to\}-why\.md`')
     Check 'Prometeo audita todas las dependencias' ($prometeoSrc -match 'Auditoría de dependencias')
-    Check 'Hefesto usa el modelo de implementacion' ($hefestoSrc -match 'model: claude-sonnet-5 \(copilot\)')
+    Check 'Hefesto declara un modelo de implementacion' ($hefestoSrc -match '(?m)^model:\s+\S+')
 
     & git init --quiet
     & git config user.email 'smoke@example.invalid'

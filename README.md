@@ -56,9 +56,12 @@ Hermes detecta la versión actual, calcula los saltos pendientes (p. ej. 7→8�
 1. El working tree está sucio → haz commit o stash y confirma.
 2. Node no se pudo activar solo (sin `fnm`/`nvm` o fallo de instalación) → te da el comando exacto a ejecutar.
 3. No se puede instalar Node 20+ para preparar Playwright → te da el error para resolverlo.
-4. Un salto falla 3 veces → te expone el historial completo para que decidas.
+4. Alguna dependencia no tiene metadata npm → te muestra los paquetes afectados y te pregunta si quieres continuar con metadata parcial.
+5. Un salto falla 3 veces o Cronos no deposita su documento tras un reintento → te expone el problema para que decidas.
 
 > **Gestión de Node automática:** cada salto exige un major de Node (p. ej. 10 para Angular 8, 18 para Angular 17). El plugin lo detecta con `fnm` o `nvm`, lo instala si falta y lo activa sin que hagas nada.
+
+Si npm no puede consultar alguna dependencia, `write-snapshot` conserva el snapshot y lista los paquetes afectados. Hermes te pregunta si quieres continuar con metadata parcial; si aceptas, los agentes trabajan solo con los datos disponibles y marcan lo no verificado.
 
 ## Qué genera
 

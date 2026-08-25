@@ -50,20 +50,20 @@ El script es una API estable para los agentes. Cada comando devuelve JSON estruc
 
 ### Comandos nuevos / actualizados
 
-| Comando            | Propósito                                                                                            | Parámetros                                        |
-| ------------------ | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| `analyze-project`  | Lee `package.json`, detecta dependencias directas, genera snapshot de versiones actuales.            | `-AngularMajor` (opcional, para filtrar)          |
-| `resolve-versions` | Calcula versiones objetivo compatibles con el major destino.                                         | `-AngularMajor`                                   |
-| `write-snapshot`   | Persiste `.angular-migration/v{from}-v{N}.log/snapshot-v{N}.json` con versiones actuales y objetivo. | `-AngularMajor`                                   |
-| `ng-update`        | Ejecuta `ng update` controlado con versiones específicas.                                            | `-AngularVersion`, `-CliVersion`, `-BuildVersion` |
-| `build`            | Ejecuta build, captura errores y warnings en JSON.                                                   | —                                                 |
-| `runtime-install`  | Instala Node 20+ si falta y Playwright/Chromium en un runtime aislado del plugin.                    | —                                                 |
-| `runtime-check`    | Abre la app con Playwright y captura errores de consola, página y red.                               | `-AngularMajor`, `-RuntimeUrl`, `-StartServer`    |
-| `diff`             | Devuelve archivos modificados, estadísticas y diff resumido.                                         | `-BaseRef`                                        |
-| `commit`           | Commit atómico con mensaje y hash devueltos.                                                         | `-CommitMessage`                                  |
-| `complete-step`    | Registra salto en state.json.                                                                        | `-AngularMajor`                                   |
-| `read-state`       | Devuelve config + state + git status.                                                                | —                                                 |
-| `init`             | Crea `.angular-migration/` en el repo del usuario (no en el plugin).                                 | —                                                 |
+| Comando            | Propósito                                                                                                           | Parámetros                                        |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `analyze-project`  | Lee `package.json`, detecta dependencias directas, genera snapshot de versiones actuales.                           | `-AngularMajor` (opcional, para filtrar)          |
+| `resolve-versions` | Calcula versiones objetivo compatibles con el major destino.                                                        | `-AngularMajor`                                   |
+| `write-snapshot`   | Persiste el snapshot aunque falte metadata de alguna dependencia y devuelve los fallos para confirmación de Hermes. | `-AngularMajor`                                   |
+| `ng-update`        | Ejecuta `ng update` controlado con versiones específicas.                                                           | `-AngularVersion`, `-CliVersion`, `-BuildVersion` |
+| `build`            | Ejecuta build, captura errores y warnings en JSON.                                                                  | —                                                 |
+| `runtime-install`  | Instala Node 20+ si falta y Playwright/Chromium en un runtime aislado del plugin.                                   | —                                                 |
+| `runtime-check`    | Abre la app con Playwright y captura errores de consola, página y red.                                              | `-AngularMajor`, `-RuntimeUrl`, `-StartServer`    |
+| `diff`             | Devuelve archivos modificados, estadísticas y diff resumido.                                                        | `-BaseRef`                                        |
+| `commit`           | Commit atómico con mensaje y hash devueltos.                                                                        | `-CommitMessage`                                  |
+| `complete-step`    | Registra salto en state.json.                                                                                       | `-AngularMajor`                                   |
+| `read-state`       | Devuelve config + state + git status.                                                                               | —                                                 |
+| `init`             | Crea `.angular-migration/` en el repo del usuario (no en el plugin).                                                | —                                                 |
 
 ### Cambio crítico: rutas de estado
 

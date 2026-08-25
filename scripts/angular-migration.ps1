@@ -1145,15 +1145,6 @@ switch ($Command) {
         $pkg = Get-Content 'package.json' -Raw | ConvertFrom-Json
         $dependencies = Get-DirectDependencies $pkg
         $metadata = Get-DirectDependencyMetadata $dependencies
-        if (-not $metadata.complete) {
-            Emit 1 ([PSCustomObject]@{
-                    error    = 'No se pudo consultar npm para todas las dependencias directas'
-                    queried  = $metadata.queried
-                    total    = $metadata.total
-                    failures = $metadata.failures
-                    hint     = 'Corrige el acceso al registry o la configuracion de npm y vuelve a ejecutar write-snapshot.'
-                })
-        }
 
         $tracked = @('@angular/core', '@angular/cli', '@angular-devkit/build-angular', '@angular/compiler-cli', '@ionic/angular', 'zone.js', 'typescript', 'rxjs')
         $current = [ordered]@{}
@@ -1179,6 +1170,7 @@ switch ($Command) {
             direct_dependencies          = [PSCustomObject]$dependencies
             dependency_metadata          = $metadata.packages
             dependency_metadata_complete = $metadata.complete
+            dependency_metadata_failures = $metadata.failures
             target                       = $target
             node                         = [PSCustomObject]@{ active = (& node --version 2>$null); required = $target.node_required }
         }
@@ -1188,7 +1180,13 @@ switch ($Command) {
         $snapshot | ConvertTo-Json -Depth 10 | Set-Content $snapFile -Encoding UTF8
         Write-MigLog 'hermes' "write-snapshot: v$fromMajor -> v$AngularMajor"
 
-        Emit 0 ([PSCustomObject]@{ snapshot_path = $snapFile; snapshot = $snapshot })
+        Emit 0 ([PSCustomObject]@{
+                snapshot_path                 = $snapFile
+                snapshot                      = $snapshot
+                metadata_complete             = $metadata.complete
+                metadata_failures             = $metadata.failures
+                requires_user_confirmation   = (-not $metadata.complete)
+            })
     }
 
     # ── ng-update ────────────────────────────────────────────────

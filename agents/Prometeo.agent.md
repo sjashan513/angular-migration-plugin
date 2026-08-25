@@ -53,9 +53,9 @@ if (-not $SCRIPT) {
 
 ## Modo 1 — Planificar
 
-**Paso 1 — Leer el snapshot.** Lee `.angular-migration/v{from}-v{to}.log/snapshot-v{to}.json`. Debe tener `from`, `to`, `current`, `direct_dependencies`, `dependency_metadata`, `dependency_metadata_complete: true`, `target` (con `angular_core`, `angular_cli`, `build_angular`, `ionic`, `zone_js`, `typescript`, `rxjs`, `node_required`) y `node`. `direct_dependencies` contiene todas las dependencias directas de `dependencies` y `devDependencies`; `dependency_metadata` contiene la respuesta resumida de npm para cada una.
+**Paso 1 — Leer el snapshot.** Lee `.angular-migration/v{from}-v{to}.log/snapshot-v{to}.json`. Debe tener `from`, `to`, `current`, `direct_dependencies`, `dependency_metadata`, `dependency_metadata_complete`, `dependency_metadata_failures`, `target` (con `angular_core`, `angular_cli`, `build_angular`, `ionic`, `zone_js`, `typescript`, `rxjs`, `node_required`) y `node`. `direct_dependencies` contiene todas las dependencias directas de `dependencies` y `devDependencies`; `dependency_metadata` contiene la respuesta resumida de npm para cada una.
 
-Si falta, está corrupto o le faltan campos de `target`, `direct_dependencies` o `dependency_metadata`, o `dependency_metadata_complete` no es `true`: ejecútalo una vez (`write-snapshot`) y relee. Si vuelve a fallar, responde con error y no escribas plan. **Nunca inventes ni "corrijas" una versión.**
+Si falta, está corrupto o le faltan campos de `target`, `direct_dependencies`, `dependency_metadata` o `dependency_metadata_failures`: ejecútalo una vez (`write-snapshot`) y relee. Si vuelve a fallar, responde con error y no escribas plan. Si `dependency_metadata_complete` es false, solo continúa cuando el prompt indique que Hermes tiene autorización explícita del usuario para metadata parcial. Trabaja únicamente con los paquetes disponibles, lista los ausentes en `dependency_audit` y no inventes ni "corrijas" una versión. **Nunca inventes ni "corrijas" una versión.**
 
 **Paso 2 — Cambios manuales conocidos.** Añade a `manual_changes` los del major destino:
 
@@ -70,7 +70,7 @@ Si falta, está corrupto o le faltan campos de `target`, `direct_dependencies` o
 
 Los majors sin fila no llevan cambios manuales conocidos (`manual_changes: []`).
 
-**Paso 2b — Auditoría de dependencias.** Revisa cada entrada de `direct_dependencies` contra su entrada homónima en `dependency_metadata`: versión declarada, versión actual detectada, `latest`, `current_peer_dependencies`, `latest_peer_dependencies`, `latest_engines` y `latest_deprecated`. Determina si el salto Angular puede romperla por peers, engines o un cambio mayor. No actualices masivamente paquetes no relacionados: añade al plan solo los cambios necesarios para compatibilidad y deja constancia de los paquetes revisados.
+**Paso 2b — Auditoría de dependencias.** Revisa cada entrada de `direct_dependencies` contra su entrada homónima en `dependency_metadata`: versión declarada, versión actual detectada, `latest`, `current_peer_dependencies`, `latest_peer_dependencies`, `latest_engines` y `latest_deprecated`. Determina si el salto Angular puede romperla por peers, engines o un cambio mayor. Si una entrada está en `dependency_metadata_failures`, inclúyela en `dependency_audit.missing_metadata` y marca la compatibilidad como no verificada; no detengas el plan si Hermes ya obtuvo autorización. No actualices masivamente paquetes no relacionados: añade al plan solo los cambios necesarios para compatibilidad y deja constancia de los paquetes revisados.
 
 **Paso 3 — Escribir el plan.** Escribe `.angular-migration/v{from}-v{to}.log/plan-v{to}.json`:
 
@@ -93,6 +93,9 @@ Los majors sin fila no llevan cambios manuales conocidos (`manual_changes: []`).
   "branch": "migration/v{to}",
   "dependency_audit": {
     "reviewed": ["...todos los paquetes de snapshot.direct_dependencies..."],
+    "missing_metadata": [
+      "...paquetes de snapshot.dependency_metadata_failures..."
+    ],
     "required_changes": ["...solo cambios necesarios para este salto..."]
   },
   "manual_changes": ["...del paso 2..."]

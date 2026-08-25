@@ -35,7 +35,7 @@ Documentas las dependencias directas del snapshot **que cambian de major o tiene
 5. **zone.js**
 6. **Ionic** ⟨solo si aparece en el snapshot con valor no nulo⟩
 
-Después de esas áreas, revisa `direct_dependencies` y `dependency_metadata` completos. No hace falta escribir una sección por cada paquete estable: incluye una nota agrupada de los paquetes sin cambios y desarrolla solo los externos cuyo `latest_peer_dependencies`, `latest_engines` o deprecación afecten al salto. Si una dependencia no tiene metadata porque npm no respondió, el snapshot no debería existir y debes devolver `documented: false`.
+Después de esas áreas, revisa `direct_dependencies` y `dependency_metadata` completos. No hace falta escribir una sección por cada paquete estable: incluye una nota agrupada de los paquetes sin cambios y desarrolla solo los externos cuyo `latest_peer_dependencies`, `latest_engines` o deprecación afecten al salto. Si una dependencia aparece en `dependency_metadata_failures`, anótala como compatibilidad no verificada y no inventes su versión, peer, engine ni motivo del fallo. La metadata parcial no impide documentar el salto si el snapshot existe.
 
 Lo que no cambia de major, no aparece. Un salto tranquilo produce un documento corto — eso es correcto, no lo infles.
 

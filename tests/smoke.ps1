@@ -66,6 +66,8 @@ try {
     Check 'snapshot guarda inventario completo' ($src -match 'direct_dependencies\s*=')
     Check 'snapshot guarda metadata npm' ($src -match 'dependency_metadata\s*=')
     Check 'snapshot marca metadata completa' ($src -match 'dependency_metadata_complete =')
+    Check 'snapshot conserva fallos de metadata' ($src -match 'dependency_metadata_failures =')
+    Check 'snapshot pide confirmacion para metadata parcial' ($src -match 'requires_user_confirmation')
     Check 'snapshot se escribe dentro del salto' ($src -match '\$snapFile = Join-Path \$stepDir "snapshot-v\$AngularMajor\.json"')
     Check 'usa npm view para registry privado' ($src -match "Invoke-Slow 'npm\.cmd'.*'view'.*\$name.*'--json'")
     Write-Host '5. resolver de script contempla la instalacion por marketplace' -ForegroundColor Cyan
@@ -86,9 +88,13 @@ try {
     Check 'runner captura consola y errores de pagina' ($playwrightSrc -match 'page\.on\(["'']console["'']' -and $playwrightSrc -match 'page\.on\(["'']pageerror["'']' -and $playwrightSrc -match 'chromium\.launch')
     Check 'Hermes exige rama antes del resto' ($hermesSrc -match 'primer paso obligatorio del salto')
     Check 'Hermes verifica el why fisico' ($hermesSrc -match 'El `why` debe existir y no estar vacío')
-    Check 'Hermes exige metadata completa' ($hermesSrc -match 'direct_dependencies.*dependency_metadata')
+    Check 'Hermes pide confirmacion para metadata parcial' ($hermesSrc -match 'requires_user_confirmation' -and $hermesSrc -match 'metadata_failures' -and $hermesSrc -match 'metadata parcial')
+    Check 'Hermes bloquea si falta el why' ($hermesSrc -match 'detén el salto antes de invocar a Hefesto')
+    Check 'Hermes reintenta Cronos antes de bloquear' ($hermesSrc -match 'invoca \*\*una vez\*\* a Cronos' -and $hermesSrc -match 'vuelve a leer')
     Check 'Cronos relee el why antes de responder' ($cronosSrc -match 'vuelve a leer `docs/migration/v\{to\}/v\{to\}-why\.md`')
+    Check 'Cronos tolera metadata parcial sin inventar' ($cronosSrc -match 'dependency_metadata_failures' -and $cronosSrc -match 'no inventes')
     Check 'Prometeo audita todas las dependencias' ($prometeoSrc -match 'Auditoría de dependencias')
+    Check 'Prometeo acepta metadata parcial autorizada' ($prometeoSrc -match 'metadata parcial' -and $prometeoSrc -match 'missing_metadata')
     Check 'Hefesto declara un modelo de implementacion' ($hefestoSrc -match '(?m)^model:\s+\S+')
 
     & git init --quiet

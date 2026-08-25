@@ -102,9 +102,9 @@ Sin pendientes → informa en una línea y termina. **Siempre major por major** 
 
 **Gate de Node:** `ensure-node` ya sabe qué major de Node exige el salto (tabla del script) e intenta activarlo él solo con `fnm` o `nvm` (instala si falta). Solo si devuelve `needs_user: true` paras al usuario con `data.message` (sin gestor instalado, install fallido o activación fallida) y esperas; cuando confirme, re-ejecuta `ensure-node` para verificar. Si `ok: true`, registra en tu memoria de trabajo el cambio (`previous` → versión activa) y continúa.
 
-Si `write-snapshot` falla (registry caído, versión inexistente): reintenta una vez; si vuelve a fallar, expón el error y para ese salto.
+`write-snapshot` debe crear el snapshot aunque falle la metadata de alguna dependencia. Si devuelve `data.requires_user_confirmation: true`, enumera `data.metadata_failures` al usuario y pregunta literalmente: `No se pudo consultar la metadata de estos paquetes: [...]. ¿Quieres continuar con metadata parcial? (sí/no)`. Si responde que no, detén el salto. Si responde que sí, incluye literalmente en los prompts del fleet `El usuario confirmó explícitamente que desea continuar con metadata parcial` y exige que los agentes no inventen datos ausentes. Solo un fallo al resolver las versiones objetivo o al escribir el fichero bloquea el salto.
 
-El snapshot solo es válido si `direct_dependencies` y `dependency_metadata` contienen el mismo inventario completo de dependencias directas y `dependency_metadata_complete == true`. No continúes con el fleet si falta cualquiera de esos campos o si la metadata no está completa. Para scopes privados, el script usa `npm view` como fallback y respeta la configuración/autenticación de npm; si ambas consultas fallan, expone los paquetes afectados y detiene el salto.
+El snapshot siempre debe contener `direct_dependencies`, `dependency_metadata`, `dependency_metadata_complete` y `dependency_metadata_failures`. Si la metadata es parcial, el snapshot solo puede consumirse después de la confirmación explícita del usuario. Para scopes privados, el script usa `npm view` como fallback y respeta la configuración/autenticación de npm; los paquetes que sigan fallando se entregan en `data.metadata_failures` y en el snapshot.
 
 ### 4. Fleet: Cronos + Prometeo en paralelo
 
@@ -116,15 +116,19 @@ El snapshot de versiones está en `.angular-migration/v{from}-v{to}.log/snapshot
 Track A (sin dependencias) — usa @Cronos:
 Lee `.angular-migration/v{from}-v{to}.log/snapshot-v{to}.json`. Documenta qué cambió de Angular {from} a {to}
 y en cada dependencia del snapshot que cambie de major (prioridad: Angular, TypeScript,
-RxJS, Node, Ionic, resto). Escribe docs/migration/v{to}/v{to}-why.md. Solo ese fichero.
+RxJS, Node, Ionic, resto). Si `dependency_metadata_complete` es false, documenta las dependencias
+disponibles y deja explícitamente anotadas las que falten, sin inventar versiones ni causas. Escribe
+docs/migration/v{to}/v{to}-why.md. Solo ese fichero.
 
 Track B (sin dependencias) — usa @Prometeo:
 Lee `.angular-migration/v{from}-v{to}.log/snapshot-v{to}.json` y construye el plan del salto {from}→{to}
-para {project_name} (ionic: {features.ionic}). Escribe `.angular-migration/v{from}-v{to}.log/plan-v{to}.json`.
+para {project_name} (ionic: {features.ionic}). Si Hermes incluyó `El usuario confirmó explícitamente que desea continuar con metadata parcial`, trabaja solo con
+los datos disponibles y lista las dependencias sin metadata en `dependency_audit`. Escribe
+`.angular-migration/v{from}-v{to}.log/plan-v{to}.json`.
 Solo ese fichero.
 ```
 
-Cuando termine el fleet, verifica por separado ambos artefactos: lee `.angular-migration/v{from}-v{to}.log/plan-v{to}.json` y `docs/migration/v{to}/v{to}-why.md`. El `why` debe existir y no estar vacío. Si falta, invoca **una vez** a Cronos directamente con el mismo prompt autocontenido y vuelve a leerlo. Si sigue faltando, registra `documented: false` y continúa; nunca afirmes que Cronos documentó el salto sin haber leído el fichero.
+Cuando termine el fleet, verifica por separado ambos artefactos: lee `.angular-migration/v{from}-v{to}.log/plan-v{to}.json` y `docs/migration/v{to}/v{to}-why.md`. El `why` debe existir y no estar vacío. Si falta, invoca **una vez** a Cronos directamente con el mismo prompt autocontenido y vuelve a leerlo. Si sigue faltando, detén el salto antes de invocar a Hefesto y comunica que el documento de Cronos no fue depositado. Nunca afirmes que Cronos documentó el salto sin haber leído el fichero.
 
 ### 5. Hefesto (cuando el plan existe)
 
@@ -143,7 +147,7 @@ Al terminar, lee `.angular-migration/v{from}-v{to}.log/report-v{to}.json`:
 
 > "Lee `.angular-migration/v{from}-v{to}.log/snapshot-v{to}.json`, `.angular-migration/v{from}-v{to}.log/plan-v{to}.json` y `.angular-migration/v{from}-v{to}.log/report-v{to}.json`. Escribe el changelog docs/migration/v{to}/v{to}-changelog.md (referenciando v{to}-why.md), el diff docs/migration/v{to}/v{to}-diff.md (desde report.diff), actualiza \_index.md y la KB. Solo escribes dentro de docs/migration/."
 
-`documented: false` o fallo de Cronos nunca son motivo de stop — anótalo y sigue con el siguiente salto.
+Clío sigue siendo best-effort después de un salto completado; la validación del `why` ocurre antes de invocar a Hefesto y sí bloquea ese salto si el reintento de Cronos falla.
 
 ### 7. Ciclo de recuperación (máx 2 por salto — fuera del fleet)
 
@@ -169,4 +173,4 @@ Incluye además las rutas verificadas de los documentos de Cronos, una por salto
 - Fronteras de fichero estrictas en cada fleet — no hay file locking.
 - La rama la creas tú antes del fleet; Hefesto nunca gestiona ramas.
 - Un salto por ciclo. La recuperación siempre secuencial.
-- Los únicos stops: working tree sucio, Node incompatible, 3er fallo del mismo salto, snapshot imposible.
+- Los únicos stops: working tree sucio, Node incompatible, metadata parcial sin confirmación, `why` ausente tras un reintento, 3er fallo del mismo salto o snapshot imposible de escribir.

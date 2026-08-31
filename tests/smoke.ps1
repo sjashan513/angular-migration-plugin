@@ -150,9 +150,11 @@ try {
     $heliosSrc = Get-Content (Join-Path $PSScriptRoot '..\agents\Helios.agent.md') -Raw
     $visionSrc = Get-Content (Join-Path $PSScriptRoot '..\scripts\playwright-vision.js') -Raw
     Check 'Asclepio es invocable y limita safe-fix' ($asclepioSrc -match 'user-invocable:\s+true' -and $asclepioSrc -match 'safe-fix' -and $asclepioSrc -match 'Nunca cambies dependencias')
-    Check 'Helios pide URLs secuencialmente' ($heliosSrc -match 'No pidas aún la URL candidata' -and $heliosSrc -match 'Referencia capturada')
+    Check 'Helios usa cinco fases secuenciales' ($heliosSrc -match 'Fase 1/5' -and $heliosSrc -match 'Fase 3/5' -and $heliosSrc -match 'Fase 5')
+    Check 'Helios usa auth local separada' ($heliosSrc -match 'base-auth-file' -and $heliosSrc -match 'candidate-auth-file' -and $heliosSrc -match 'No pegues contraseñas')
+    Check 'runner acepta archivo de autenticacion' ($src -match '\[string\]\$AuthFile' -and $visionSrc -match '--auth-file')
     Check 'agentes nuevos no pertenecen a Hermes' ($hermesSrc -match 'agents: \["Prometeo", "Hefesto", "Cronos", "Clio"\]' -and $hermesSrc -notmatch 'agents: \[[^\r\n]*(Asclepio|Helios)')
-    Check 'runner elimina temporales tras comparar' ($visionSrc -match 'rmSync\(tempDir' -and $visionSrc -match 'difference_ratio')
+    Check 'runner conserva capturas y publica diferencias' ($visionSrc -match 'baselineDir = path\.join\(outputDir, "baseline"\)' -and $visionSrc -match 'candidateDir = path\.join\(outputDir, "candidate"\)' -and $visionSrc -match 'difference_ratio')
     Check 'schemas v3 son JSON valido' ((Get-Content (Join-Path $PSScriptRoot '..\schemas\changes.schema.json') -Raw | ConvertFrom-Json) -and (Get-Content (Join-Path $PSScriptRoot '..\schemas\vision.schema.json') -Raw | ConvertFrom-Json))
     Check 'catalogo Asclepio es JSON valido' ((Get-Content (Join-Path $PSScriptRoot '..\rules\angular-patterns.json') -Raw | ConvertFrom-Json).rules.Count -gt 0)
 

@@ -48,6 +48,7 @@ param(
     [string]$ManifestPath,
     [string]$OutputDir,
     [string]$PublishDir,
+    [string]$AuthFile,
     [int]$ProgressCurrent = -1,
     [int]$ProgressTotal = -1,
     [string]$ProgressLabel,
@@ -1197,6 +1198,8 @@ switch ($Command) {
         try {
             if (-not $VisionMode -or -not $RuntimeUrl) { throw '-VisionMode y -RuntimeUrl requeridos' }
             $manifest = Resolve-ProjectFile $ManifestPath -MustExist
+            $auth = $null
+            if ($AuthFile) { $auth = Resolve-ProjectFile $AuthFile -MustExist }
             $output = Resolve-ProjectFile (Join-Path $OutputDir '.vision-output')
             $output = Split-Path -Parent $output
             $publish = $null
@@ -1215,6 +1218,7 @@ switch ($Command) {
             }
 
             $visionArgs = @($runner, '--mode', $VisionMode, '--manifest', $manifest, '--url', $RuntimeUrl, '--output-dir', $output, '--runtime-dir', $runtimeDir, '--threshold', $DifferenceThreshold.ToString([Globalization.CultureInfo]::InvariantCulture))
+            if ($auth) { $visionArgs += @('--auth-file', $auth) }
             if ($publish) { $visionArgs += @('--publish-dir', $publish) }
             $exit, $stdout, $stderr = Invoke-RuntimeCommand 'node' $visionArgs -TimeoutSeconds 1800 -ProgressLabel "vision $VisionMode"
             $resultLine = @($stdout -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 1)[0]

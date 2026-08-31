@@ -86,7 +86,21 @@ Asclepio lee las versiones y herramientas del proyecto, escanea `src/` completo 
 @Helios
 ```
 
-Helios pide primero la URL que debe documentar. Tras capturarla, pide la URL candidata, visita las rutas descubiertas en el router y compara desktop y móvil. `docs/views/_index.md` registra todas las vistas; `docs/views/comparisons/` conserva baseline, candidata y diff únicamente para vistas diferentes.
+Helios pide primero la URL y autenticación local de referencia. Tras capturar todas sus rutas, pide la URL y autenticación local candidata, repite las capturas con el mismo manifiesto y compara desktop y móvil. Las capturas completas quedan en `.angular-migration/vision/{run-id}/baseline/` y `candidate/`; `docs/views/_index.md` registra todas las vistas y `docs/views/comparisons/` conserva los PNG publicados de las diferencias.
+
+Para una web protegida, Helios pide un archivo local de autenticación distinto para cada URL. No pegues contraseñas, tokens ni cookies en el chat. El archivo puede usar HTTP Basic:
+
+```json
+{ "username": "usuario", "password": "contraseña" }
+```
+
+o un estado de sesión de Playwright:
+
+```json
+{ "storageState": "base.storage.json" }
+```
+
+Guárdalo bajo `.angular-migration/vision/auth/`, que está excluido de Git. La secuencia es: URL y auth base, descubrimiento y captura de todas las rutas, URL y auth candidata, captura de las mismas rutas y comparación, informe final.
 
 ## Qué genera
 

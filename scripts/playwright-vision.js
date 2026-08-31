@@ -12,6 +12,7 @@ const arg = (name, fallback) => {
 const mode = arg("--mode");
 const manifestPath = arg("--manifest");
 const targetUrl = arg("--url");
+const authFile = arg("--auth-file");
 const outputDir = path.resolve(
   arg("--output-dir", ".angular-migration/vision/current"),
 );
@@ -41,6 +42,24 @@ function writeJson(file, value) {
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
+}
+
+function loadAuthentication(file) {
+  if (!file) return {};
+  const auth = readJson(path.resolve(file));
+  if (auth.storageState) {
+    const storageState = path.resolve(path.dirname(file), auth.storageState);
+    if (!fs.existsSync(storageState)) {
+      throw new Error("storageState de credenciales no encontrado");
+    }
+    return { storageState };
+  }
+  if (typeof auth.username === "string" && typeof auth.password === "string") {
+    return {
+      httpCredentials: { username: auth.username, password: auth.password },
+    };
+  }
+  throw new Error("auth.json debe contener username/password o storageState");
 }
 
 function routeUrl(base, routePath) {
@@ -181,6 +200,7 @@ function comparePng(PNG, pixelmatch, baselineFile, candidateFile, diffFile) {
     throw new Error("Solo se aceptan URLs http o https");
 
   const manifest = readJson(manifestPath);
+  const authentication = loadAuthentication(authFile);
   const playwright = loadPackage("playwright");
   const pixelmatch = mode === "compare" ? loadPackage("pixelmatch") : null;
   const PNG = mode === "compare" ? loadPackage("pngjs").PNG : null;
@@ -192,9 +212,8 @@ function comparePng(PNG, pixelmatch, baselineFile, candidateFile, diffFile) {
           { name: "mobile", width: 390, height: 844 },
         ];
   const masks = manifest.masks || [];
-  const tempDir = path.join(outputDir, "temp");
-  const baselineDir = path.join(tempDir, "baseline");
-  const candidateDir = path.join(tempDir, "candidate");
+  const baselineDir = path.join(outputDir, "baseline");
+  const candidateDir = path.join(outputDir, "candidate");
   ensureDir(outputDir);
 
   const browser = await playwright.chromium.launch({ headless: true });
@@ -217,6 +236,7 @@ function comparePng(PNG, pixelmatch, baselineFile, candidateFile, diffFile) {
           colorScheme: "light",
           deviceScaleFactor: 1,
           reducedMotion: "reduce",
+          ...authentication,
         });
         const page = await context.newPage();
         const prefix = `${String(routeIndex + 1).padStart(3, "0")}-${safeName(route.path)}`;
@@ -300,7 +320,6 @@ function comparePng(PNG, pixelmatch, baselineFile, candidateFile, diffFile) {
     ),
     result,
   );
-  if (mode === "compare") fs.rmSync(tempDir, { recursive: true, force: true });
   process.stdout.write(`${JSON.stringify(result)}\n`);
   process.exitCode = result.status === "ok" ? 0 : 1;
 })().catch((error) => {

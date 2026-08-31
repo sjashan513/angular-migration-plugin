@@ -61,5 +61,5 @@ docs/migration/
 ## Agentes autónomos
 
 - **Asclepio** escanea `src/` y aplica únicamente reglas `safe-fix` mecánicas con las herramientas ya declaradas por el repo. No cambia versiones, lógica ni Git.
-- **Helios** descubre rutas Angular, pide una URL base y después una candidata, compara ambas con `vision-run` y publica PNG solo para vistas diferentes.
+- **Helios** pide URL y auth local de base, descubre rutas y captura todas; después pide URL y auth local candidata, repite las capturas con el mismo manifiesto y publica PNG solo para vistas diferentes. Nunca solicita secretos por chat.
 - Ninguno forma parte del fleet de Hermes ni puede ser invocado por Hermes.

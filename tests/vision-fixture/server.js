@@ -5,10 +5,20 @@ const http = require("http");
 const path = require("path");
 
 const port = Number(process.argv[2]);
+const authUser = process.argv[3];
+const authPassword = process.argv[4];
 const root = path.resolve(__dirname);
 
 http
   .createServer((request, response) => {
+    if (authUser && authPassword) {
+      const expected = `Basic ${Buffer.from(`${authUser}:${authPassword}`).toString("base64")}`;
+      if (request.headers.authorization !== expected) {
+        response.writeHead(401, { "WWW-Authenticate": "Basic realm=vision" });
+        response.end("Unauthorized");
+        return;
+      }
+    }
     const pathname = decodeURIComponent(
       new URL(request.url, "http://localhost").pathname,
     );

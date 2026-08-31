@@ -281,17 +281,17 @@ Se invoca con:
 @Helios
 ```
 
-### Conversación en dos pasos
+### Conversación en cinco fases
 
 Helios sigue deliberadamente esta secuencia:
 
-1. Pide la URL que debe documentar.
-2. Descubre las rutas y captura la referencia.
-3. Verifica que la captura base exista.
-4. Solo entonces pide la segunda URL.
-5. Captura las mismas rutas y compara los resultados.
+1. Pide la URL y el archivo de autenticación local de referencia.
+2. Descubre las rutas y captura todas las vistas base.
+3. Solo entonces pide la URL y el archivo de autenticación local candidato.
+4. Captura las mismas rutas y compara los resultados.
+5. Escribe el inventario y el informe de diferencias.
 
-No solicita ambas URLs al principio. De esta forma, la referencia queda terminada y verificada antes de iniciar la comparación.
+No solicita la URL ni la autenticación candidata al principio. De esta forma, la referencia queda terminada y verificada antes de iniciar la comparación.
 
 ### Descubrimiento de rutas
 
@@ -306,7 +306,9 @@ El contrato de Helios le obliga a inspeccionar todos los source roots y seguir:
 - Rutas standalone.
 - Wildcards.
 
-Las rutas con parámetros desconocidos, guards o autenticación no disponible se documentan como `blocked`. Helios no inventa parámetros ni intenta evitar las protecciones de la aplicación.
+Las rutas con parámetros desconocidos se documentan como `blocked`. Cuando una URL requiere autenticación, Helios pide un archivo local de credenciales para esa URL; no inventa parámetros ni intenta evitar las protecciones de la aplicación.
+
+La interacción está dividida en cinco fases: URL y autenticación base; descubrimiento y captura completa de la referencia; URL y autenticación candidata; captura y comparación con el mismo manifiesto de rutas; e informe final. El archivo local puede contener HTTP Basic (`username` y `password`) o una referencia a un `storageState` de Playwright. Los secretos nunca se solicitan ni se registran en el chat.
 
 El manifiesto de rutas usa `schemas/vision.schema.json`.
 
@@ -336,10 +338,10 @@ El comando:
 
 Tiene dos modos:
 
-| Modo       | Función                                                                  |
-| ---------- | ------------------------------------------------------------------------ |
-| `baseline` | Captura las vistas de referencia en un directorio temporal.              |
-| `compare`  | Captura la candidata, compara, publica diferencias y elimina temporales. |
+| Modo       | Función                                                             |
+| ---------- | ------------------------------------------------------------------- |
+| `baseline` | Captura y conserva todas las vistas de referencia.                  |
+| `compare`  | Captura y conserva la candidata, compara y publica las diferencias. |
 
 ### Capturas reproducibles
 
@@ -374,8 +376,8 @@ Si cambian las dimensiones, se considera una diferencia y también se genera un 
 Cuando una vista es idéntica:
 
 - Se registra como `unchanged`.
-- No se publica ningún PNG.
-- Sus capturas temporales se eliminan al finalizar.
+- Su captura queda conservada en `baseline/` y `candidate/`.
+- No se publica ningún PNG de comparación.
 
 ### Privacidad y seguridad
 
@@ -385,7 +387,7 @@ El runner elimina de las URLs registradas:
 - Query string.
 - Fragmento hash.
 
-Helios tampoco puede iniciar sesión, rellenar formularios, ejecutar acciones destructivas, guardar cookies o seguir enlaces externos.
+Helios no rellena formularios de login ni ejecuta acciones destructivas. Usa únicamente el archivo local de autenticación que el usuario proporciona para crear el contexto de Playwright; no muestra ni registra su contenido, cookies, tokens o credenciales.
 
 ### Artefactos
 
@@ -539,7 +541,7 @@ o:
 @Helios
 ```
 
-Helios solicitará primero la URL base y, después de capturarla, la URL candidata.
+Helios solicitará primero la URL y autenticación local base; después de capturar todas las rutas, solicitará la URL y autenticación local candidata.
 
 ---
 

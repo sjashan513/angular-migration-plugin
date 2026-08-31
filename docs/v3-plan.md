@@ -247,7 +247,7 @@ Las reglas complejas que necesiten entender AST no deben resolverse con regex. S
 
 ### Proposito
 
-Helios documenta todas las vistas alcanzables desde el router Angular y compara visualmente las mismas rutas entre dos URLs. Solo conserva capturas cuando existe una diferencia.
+Helios documenta todas las vistas alcanzables desde el router Angular y compara visualmente las mismas rutas entre dos URLs usando pestañas compartidas del browser integrado.
 
 Invocacion:
 
@@ -257,10 +257,10 @@ Invocacion:
 
 ### Conversacion obligatoria
 
-1. Al empezar pide la URL base: `¿Cual es la URL de la web que debo documentar?`
-2. Descubre rutas y captura la referencia completa en un directorio temporal.
-3. Cuando termina la referencia, pide la segunda URL: `Referencia capturada. ¿Cual es la URL de la web que debo comparar?`
-4. Captura las mismas rutas, compara y publica el resultado.
+1. El usuario abre la URL base en el browser integrado, inicia sesión si es necesario y comparte la pestaña con el agente.
+2. Helios descubre rutas y captura la referencia completa desde esa pestaña.
+3. Cuando termina la referencia, el usuario abre la segunda URL, inicia sesión si es necesario y comparte otra pestaña.
+4. Helios captura las mismas rutas, compara y publica el resultado.
 
 Solo acepta URLs `http://` o `https://`. Nunca registra cookies, tokens, cabeceras de autorizacion ni valores de formularios.
 
@@ -269,56 +269,47 @@ Solo acepta URLs `http://` o `https://`. Nunca registra cookies, tokens, cabecer
 Helios combina dos fuentes:
 
 - **Fuente estatica:** lee `angular.json` y las definiciones `Routes`/`RouterModule`/`provideRouter`, incluyendo lazy loading, redirects, children y wildcards.
-- **Fuente runtime:** abre la URL base con Playwright y confirma navegacion, URL final, titulo y estado HTTP.
+- **Fuente runtime:** usa la pestaña base compartida para confirmar navegacion, URL final, titulo y estado observable.
 
-Cada ruta se normaliza. Redirects apuntan a la vista final y no generan capturas duplicadas. Las rutas con parametros, guards, autenticacion o datos obligatorios se incluyen en el inventario como `blocked` si no pueden visitarse de forma segura; nunca se inventan parametros ni credenciales.
+Cada ruta se normaliza. Redirects apuntan a la vista final y no generan capturas duplicadas. Las rutas con parametros, guards, autenticacion o datos obligatorios se incluyen en el inventario como `blocked` si no pueden visitarse de forma segura; nunca se inventan parametros ni se solicitan credenciales.
 
-### Captura determinista
+### Captura desde el browser integrado
 
 - Viewports iniciales: desktop `1440x900` y movil `390x844`; configurables por invocacion.
-- Espera `domcontentloaded`, red estable con timeout y `document.fonts.ready`.
-- Desactiva animaciones y transiciones durante la captura.
-- Usa locale, timezone, color scheme y device scale factor fijos.
-- Enmascara selectores configurados como dinamicos en `vision.config.json`.
-- Registra errores de consola, pagina, red y HTTP junto a cada ruta.
-- Sanitiza nombres de ruta para generar paths estables.
+- Usa `screenshotPage` sobre las pestañas autenticadas compartidas.
+- Mantiene el mismo viewport y la misma ruta en cada par de capturas.
+- Lee la vista antes de capturar y registra errores observables junto a cada ruta.
+- Sanitiza nombres de ruta para generar identificadores estables.
 
 ### Comparacion
 
-El runner compara PNG por pixeles y genera para cada viewport:
+Helios compara cada par de capturas y genera para cada viewport:
 
 - Porcentaje de pixeles diferentes.
 - Dimensiones y estado de carga.
-- Captura base, captura candidata y mapa diff solo si supera el umbral.
+- Referencia, candidata, estado y métricas del resultado.
 
-El umbral por defecto es `0.1%` de pixeles, configurable. Una ruta ausente, un error de navegacion o dimensiones distintas cuenta como diferencia. Las capturas iguales se eliminan al finalizar.
+Una ruta ausente, un error de navegacion o dimensiones distintas cuenta como diferencia. Las capturas se conservan en la sesión de Copilot; el repositorio guarda el manifiesto y el informe.
 
 ### Artefactos
 
 ```text
 .angular-migration/vision/{run-id}/
 ├── routes.json
-├── comparison.json
-├── logs/
-└── temp/                         # se elimina al cerrar correctamente
+└── results.json
 
 docs/views/
 ├── _index.md                     # todas las vistas y su estado
 └── comparisons/{run-id}/
     ├── report.md
-    └── {route}/{viewport}/       # solo rutas diferentes
-        ├── baseline.png
-        ├── candidate.png
-        └── diff.png
+    └── {route}/{viewport}/       # resultados diferentes
 ```
 
 `_index.md` documenta todas las rutas, incluso `unchanged`, `blocked` y `failed`. La carpeta de imagenes solo contiene rutas `different`, cumpliendo la regla de no guardar capturas iguales.
 
-### Runner y dependencias
+### Compatibilidad con automatizaciones externas
 
-Crear `scripts/playwright-vision.js` separado de `playwright-runtime-check.js`. `runtime-install` prepara en el runtime aislado Playwright, Chromium y una libreria estable de comparacion PNG; no modifica el `package.json` del proyecto analizado.
-
-El runner acepta un manifiesto JSON de rutas y configuracion, y devuelve JSON estructurado. El agente no implementa comparaciones visuales interpretando imagenes por texto.
+`scripts/playwright-vision.js` y `vision-run` se conservan como utilidad determinista para automatizaciones externas. Helios no los invoca: un runner separado no puede reutilizar la sesión autenticada de una pestaña compartida del browser integrado. El agente tampoco solicita ni copia cookies, tokens o `storageState`.
 
 ---
 
@@ -364,10 +355,10 @@ El runner acepta un manifiesto JSON de rutas y configuracion, y devuelve JSON es
 
 ### Fase 3 - Helios
 
-- [x] Crear el contrato conversacional de las dos URLs.
+- [x] Crear el contrato conversacional de dos pestañas compartidas.
 - [x] Implementar extraccion estatica de rutas Angular.
-- [x] Implementar captura determinista y manejo de rutas bloqueadas.
-- [x] Implementar comparacion PNG y limpieza de capturas iguales.
+- [x] Implementar captura browser-native y manejo de rutas bloqueadas.
+- [x] Implementar comparación de pares de capturas y registro de resultados.
 - [x] Generar indice de vistas y reporte de diferencias.
 
 ### Fase 4 - Empaquetado y documentacion
@@ -398,27 +389,26 @@ El runner acepta un manifiesto JSON de rutas y configuracion, y devuelve JSON es
 
 ### Helios
 
-- Pide la URL base y solo despues de capturarla pide la URL candidata.
+- Usa dos pestañas autenticadas compartidas y solo pide la candidata después de capturar la base.
 - Documenta todas las rutas descubiertas, incluidas las bloqueadas o fallidas.
 - Compara cada ruta visitable en desktop y movil.
-- No conserva PNG de vistas iguales.
-- Para cada diferencia conserva baseline, candidate, diff y metricas reproducibles.
+- Conserva el resultado de cada par de capturas y publica las diferencias en el informe.
 - No modifica la aplicacion ni expone datos de sesion.
 
 ---
 
 ## 9. Riesgos y decisiones
 
-| Tema                            | Decision v3                                         | Motivo                                                                         |
-| ------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Agentes dentro de Hermes        | No                                                  | Son herramientas de auditoria que deben poder ejecutarse en cualquier momento. |
-| Auto-fix de Asclepio            | Solo mecanico y verificable                         | Un scanner autonomo no debe reinterpretar logica de negocio.                   |
-| Regex sobre TypeScript complejo | No                                                  | Para transformaciones estructurales se usa AST o herramienta oficial.          |
-| Rutas dinamicas                 | Se documentan como bloqueadas sin valores conocidos | Inventar parametros puede producir resultados falsos o acciones peligrosas.    |
-| Capturas iguales                | Se eliminan                                         | El usuario pidio conservar solo diferencias y reduce ruido en Git.             |
-| Baseline permanente             | Solo para rutas diferentes                          | La referencia completa vive temporalmente durante la ejecucion.                |
-| Comparacion por IA visual       | No en v3                                            | Un diff de pixeles es determinista, barato y auditable.                        |
-| Logs de texto actuales          | Se mantienen                                        | Siguen siendo necesarios para diagnosticar comandos y errores.                 |
+| Tema                            | Decision v3                                         | Motivo                                                                                     |
+| ------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Agentes dentro de Hermes        | No                                                  | Son herramientas de auditoria que deben poder ejecutarse en cualquier momento.             |
+| Auto-fix de Asclepio            | Solo mecanico y verificable                         | Un scanner autonomo no debe reinterpretar logica de negocio.                               |
+| Regex sobre TypeScript complejo | No                                                  | Para transformaciones estructurales se usa AST o herramienta oficial.                      |
+| Rutas dinamicas                 | Se documentan como bloqueadas sin valores conocidos | Inventar parametros puede producir resultados falsos o acciones peligrosas.                |
+| Sesiones autenticadas           | Pestañas compartidas del browser integrado          | Mantienen el login real sin copiar credenciales al agente.                                 |
+| Capturas                        | Sesión visual de Copilot y resultados en el repo    | `screenshotPage` no se trata como un PNG local hasta que exista una exportación soportada. |
+| Comparacion por IA visual       | No en v3                                            | Un diff de pixeles es determinista, barato y auditable.                                    |
+| Logs de texto actuales          | Se mantienen                                        | Siguen siendo necesarios para diagnosticar comandos y errores.                             |
 
 ---
 

@@ -151,7 +151,7 @@ try {
     $visionSrc = Get-Content (Join-Path $PSScriptRoot '..\scripts\playwright-vision.js') -Raw
     Check 'Asclepio es invocable y limita safe-fix' ($asclepioSrc -match 'user-invocable:\s+true' -and $asclepioSrc -match 'safe-fix' -and $asclepioSrc -match 'Nunca cambies dependencias')
     Check 'Helios usa cinco fases secuenciales' ($heliosSrc -match 'Fase 1/5' -and $heliosSrc -match 'Fase 3/5' -and $heliosSrc -match 'Fase 5')
-    Check 'Helios usa auth local separada' ($heliosSrc -match 'base-auth-file' -and $heliosSrc -match 'candidate-auth-file' -and $heliosSrc -match 'No pegues contraseñas')
+    Check 'Helios usa browser y pestañas compartidas' ($heliosSrc -match 'target: vscode' -and $heliosSrc -match 'Share with Agent' -and $heliosSrc -match 'screenshotPage' -and $heliosSrc -match 'candidata compartida')
     Check 'runner acepta archivo de autenticacion' ($src -match '\[string\]\$AuthFile' -and $visionSrc -match '--auth-file')
     Check 'agentes nuevos no pertenecen a Hermes' ($hermesSrc -match 'agents: \["Prometeo", "Hefesto", "Cronos", "Clio"\]' -and $hermesSrc -notmatch 'agents: \[[^\r\n]*(Asclepio|Helios)')
     Check 'runner conserva capturas y publica diferencias' ($visionSrc -match 'baselineDir = path\.join\(outputDir, "baseline"\)' -and $visionSrc -match 'candidateDir = path\.join\(outputDir, "candidate"\)' -and $visionSrc -match 'difference_ratio')

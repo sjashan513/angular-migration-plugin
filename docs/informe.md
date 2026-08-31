@@ -285,13 +285,13 @@ Se invoca con:
 
 Helios sigue deliberadamente esta secuencia:
 
-1. Pide la URL y el archivo de autenticación local de referencia.
-2. Descubre las rutas y captura todas las vistas base.
-3. Solo entonces pide la URL y el archivo de autenticación local candidato.
-4. Captura las mismas rutas y compara los resultados.
+1. El usuario abre la referencia en el browser integrado, inicia sesión y comparte la pestaña.
+2. Helios descubre las rutas y captura todas las vistas base.
+3. Solo entonces el usuario abre la candidata, inicia sesión y comparte otra pestaña.
+4. Helios captura las mismas rutas y compara los resultados.
 5. Escribe el inventario y el informe de diferencias.
 
-No solicita la URL ni la autenticación candidata al principio. De esta forma, la referencia queda terminada y verificada antes de iniciar la comparación.
+No solicita la candidata al principio. De esta forma, la referencia queda terminada y verificada antes de iniciar la comparación.
 
 ### Descubrimiento de rutas
 
@@ -306,97 +306,49 @@ El contrato de Helios le obliga a inspeccionar todos los source roots y seguir:
 - Rutas standalone.
 - Wildcards.
 
-Las rutas con parámetros desconocidos se documentan como `blocked`. Cuando una URL requiere autenticación, Helios pide un archivo local de credenciales para esa URL; no inventa parámetros ni intenta evitar las protecciones de la aplicación.
+Las rutas con parámetros desconocidos se documentan como `blocked`. Cuando una URL requiere autenticación, el usuario inicia sesión manualmente y comparte la pestaña del browser; Helios no recibe credenciales ni intenta evitar las protecciones de la aplicación.
 
-La interacción está dividida en cinco fases: URL y autenticación base; descubrimiento y captura completa de la referencia; URL y autenticación candidata; captura y comparación con el mismo manifiesto de rutas; e informe final. El archivo local puede contener HTTP Basic (`username` y `password`) o una referencia a un `storageState` de Playwright. Los secretos nunca se solicitan ni se registran en el chat.
+La interacción está dividida en cinco fases: pestaña base autenticada; descubrimiento y captura completa de la referencia; pestaña candidata autenticada; captura y comparación con el mismo manifiesto de rutas; e informe final. Las sesiones se mantienen en las pestañas compartidas del browser integrado de VS Code y los secretos nunca se solicitan ni se registran en el chat.
 
 El manifiesto de rutas usa `schemas/vision.schema.json`.
 
-### Runner visual
+### Browser integrado
 
-La captura y comparación sí están implementadas como código determinista en `scripts/playwright-vision.js`.
+La captura y comparación de Helios usan las herramientas nativas del browser integrado de VS Code.
 
-El runner utiliza:
+El browser permite:
 
-- Playwright y Chromium para navegar y capturar.
-- `pixelmatch` para comparar píxeles.
-- `pngjs` para leer y generar PNG.
+- Navegar entre rutas.
+- Leer contenido y elementos accesibles.
+- Interactuar con la aplicación cuando sea necesario para inspeccionarla.
+- Capturar screenshots de la pestaña autenticada.
 
-Estas dependencias se instalan en el runtime aislado del plugin. No modifican el `package.json` ni `node_modules` de la aplicación analizada.
+La pestaña compartida conserva las cookies y el estado de login del usuario. Una pestaña abierta por Helios usa una sesión aislada.
 
-### Nuevo comando `vision-run`
+El comando `vision-run` y su runner Node se conservan como utilidad determinista para automatizaciones externas, pero Helios no los usa porque no pueden acceder a la sesión autenticada del browser integrado.
 
-`scripts/angular-migration.ps1` expone `vision-run` para que Helios no tenga que construir comandos Node manualmente.
+### Capturas y comparación
 
-El comando:
+Para reducir falsos positivos, Helios mantiene el mismo viewport durante cada par de capturas y espera a que la vista esté estable antes de capturar:
 
-- Valida que manifiesto y directorios permanezcan dentro del proyecto.
-- Comprueba que el runtime visual esté completo.
-- Ejecuta el runner con Node 20 o superior mediante `fnm` o `nvm`.
-- Aplica un timeout de 30 minutos.
-- Devuelve JSON estructurado.
+- El mismo viewport para la referencia y la candidata.
+- La misma ruta del router en ambas pestañas.
+- Lectura de contenido antes de capturar.
+- Captura base y candidata asociadas por ruta y viewport.
+- Comparación visual de cada par y registro del resultado.
 
-Tiene dos modos:
-
-| Modo       | Función                                                             |
-| ---------- | ------------------------------------------------------------------- |
-| `baseline` | Captura y conserva todas las vistas de referencia.                  |
-| `compare`  | Captura y conserva la candidata, compara y publica las diferencias. |
-
-### Capturas reproducibles
-
-Para reducir falsos positivos, el runner fija:
-
-- Viewport.
-- Locale `es-ES`.
-- Zona horaria UTC.
-- Esquema de color claro.
-- Device scale factor 1.
-- Reduced motion.
-- Animaciones y transiciones desactivadas.
-- Espera de `document.fonts.ready`.
-- Una espera limitada de red estable.
-
-También admite selectores de máscara para contenido dinámico.
-
-### Comparación y almacenamiento
-
-El umbral predeterminado es `0.1%` de píxeles diferentes.
-
-Para una vista diferente se conservan:
-
-```text
-baseline.png
-candidate.png
-diff.png
-```
-
-Si cambian las dimensiones, se considera una diferencia y también se genera un mapa `diff.png`.
-
-Cuando una vista es idéntica:
-
-- Se registra como `unchanged`.
-- Su captura queda conservada en `baseline/` y `candidate/`.
-- No se publica ningún PNG de comparación.
+Las screenshots se conservan en la sesión de Copilot; el repositorio guarda el manifiesto y el informe, no binarios ni secretos.
 
 ### Privacidad y seguridad
 
-El runner elimina de las URLs registradas:
-
-- Usuario y contraseña.
-- Query string.
-- Fragmento hash.
-
-Helios no rellena formularios de login ni ejecuta acciones destructivas. Usa únicamente el archivo local de autenticación que el usuario proporciona para crear el contexto de Playwright; no muestra ni registra su contenido, cookies, tokens o credenciales.
+Helios no rellena formularios de login ni ejecuta acciones destructivas. Usa la sesión de la pestaña compartida sin leer ni registrar cookies, tokens, credenciales o valores de formularios.
 
 ### Artefactos
 
 ```text
 .angular-migration/vision/{run-id}/
 ├── routes.json
-├── baseline.json
-├── comparison.json
-└── temp/                 # eliminado tras comparar
+└── results.json
 
 docs/views/
 ├── _index.md
@@ -450,19 +402,19 @@ Los schemas permiten revisar y evolucionar los formatos sin depender de ejemplos
 
 `tests/smoke.ps1` conserva las pruebas v2 y añade comprobaciones v3:
 
-- Existencia de los comandos del ledger y `vision-run`.
+- Existencia de los comandos del ledger y del contrato browser-native de Helios.
 - Creación y lectura de un ledger.
 - Agrupación de 40 ocurrencias como un único grupo.
 - Cálculo correcto de grupos, ocurrencias y ficheros.
 - Rechazo de un fichero modificado sin explicación.
 - Validez JSON de schemas y catálogo de reglas.
 - Asclepio invocable y limitado a `safe-fix`.
-- Secuencia de URLs de Helios.
+- Secuencia de pestañas compartidas de Helios.
 - Confirmación de que los nuevos agentes no pertenecen a Hermes.
 
-### Smoke visual
+### Smoke visual legacy
 
-`tests/vision-smoke.ps1` levanta un servidor HTTP local con dos versiones controladas:
+`tests/vision-smoke.ps1` conserva una prueba del runner externo con un servidor HTTP local y dos versiones controladas:
 
 - Una vista diferente.
 - Una vista idéntica.
@@ -473,7 +425,7 @@ La prueba confirma que:
 - El baseline captura ambas rutas.
 - La comparación detecta una diferencia y una igualdad.
 - Solo la vista diferente publica baseline, candidata y diff.
-- Las capturas temporales e iguales se eliminan.
+- Las capturas temporales e iguales se eliminan en ese runner legacy. Helios no usa este flujo: sus screenshots viven en la sesión del browser integrado.
 
 Los fixtures viven en `tests/vision-fixture/` y no dependen de una aplicación externa.
 
@@ -491,21 +443,21 @@ Las dos suites finalizaron correctamente durante la implementación.
 
 ## 9. Ficheros principales de la versión 3
 
-| Fichero                         | Responsabilidad                                    |
-| ------------------------------- | -------------------------------------------------- |
-| `agents/Asclepio.agent.md`      | Contrato del agente de reconocimiento y safe-fix.  |
-| `agents/Helios.agent.md`        | Contrato del agente de rutas y comparación visual. |
-| `agents/Hefesto.agent.md`       | Producción y cierre del ledger durante cada salto. |
-| `agents/Hermes.agent.md`        | Gate de integridad y cobertura del ledger.         |
-| `agents/Clio.agent.md`          | Conversión del ledger en documentación humana.     |
-| `scripts/angular-migration.ps1` | API del ledger, runtime aislado y `vision-run`.    |
-| `scripts/playwright-vision.js`  | Captura y comparación determinista de imágenes.    |
-| `rules/angular-patterns.json`   | Reglas iniciales de Asclepio.                      |
-| `schemas/changes.schema.json`   | Contrato JSON de cambios agrupados.                |
-| `schemas/vision.schema.json`    | Contrato JSON del manifiesto visual.               |
-| `tests/smoke.ps1`               | Validación funcional del script y contratos v3.    |
-| `tests/vision-smoke.ps1`        | Validación visual end-to-end.                      |
-| `docs/v3-plan.md`               | Diseño y criterios de aceptación originales.       |
+| Fichero                         | Responsabilidad                                        |
+| ------------------------------- | ------------------------------------------------------ |
+| `agents/Asclepio.agent.md`      | Contrato del agente de reconocimiento y safe-fix.      |
+| `agents/Helios.agent.md`        | Contrato browser-native de rutas y comparación visual. |
+| `agents/Hefesto.agent.md`       | Producción y cierre del ledger durante cada salto.     |
+| `agents/Hermes.agent.md`        | Gate de integridad y cobertura del ledger.             |
+| `agents/Clio.agent.md`          | Conversión del ledger en documentación humana.         |
+| `scripts/angular-migration.ps1` | API del ledger, runtime aislado y `vision-run`.        |
+| `scripts/playwright-vision.js`  | Captura y comparación determinista de imágenes.        |
+| `rules/angular-patterns.json`   | Reglas iniciales de Asclepio.                          |
+| `schemas/changes.schema.json`   | Contrato JSON de cambios agrupados.                    |
+| `schemas/vision.schema.json`    | Contrato JSON del manifiesto visual.                   |
+| `tests/smoke.ps1`               | Validación funcional del script y contratos v3.        |
+| `tests/vision-smoke.ps1`        | Validación visual end-to-end.                          |
+| `docs/v3-plan.md`               | Diseño y criterios de aceptación originales.           |
 
 ---
 

@@ -12,7 +12,7 @@ Plugin de siete agentes con tres entradas independientes: migración Angular maj
 | **Hefesto**  | Ejecuta el plan: `ng update` vía script, cambios manuales, build, warnings.    | Claude Sonnet 5 |
 | **Clío**     | Consolida la documentación en `docs/migration/` (changelog, diff, índice, KB). | GPT-5.6 Luna    |
 | **Asclepio** | Escanea `src/` y aplica solo fixes mecánicos verificables.                     | Claude Sonnet 5 |
-| **Helios**   | Documenta rutas y compara dos URLs con Playwright.                             | GPT-5.6 Luna    |
+| **Helios**   | Documenta rutas y compara dos URLs con el browser integrado de VS Code.        | GPT-5.6 Luna    |
 
 \* Requiere activar la policy de Grok 4.6 en Copilot Business/Enterprise. Fallback: edita el frontmatter de `Prometeo.agent.md` y cambia el modelo a `claude-sonnet-5 (copilot)`.
 
@@ -28,6 +28,8 @@ Por cada salto (p. ej. v8→v9), Hermes mantiene la pipeline original de cinco a
   si falta; el plugin instala Playwright, Chromium y el comparador PNG en
   `%LOCALAPPDATA%\angular-migration-plugin\playwright-runtime` durante el primer
   salto, sin modificar `package.json` ni `node_modules` de la app
+- Browser integrado de VS Code habilitado para Helios; comparte manualmente
+  cada pestaña autenticada con **Share with Agent**
 
 ## Instalación
 
@@ -86,21 +88,9 @@ Asclepio lee las versiones y herramientas del proyecto, escanea `src/` completo 
 @Helios
 ```
 
-Helios pide primero la URL y autenticación local de referencia. Tras capturar todas sus rutas, pide la URL y autenticación local candidata, repite las capturas con el mismo manifiesto y compara desktop y móvil. Las capturas completas quedan en `.angular-migration/vision/{run-id}/baseline/` y `candidate/`; `docs/views/_index.md` registra todas las vistas y `docs/views/comparisons/` conserva los PNG publicados de las diferencias.
+Helios usa el browser integrado de VS Code. Abre la URL base, inicia sesión manualmente y pulsa **Share with Agent** en la pestaña. Helios descubre las rutas, captura todas las vistas con esa sesión y, solo después, te pide compartir otra pestaña autenticada para la URL candidata. Repite las capturas con el mismo manifiesto y compara desktop y móvil.
 
-Para una web protegida, Helios pide un archivo local de autenticación distinto para cada URL. No pegues contraseñas, tokens ni cookies en el chat. El archivo puede usar HTTP Basic:
-
-```json
-{ "username": "usuario", "password": "contraseña" }
-```
-
-o un estado de sesión de Playwright:
-
-```json
-{ "storageState": "base.storage.json" }
-```
-
-Guárdalo bajo `.angular-migration/vision/auth/`, que está excluido de Git. La secuencia es: URL y auth base, descubrimiento y captura de todas las rutas, URL y auth candidata, captura de las mismas rutas y comparación, informe final.
+No pegues contraseñas, tokens ni cookies en el chat. Las pestañas compartidas conservan la sesión del navegador; las pestañas abiertas automáticamente por el agente son aisladas y no sirven para reutilizar tu login. Las capturas visuales aparecen en la sesión de Copilot y el repositorio conserva el manifiesto, resultados e informe.
 
 ## Qué genera
 

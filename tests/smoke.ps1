@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 <#
-  smoke.ps1 — smoke test del script angular-migration.ps1 (v2)
+  smoke.ps1 — smoke test del script angular-migration.ps1 (v3)
   Sin red ni npm: valida sintaxis, rutas (bug $PSScriptRoot de v1), init y
   analyze-project contra un proyecto Angular fake en %TEMP%.
   Uso: powershell -File tests\smoke.ps1
@@ -56,10 +56,13 @@ try {
     $runtimeOut = (& powershell -NoProfile -File $SCRIPT -Command runtime-check -AngularMajor 8 -RuntimeDir $runtimeDir) | ConvertFrom-Json
     Check 'runtime-check usa Playwright' ($runtimeOut.exit_code -eq 2 -and $runtimeOut.data.status -eq 'unverified' -and @('playwright_missing', 'runtime_node_missing') -contains $runtimeOut.data.reason)
 
-    Write-Host '4. comandos v2 existen en ValidateSet' -ForegroundColor Cyan
+    Write-Host '4. comandos v3 existen en ValidateSet' -ForegroundColor Cyan
     $src = Get-Content $SCRIPT -Raw
     $playwrightSrc = Get-Content (Join-Path $PSScriptRoot '..\scripts\playwright-runtime-check.js') -Raw
     foreach ($cmd in @('analyze-project', 'write-snapshot', 'ng-update', 'build', 'runtime-install', 'runtime-check', 'diff', 'ensure-node')) {
+        Check "ValidateSet contiene '$cmd'" ($src -match "'$cmd'")
+    }
+    foreach ($cmd in @('changes-init', 'changes-record', 'changes-close', 'changes-read', 'vision-run')) {
         Check "ValidateSet contiene '$cmd'" ($src -match "'$cmd'")
     }
     Check 'snapshot consulta todas las dependencias directas' ($src -match 'Get-DirectDependencyMetadata \$dependencies')
@@ -70,6 +73,17 @@ try {
     Check 'snapshot pide confirmacion para metadata parcial' ($src -match 'requires_user_confirmation')
     Check 'snapshot se escribe dentro del salto' ($src -match '\$snapFile = Join-Path \$stepDir "snapshot-v\$AngularMajor\.json"')
     Check 'usa npm view para registry privado' ($src -match "Invoke-Slow 'npm\.cmd'.*'view'.*\$name.*'--json'")
+    Check 'ValidateSet contiene progreso' ($src -match "'progress'")
+    $progressErr = Join-Path $tmp 'progress.stderr'
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $progressOut = (& powershell -NoProfile -File $SCRIPT -Command progress -ProgressCurrent 2 -ProgressTotal 5 -ProgressLabel 'snapshot' 2> $progressErr) | ConvertFrom-Json
+    }
+    finally { $ErrorActionPreference = $previousErrorActionPreference }
+    $progressFile = Get-Content (Join-Path $tmp '.angular-migration\progress.json') -Raw | ConvertFrom-Json
+    Check 'progress devuelve JSON y persiste estado' ($progressOut.exit_code -eq 0 -and $progressOut.data.current -eq 2 -and $progressFile.total -eq 5)
+    Check 'progress escribe barra en stderr' ((Get-Content $progressErr -Raw) -match '\[progreso\].*2/5.*snapshot')
     Write-Host '5. resolver de script contempla la instalacion por marketplace' -ForegroundColor Cyan
     foreach ($agent in @('Hermes', 'Prometeo', 'Hefesto')) {
         $agentSrc = Get-Content (Join-Path $PSScriptRoot "..\agents\$agent.agent.md") -Raw
@@ -96,6 +110,51 @@ try {
     Check 'Prometeo audita todas las dependencias' ($prometeoSrc -match 'Auditoría de dependencias')
     Check 'Prometeo acepta metadata parcial autorizada' ($prometeoSrc -match 'metadata parcial' -and $prometeoSrc -match 'missing_metadata')
     Check 'Hefesto declara un modelo de implementacion' ($hefestoSrc -match '(?m)^model:\s+\S+')
+
+    Write-Host '6b. ledger de cambios agrupados' -ForegroundColor Cyan
+    $ledgerPath = '.angular-migration\ledger-test.json'
+    $payloadPath = '.angular-migration\change-input.json'
+    $closePath = '.angular-migration\change-close.json'
+    $ledgerInit = (& powershell -NoProfile -File $SCRIPT -Command changes-init -LedgerPath $ledgerPath -RunKind diagnostic -AgentName Asclepio) | ConvertFrom-Json
+    Check 'changes-init crea el ledger' ($ledgerInit.exit_code -eq 0 -and (Test-Path $ledgerPath))
+    $changedFiles = @(1..40 | ForEach-Object { "src/app/file-$_.ts" })
+    $recordsOk = $true
+    foreach ($file in $changedFiles) {
+        [PSCustomObject]@{
+            id = 'same-fix'; category = 'typescript'; source = 'linter'; summary = 'Mismo fix'
+            reason = 'Regla instalada'; transformation = @{ before = 'old'; after = 'new' }
+            occurrence = @{ file = $file; location = '1:1'; status = 'applied' }
+            validation = @{ command = 'lint'; status = 'passed' }
+        } | ConvertTo-Json -Depth 5 | Set-Content $payloadPath -Encoding UTF8
+        $recordOut = (& powershell -NoProfile -File $SCRIPT -Command changes-record -LedgerPath $ledgerPath -InputFile $payloadPath) | ConvertFrom-Json
+        if ($recordOut.exit_code -ne 0) { $recordsOk = $false }
+    }
+    Check 'changes-record acepta 40 ocurrencias' $recordsOk
+    @{ changed_files = $changedFiles; ignored_files = @() } | ConvertTo-Json | Set-Content $closePath -Encoding UTF8
+    $closeOut = (& powershell -NoProfile -File $SCRIPT -Command changes-close -LedgerPath $ledgerPath -InputFile $closePath) | ConvertFrom-Json
+    $ledger = Get-Content $ledgerPath -Raw | ConvertFrom-Json
+    Check 'changes-close agrupa 40 fixes en una entrada' ($closeOut.exit_code -eq 0 -and $ledger.groups.Count -eq 1 -and $ledger.groups[0].count -eq 40)
+    Check 'changes-close calcula resumen' ($ledger.closed -eq $true -and $ledger.summary.groups -eq 1 -and $ledger.summary.occurrences -eq 40 -and $ledger.summary.files -eq 40)
+    $readOut = (& powershell -NoProfile -File $SCRIPT -Command changes-read -LedgerPath $ledgerPath) | ConvertFrom-Json
+    Check 'changes-read devuelve el ledger cerrado' ($readOut.exit_code -eq 0 -and $readOut.data.closed -eq $true -and $readOut.data.summary.occurrences -eq 40)
+
+    $uncoveredLedgerPath = '.angular-migration\ledger-uncovered.json'
+    $uncoveredInit = (& powershell -NoProfile -File $SCRIPT -Command changes-init -LedgerPath $uncoveredLedgerPath -RunKind diagnostic -AgentName Asclepio) | ConvertFrom-Json
+    $uncoveredRecord = (& powershell -NoProfile -File $SCRIPT -Command changes-record -LedgerPath $uncoveredLedgerPath -InputFile $payloadPath) | ConvertFrom-Json
+    @{ changed_files = @('src/app/file-40.ts', 'src/app/unexplained.ts'); ignored_files = @() } | ConvertTo-Json | Set-Content $closePath -Encoding UTF8
+    $uncoveredClose = (& powershell -NoProfile -File $SCRIPT -Command changes-close -LedgerPath $uncoveredLedgerPath -InputFile $closePath) | ConvertFrom-Json
+    Check 'changes-close rechaza ficheros sin explicar' ($uncoveredInit.exit_code -eq 0 -and $uncoveredRecord.exit_code -eq 0 -and $uncoveredClose.exit_code -eq 1 -and $uncoveredClose.data.error -match 'unexplained.ts')
+
+    Write-Host '6c. contratos v3' -ForegroundColor Cyan
+    $asclepioSrc = Get-Content (Join-Path $PSScriptRoot '..\agents\Asclepio.agent.md') -Raw
+    $heliosSrc = Get-Content (Join-Path $PSScriptRoot '..\agents\Helios.agent.md') -Raw
+    $visionSrc = Get-Content (Join-Path $PSScriptRoot '..\scripts\playwright-vision.js') -Raw
+    Check 'Asclepio es invocable y limita safe-fix' ($asclepioSrc -match 'user-invocable:\s+true' -and $asclepioSrc -match 'safe-fix' -and $asclepioSrc -match 'Nunca cambies dependencias')
+    Check 'Helios pide URLs secuencialmente' ($heliosSrc -match 'No pidas aún la URL candidata' -and $heliosSrc -match 'Referencia capturada')
+    Check 'agentes nuevos no pertenecen a Hermes' ($hermesSrc -match 'agents: \["Prometeo", "Hefesto", "Cronos", "Clio"\]' -and $hermesSrc -notmatch 'agents: \[[^\r\n]*(Asclepio|Helios)')
+    Check 'runner elimina temporales tras comparar' ($visionSrc -match 'rmSync\(tempDir' -and $visionSrc -match 'difference_ratio')
+    Check 'schemas v3 son JSON valido' ((Get-Content (Join-Path $PSScriptRoot '..\schemas\changes.schema.json') -Raw | ConvertFrom-Json) -and (Get-Content (Join-Path $PSScriptRoot '..\schemas\vision.schema.json') -Raw | ConvertFrom-Json))
+    Check 'catalogo Asclepio es JSON valido' ((Get-Content (Join-Path $PSScriptRoot '..\rules\angular-patterns.json') -Raw | ConvertFrom-Json).rules.Count -gt 0)
 
     & git init --quiet
     & git config user.email 'smoke@example.invalid'

@@ -5,14 +5,14 @@
     "email": "noreply@github.com"
   },
   "metadata": {
-    "description": "Plugin de migración Angular automática con pipeline de 5 agentes.",
-    "version": "2.0.0"
+    "description": "Plugin Angular con pipeline de migración, diagnóstico autónomo y comparación visual.",
+    "version": "3.0.0"
   },
   "plugins": [
     {
       "name": "angular-migration",
-      "description": "Pipeline de 5 agentes que migra proyectos Angular de v7 a cualquier versión objetivo, major por major, vía ng update. Invoca con /update-angular <version> o @Hermes <version>.",
-      "version": "2.0.0",
+      "description": "Siete agentes: migración Angular auditable con @Hermes, diagnóstico mecánico con @Asclepio y documentación visual con @Helios.",
+      "version": "3.0.0",
       "source": "."
     }
   ]

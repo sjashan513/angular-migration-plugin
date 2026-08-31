@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "rules": [
+    {
+      "id": "zone-legacy-entrypoint",
+      "title": "Import legacy de zone.js",
+      "classification": "safe-fix",
+      "severity": "error",
+      "angular": { "min": 12 },
+      "globs": ["src/**/*.ts"],
+      "match": "import 'zone.js/dist/zone';",
+      "replacement": "import 'zone.js';",
+      "reason": "Las versiones actuales de zone.js ya no exponen el entrypoint dist/zone.",
+      "validation": "build"
+    },
+    {
+      "id": "removed-enable-ivy",
+      "title": "Opción enableIvy retirada",
+      "classification": "safe-fix",
+      "severity": "error",
+      "angular": { "min": 12 },
+      "globs": ["tsconfig*.json", "**/tsconfig*.json"],
+      "match": "\"enableIvy\"",
+      "operation": "remove-json-property",
+      "reason": "Ivy es obligatorio y enableIvy dejó de ser una opción válida.",
+      "validation": "build"
+    },
+    {
+      "id": "rxjs-deep-import",
+      "title": "Deep import de RxJS",
+      "classification": "review",
+      "severity": "warning",
+      "rxjs": { "min": 7 },
+      "globs": ["src/**/*.ts"],
+      "match_regex": "from ['\"]rxjs/(internal|src)/",
+      "reason": "Los deep imports no son API pública, pero el reemplazo correcto depende del símbolo importado."
+    },
+    {
+      "id": "ionic-css-attribute",
+      "title": "Atributo CSS legacy de Ionic",
+      "classification": "review",
+      "severity": "warning",
+      "ionic": { "min": 5 },
+      "globs": ["src/**/*.html"],
+      "match_regex": "\\s(padding|margin)(-(top|end|bottom|start|horizontal|vertical))?(?=\\s|>|=)",
+      "reason": "Los atributos CSS deben migrarse a clases ion-*, pero hay que conservar class y bindings existentes."
+    }
+  ]
+}

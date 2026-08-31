@@ -1,12 +1,21 @@
 {
   "name": "angular-migration",
-  "version": "2.0.0",
-  "description": "Multi-agent pipeline that migrates Angular projects from v7 to any target version, major by major, via ng update. Invoke with /update-angular <version> or @Hermes <version>.",
+  "version": "3.0.0",
+  "description": "Angular migration pipeline with grouped change ledgers, standalone code diagnostics and Playwright visual comparison. Use @Hermes, @Asclepio or @Helios.",
   "author": {
     "name": "sjashan513",
     "url": "https://github.com/sjashan513"
   },
   "repository": "https://github.com/sjashan513/angular-migration-plugin",
   "license": "MIT",
-  "keywords": ["angular", "migration", "copilot", "multi-agent", "ionic"]
+  "keywords": [
+    "angular",
+    "migration",
+    "copilot",
+    "multi-agent",
+    "ionic",
+    "diagnostics",
+    "visual-regression",
+    "playwright"
+  ]
 }

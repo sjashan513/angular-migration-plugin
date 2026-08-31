@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 <#
-  angular-migration.ps1 — v2
+    angular-migration.ps1 — v3
   Principios:
    - API determinista para los agentes: el LLM nunca construye comandos npm/ng.
    - La raíz del proyecto es el cwd de ejecución, NUNCA la carpeta del plugin.
@@ -20,7 +20,8 @@ param(
         'ensure-node',
         'install-angular', 'install-devdeps', 'install-ionic',
         'build', 'runtime-install', 'runtime-check', 'commit', 'complete-step',
-        'git-status', 'node-version', 'create-branch', 'diff'
+        'git-status', 'node-version', 'create-branch', 'diff',
+        'changes-init', 'changes-record', 'changes-close', 'changes-read', 'vision-run', 'progress'
     )]
     [string]$Command,
 
@@ -36,6 +37,23 @@ param(
     [string]$BaseRef,
     [string]$RuntimeUrl = 'http://127.0.0.1:4200',
     [string]$RuntimeDir,
+    [string]$LedgerPath,
+    [string]$InputFile,
+    [string]$RunKind = 'migration',
+    [string]$AgentName,
+    [string]$FromVersion,
+    [string]$ToVersion,
+    [ValidateSet('baseline', 'compare')]
+    [string]$VisionMode,
+    [string]$ManifestPath,
+    [string]$OutputDir,
+    [string]$PublishDir,
+    [int]$ProgressCurrent = -1,
+    [int]$ProgressTotal = -1,
+    [string]$ProgressLabel,
+    [ValidateSet('pending', 'running', 'completed', 'failed')]
+    [string]$ProgressStatus = 'running',
+    [double]$DifferenceThreshold = 0.001,
     [switch]$StartServer
 )
 
@@ -53,6 +71,8 @@ $CONFIG_FILE = Join-Path $MIGRATION_DIR 'config.json'
 $STATE_FILE = Join-Path $MIGRATION_DIR 'state.json'
 $GITIGNORE_FILE = Join-Path $PROJECT_ROOT '.gitignore'
 $PLAYWRIGHT_VERSION = '1.62.1'
+$PIXELMATCH_VERSION = '5.3.0'
+$PNGJS_VERSION = '7.0.0'
 $RUNTIME_NODE_MAJOR = 20
 $DEFAULT_RUNTIME_DIR = Join-Path $env:LOCALAPPDATA 'angular-migration-plugin\playwright-runtime'
 if (-not $env:LOCALAPPDATA) { $DEFAULT_RUNTIME_DIR = Join-Path $env:TEMP 'angular-migration-plugin\playwright-runtime' }
@@ -93,6 +113,42 @@ function Read-MigState {
 
 function Save-MigState($s) {
     $s | ConvertTo-Json -Depth 10 | Set-Content $STATE_FILE -Encoding UTF8
+}
+
+function Resolve-ProjectFile([string]$Path, [switch]$MustExist) {
+    if (-not $Path) { throw 'Ruta requerida' }
+    $fullPath = if ([IO.Path]::IsPathRooted($Path)) {
+        [IO.Path]::GetFullPath($Path)
+    }
+    else {
+        [IO.Path]::GetFullPath((Join-Path $PROJECT_ROOT $Path))
+    }
+    $rootPrefix = $PROJECT_ROOT.TrimEnd('\') + '\'
+    if (-not $fullPath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "La ruta debe estar dentro del proyecto: $Path"
+    }
+    if ($MustExist -and -not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        throw "Fichero no encontrado: $Path"
+    }
+    return $fullPath
+}
+
+function Write-JsonAtomic($Value, [string]$Path) {
+    $directory = Split-Path -Parent $Path
+    if (-not (Test-Path $directory)) { New-Item -ItemType Directory -Path $directory -Force | Out-Null }
+    $tempPath = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
+    try {
+        $Value | ConvertTo-Json -Depth 20 | Set-Content $tempPath -Encoding UTF8
+        Move-Item -LiteralPath $tempPath -Destination $Path -Force
+    }
+    finally {
+        if (Test-Path $tempPath) { Remove-Item $tempPath -Force }
+    }
+}
+
+function Get-ChangeGroupKey($Change) {
+    $transformation = $Change.transformation | ConvertTo-Json -Depth 10 -Compress
+    return "$($Change.id)|$transformation|$($Change.reason)"
 }
 
 function Get-AngularMajorLocal {
@@ -197,6 +253,26 @@ function Invoke-Slow {
     finally {
         Remove-Item $outFile, $errFile -ErrorAction SilentlyContinue
     }
+}
+
+function Write-ProgressState {
+    if ($ProgressTotal -lt 1) { throw '-ProgressTotal debe ser mayor que 0' }
+    if ($ProgressCurrent -lt 0 -or $ProgressCurrent -gt $ProgressTotal) {
+        throw '-ProgressCurrent debe estar entre 0 y -ProgressTotal'
+    }
+    $width = 24
+    $filled = [Math]::Floor(($ProgressCurrent / $ProgressTotal) * $width)
+    $bar = (( '#' * $filled) -join '') + (( '-' * ($width - $filled)) -join '')
+    $progress = [PSCustomObject]@{
+        current    = $ProgressCurrent
+        total      = $ProgressTotal
+        label      = if ($ProgressLabel) { $ProgressLabel } else { 'Migracion Angular' }
+        status     = $ProgressStatus
+        updated_at = (Get-Date).ToUniversalTime().ToString('o')
+    }
+    Write-JsonAtomic $progress (Join-Path $MIGRATION_DIR 'progress.json')
+    [Console]::Error.WriteLine("[progreso] [$bar] $ProgressCurrent/$ProgressTotal - $($progress.label) ($ProgressStatus)")
+    return $progress
 }
 
 # Filtra npm WARN pero conserva ERR — el agente necesita los errores reales
@@ -535,6 +611,146 @@ function Get-DirectDependencyMetadata($dependencies) {
 # ================================================================
 
 switch ($Command) {
+    # ── progress ────────────────────────────────────────────────
+    'progress' {
+        try {
+            Emit 0 (Write-ProgressState)
+        }
+        catch { Emit 1 @{ error = $_.Exception.Message } }
+    }
+
+    # ── grouped change ledger ───────────────────────────────────
+    'changes-init' {
+        try {
+            $path = Resolve-ProjectFile $LedgerPath
+            if (-not $AgentName) { Emit 1 @{ error = '-AgentName requerido' } }
+            $ledger = [PSCustomObject]@{
+                schema_version = 1
+                closed         = $false
+                run            = [PSCustomObject]@{
+                    kind        = $RunKind
+                    from        = $FromVersion
+                    to          = $ToVersion
+                    agent       = $AgentName
+                    started_at  = (Get-Date).ToUniversalTime().ToString('o')
+                    finished_at = $null
+                }
+                groups         = @()
+                summary        = [PSCustomObject]@{ groups = 0; occurrences = 0; files = 0 }
+            }
+            Write-JsonAtomic $ledger $path
+            Emit 0 ([PSCustomObject]@{ ledger_path = $path })
+        }
+        catch { Emit 1 @{ error = $_.Exception.Message } }
+    }
+
+    'changes-record' {
+        try {
+            $path = Resolve-ProjectFile $LedgerPath -MustExist
+            $inputPath = Resolve-ProjectFile $InputFile -MustExist
+            $ledger = Get-Content $path -Raw | ConvertFrom-Json
+            $change = Get-Content $inputPath -Raw | ConvertFrom-Json
+            if ($ledger.closed) { throw 'El ledger ya esta cerrado' }
+            foreach ($required in @('id', 'category', 'source', 'summary', 'reason', 'transformation', 'occurrence')) {
+                if (-not $change.$required) { throw "Campo requerido ausente: $required" }
+            }
+            foreach ($required in @('file', 'location', 'status')) {
+                if (-not $change.occurrence.$required) { throw "Campo de occurrence ausente: $required" }
+            }
+            if ([IO.Path]::IsPathRooted($change.occurrence.file) -or $change.occurrence.file -match '(^|[\\/])\.\.([\\/]|$)') {
+                throw "La occurrence debe usar una ruta relativa segura: $($change.occurrence.file)"
+            }
+            if ($change.source -notin @('manual', 'schematic', 'formatter', 'linter')) {
+                throw "Source no soportado: $($change.source)"
+            }
+            if ($change.occurrence.status -notin @('applied', 'skipped', 'failed')) {
+                throw "Status no soportado: $($change.occurrence.status)"
+            }
+
+            $key = Get-ChangeGroupKey $change
+            $group = @($ledger.groups | Where-Object { (Get-ChangeGroupKey $_) -eq $key }) | Select-Object -First 1
+            if ($group) {
+                $group.occurrences = @($group.occurrences) + @($change.occurrence)
+                $group.count = @($group.occurrences).Count
+                if ($change.validation) { $group.validation = $change.validation }
+                if ($change.commit) { $group.commit = $change.commit }
+            }
+            else {
+                $group = [PSCustomObject]@{
+                    id             = $change.id
+                    category       = $change.category
+                    source         = $change.source
+                    summary        = $change.summary
+                    reason         = $change.reason
+                    transformation = $change.transformation
+                    occurrences    = @($change.occurrence)
+                    count          = 1
+                    validation     = $change.validation
+                    commit         = $change.commit
+                }
+                $ledger.groups = @($ledger.groups) + @($group)
+            }
+            Write-JsonAtomic $ledger $path
+            Emit 0 ([PSCustomObject]@{ group_id = $group.id; count = $group.count })
+        }
+        catch { Emit 1 @{ error = $_.Exception.Message } }
+    }
+
+    'changes-close' {
+        try {
+            $path = Resolve-ProjectFile $LedgerPath -MustExist
+            $ledger = Get-Content $path -Raw | ConvertFrom-Json
+            if ($ledger.schema_version -ne 1 -or -not $ledger.run.kind -or -not $ledger.run.agent -or -not $ledger.run.started_at) {
+                throw 'Ledger incompatible o metadata de run incompleta'
+            }
+            $changedFiles = @()
+            $ignoredFiles = @()
+            if ($InputFile) {
+                $closeInput = Get-Content (Resolve-ProjectFile $InputFile -MustExist) -Raw | ConvertFrom-Json
+                $changedFiles = @($closeInput.changed_files)
+                $ignoredFiles = @($closeInput.ignored_files)
+            }
+
+            foreach ($group in @($ledger.groups)) {
+                if (-not $group.id -or -not $group.category -or -not $group.source -or -not $group.summary -or -not $group.reason -or -not $group.transformation) {
+                    throw 'Grupo de cambios incompleto'
+                }
+                $group.count = @($group.occurrences).Count
+                if ($group.count -eq 0) { throw "Grupo sin ocurrencias: $($group.id)" }
+                if (@($group.occurrences | Where-Object { $_.status -eq 'applied' }).Count -gt 0 -and -not $group.validation) {
+                    throw "Grupo aplicado sin validacion: $($group.id)"
+                }
+            }
+
+            $coveredFiles = @($ledger.groups | ForEach-Object { $_.occurrences } | ForEach-Object { $_.file } | Sort-Object -Unique)
+            $uncovered = @($changedFiles | Where-Object { $_ -notin $coveredFiles -and $_ -notin $ignoredFiles })
+            if ($uncovered.Count -gt 0) { throw "Ficheros modificados sin explicar: $($uncovered -join ', ')" }
+
+            $ledger.groups = @($ledger.groups | Sort-Object id)
+            foreach ($group in $ledger.groups) {
+                $group.occurrences = @($group.occurrences | Sort-Object file, location)
+            }
+            $allOccurrences = @($ledger.groups | ForEach-Object { $_.occurrences })
+            $ledger.summary = [PSCustomObject]@{
+                groups      = @($ledger.groups).Count
+                occurrences = $allOccurrences.Count
+                files       = @($allOccurrences | ForEach-Object { $_.file } | Sort-Object -Unique).Count
+            }
+            $ledger.run.finished_at = (Get-Date).ToUniversalTime().ToString('o')
+            $ledger.closed = $true
+            Write-JsonAtomic $ledger $path
+            Emit 0 ([PSCustomObject]@{ ledger_path = $path; summary = $ledger.summary })
+        }
+        catch { Emit 1 @{ error = $_.Exception.Message } }
+    }
+
+    'changes-read' {
+        try {
+            $path = Resolve-ProjectFile $LedgerPath -MustExist
+            Emit 0 (Get-Content $path -Raw | ConvertFrom-Json)
+        }
+        catch { Emit 1 @{ error = $_.Exception.Message } }
+    }
 
     # ── init ─────────────────────────────────────────────────────
     'init' {
@@ -930,19 +1146,21 @@ switch ($Command) {
         }
         $packageFile = Join-Path $runtimeDir 'package.json'
         $playwrightPackage = Join-Path $runtimeDir 'node_modules\playwright\package.json'
+        $pixelmatchPackage = Join-Path $runtimeDir 'node_modules\pixelmatch\package.json'
+        $pngjsPackage = Join-Path $runtimeDir 'node_modules\pngjs\package.json'
         $browserMarker = Join-Path $runtimeDir '.chromium-installed'
         if (-not (Test-Path $runtimeDir)) { New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null }
         if (-not (Test-Path $packageFile)) {
             '{"private":true,"name":"angular-migration-playwright-runtime"}' | Set-Content $packageFile -Encoding UTF8
         }
 
-        if (-not (Test-Path $playwrightPackage)) {
-            $installExit, $installStdout, $installStderr = Invoke-RuntimeCommand 'npm' @('install', '--prefix', $runtimeDir, '--no-save', '--ignore-scripts', "playwright@$PLAYWRIGHT_VERSION") -TimeoutSeconds 900 -ProgressLabel 'instalacion de Playwright'
+        if (-not (Test-Path $playwrightPackage) -or -not (Test-Path $pixelmatchPackage) -or -not (Test-Path $pngjsPackage)) {
+            $installExit, $installStdout, $installStderr = Invoke-RuntimeCommand 'npm' @('install', '--prefix', $runtimeDir, '--no-save', '--ignore-scripts', "playwright@$PLAYWRIGHT_VERSION", "pixelmatch@$PIXELMATCH_VERSION", "pngjs@$PNGJS_VERSION") -TimeoutSeconds 900 -ProgressLabel 'instalacion del runtime visual'
             if ($installExit -ne 0) {
                 Emit $installExit ([PSCustomObject]@{
                         status      = 'failed'
                         runtime_dir = $runtimeDir
-                        error       = 'No se pudo instalar Playwright en el runtime aislado.'
+                        error       = 'No se pudo instalar el runtime visual aislado.'
                         stderr      = Remove-NpmWarnings $installStderr
                         output_tail = (($installStdout -split "`n" | Where-Object { $_ } | Select-Object -Last 20) -join "`n")
                     })
@@ -967,9 +1185,45 @@ switch ($Command) {
                 status             = 'ok'
                 runtime_dir        = $runtimeDir
                 playwright         = $PLAYWRIGHT_VERSION
+                pixelmatch         = $PIXELMATCH_VERSION
+                pngjs              = $PNGJS_VERSION
                 node_major         = $RUNTIME_NODE_MAJOR
                 chromium_installed = $true
             })
+    }
+
+    # ── vision-run ─────────────────────────────────────────────
+    'vision-run' {
+        try {
+            if (-not $VisionMode -or -not $RuntimeUrl) { throw '-VisionMode y -RuntimeUrl requeridos' }
+            $manifest = Resolve-ProjectFile $ManifestPath -MustExist
+            $output = Resolve-ProjectFile (Join-Path $OutputDir '.vision-output')
+            $output = Split-Path -Parent $output
+            $publish = $null
+            if ($PublishDir) {
+                $publish = Resolve-ProjectFile (Join-Path $PublishDir '.vision-output')
+                $publish = Split-Path -Parent $publish
+            }
+            $runner = Join-Path $PSScriptRoot 'playwright-vision.js'
+            if (-not (Test-Path $runner)) { throw 'Runner visual no encontrado en el plugin' }
+
+            $runtimeDir = if ($RuntimeDir) { [System.IO.Path]::GetFullPath($RuntimeDir) } else { $DEFAULT_RUNTIME_DIR }
+            foreach ($package in @('playwright', 'pixelmatch', 'pngjs')) {
+                if (-not (Test-Path (Join-Path $runtimeDir "node_modules\$package\package.json"))) {
+                    throw "Runtime visual incompleto: falta $package. Ejecuta runtime-install."
+                }
+            }
+
+            $visionArgs = @($runner, '--mode', $VisionMode, '--manifest', $manifest, '--url', $RuntimeUrl, '--output-dir', $output, '--runtime-dir', $runtimeDir, '--threshold', $DifferenceThreshold.ToString([Globalization.CultureInfo]::InvariantCulture))
+            if ($publish) { $visionArgs += @('--publish-dir', $publish) }
+            $exit, $stdout, $stderr = Invoke-RuntimeCommand 'node' $visionArgs -TimeoutSeconds 1800 -ProgressLabel "vision $VisionMode"
+            $resultLine = @($stdout -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 1)[0]
+            if (-not $resultLine) { throw "Runner visual sin resultado. $stderr" }
+            $result = $resultLine | ConvertFrom-Json
+            if ($stderr) { $result | Add-Member -NotePropertyName stderr -NotePropertyValue $stderr -Force }
+            Emit $exit $result
+        }
+        catch { Emit 1 @{ status = 'failed'; error = $_.Exception.Message } }
     }
 
     # ── runtime-check ───────────────────────────────────────────
@@ -1181,11 +1435,11 @@ switch ($Command) {
         Write-MigLog 'hermes' "write-snapshot: v$fromMajor -> v$AngularMajor"
 
         Emit 0 ([PSCustomObject]@{
-                snapshot_path                 = $snapFile
-                snapshot                      = $snapshot
-                metadata_complete             = $metadata.complete
-                metadata_failures             = $metadata.failures
-                requires_user_confirmation   = (-not $metadata.complete)
+                snapshot_path              = $snapFile
+                snapshot                   = $snapshot
+                metadata_complete          = $metadata.complete
+                metadata_failures          = $metadata.failures
+                requires_user_confirmation = (-not $metadata.complete)
             })
     }
 

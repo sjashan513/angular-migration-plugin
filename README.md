@@ -1,6 +1,6 @@
-# angular-migration — Plugin para GitHub Copilot (v2)
+# angular-migration — Plugin para GitHub Copilot (v3)
 
-Pipeline de 5 agentes que migra proyectos Angular de v7 a cualquier versión objetivo de forma autónoma, **major por major vía `ng update`**. Tú solo supervisas el arranque.
+Plugin de siete agentes con tres entradas independientes: migración Angular major por major, diagnóstico mecánico del código y documentación visual entre despliegues.
 
 ## Agentes
 
@@ -11,10 +11,12 @@ Pipeline de 5 agentes que migra proyectos Angular de v7 a cualquier versión obj
 | **Prometeo** | Construye el plan ejecutable a partir del snapshot.                            | Grok 4.6 \*     |
 | **Hefesto**  | Ejecuta el plan: `ng update` vía script, cambios manuales, build, warnings.    | Claude Sonnet 5 |
 | **Clío**     | Consolida la documentación en `docs/migration/` (changelog, diff, índice, KB). | GPT-5.6 Luna    |
+| **Asclepio** | Escanea `src/` y aplica solo fixes mecánicos verificables.                     | Claude Sonnet 5 |
+| **Helios**   | Documenta rutas y compara dos URLs con Playwright.                             | GPT-5.6 Luna    |
 
 \* Requiere activar la policy de Grok 4.6 en Copilot Business/Enterprise. Fallback: edita el frontmatter de `Prometeo.agent.md` y cambia el modelo a `claude-sonnet-5 (copilot)`.
 
-Por cada salto (p. ej. v8→v9): Hermes valida gates, crea la rama, genera el **snapshot de versiones** con el script, lanza un `/fleet` con Cronos y Prometeo en paralelo, invoca a Hefesto para ejecutar el plan y a Clío para documentar.
+Por cada salto (p. ej. v8→v9), Hermes mantiene la pipeline original de cinco agentes. Asclepio y Helios son autónomos y nunca forman parte de su fleet.
 
 ## Prerequisitos
 
@@ -23,7 +25,7 @@ Por cada salto (p. ej. v8→v9): Hermes valida gates, crea la rama, genera el **
 - PowerShell 5.1+ (Windows) — el script vive en el plugin, no necesitas copiarlo
 - Node.js y npm instalados; `fnm` o `nvm` para gestionar versiones de Node
 - `fnm` o `nvm` disponibles para que el runtime aislado pueda instalar Node 20+
-  si falta; el plugin instala Playwright y Chromium en
+  si falta; el plugin instala Playwright, Chromium y el comparador PNG en
   `%LOCALAPPDATA%\angular-migration-plugin\playwright-runtime` durante el primer
   salto, sin modificar `package.json` ni `node_modules` de la app
 
@@ -37,7 +39,7 @@ copilot plugin marketplace add sjashan513/angular-migration-plugin
 copilot plugin install angular-migration@sjashan513-plugins
 ```
 
-## Uso
+## Migrar Angular
 
 Abre Copilot en la raíz del repo Angular y escribe:
 
@@ -63,6 +65,29 @@ Hermes detecta la versión actual, calcula los saltos pendientes (p. ej. 7→8�
 
 Si npm no puede consultar alguna dependencia, `write-snapshot` conserva el snapshot y lista los paquetes afectados. Hermes te pregunta si quieres continuar con metadata parcial; si aceptas, los agentes trabajan solo con los datos disponibles y marcan lo no verificado.
 
+Cada salto genera `changes-v{N}.json`: una transformación aplicada muchas veces aparece una sola vez con todas sus ubicaciones en `occurrences[]`. Hermes no acepta un salto si algún fichero del diff queda sin explicar.
+
+### Progreso en terminal
+
+Durante la migración, Hermes actualiza una barra ASCII por cada hito del salto y el script la imprime por `stderr`, sin romper su contrato JSON. El último estado queda en `.angular-migration/progress.json`, con `current`, `total`, `label` y `status` (`pending`, `running`, `completed` o `failed`).
+
+## Diagnosticar el código
+
+```text
+@Asclepio
+@Asclepio scan-only
+```
+
+Asclepio lee las versiones y herramientas del proyecto, escanea `src/` completo y ejecuta los checks ya configurados. En modo normal aplica únicamente reglas `safe-fix`; nunca cambia dependencias, lógica, ramas ni commits. Genera artefactos bajo `.angular-migration/diagnostics/` y un resumen en `docs/diagnostics/`.
+
+## Comparar vistas
+
+```text
+@Helios
+```
+
+Helios pide primero la URL que debe documentar. Tras capturarla, pide la URL candidata, visita las rutas descubiertas en el router y compara desktop y móvil. `docs/views/_index.md` registra todas las vistas; `docs/views/comparisons/` conserva baseline, candidata y diff únicamente para vistas diferentes.
+
 ## Qué genera
 
 En el repo del usuario (nunca en el plugin):
@@ -80,10 +105,12 @@ docs/migration/
 .angular-migration/              ← gitignorado, artefactos de máquina
 ├── config.json                  ← configuración global del proyecto
 ├── state.json                   ← estado global de la migración
+├── progress.json                ← progreso visible del salto actual
 └── v7-v8.log/                   ← artefactos y logs del salto
 	├── snapshot-v8.json         ← versiones actuales vs objetivo
 	├── plan-v8.json             ← plan de Prometeo
 	├── report-v8.json           ← resultado de Hefesto
+	├── changes-v8.json          ← cambios semánticos agrupados
 	└── logs/                    ← logs legibles del salto, incluido runtime.log
 ```
 
@@ -94,12 +121,14 @@ Cada salto crea su rama `migration/v{N}` con commits atómicos por paso.
 ```
 angular-migration-plugin/
 ├── plugin.json
-├── agents/                      ← los 5 agentes del plugin
+├── agents/                      ← siete agentes; tres invocables directamente
 │   ├── Hermes.agent.md          ← orquestador (@Hermes 17)
 │   ├── Cronos.agent.md
 │   ├── Prometeo.agent.md
 │   ├── Hefesto.agent.md
-│   └── Clio.agent.md
+│   ├── Clio.agent.md
+│   ├── Asclepio.agent.md
+│   └── Helios.agent.md
 ├── skills/
 │   ├── update-angular/          ← slash command /update-angular
 │   │   └── SKILL.md
@@ -111,11 +140,16 @@ angular-migration-plugin/
 │       └── SKILL.md
 ├── scripts/
 │   ├── angular-migration.ps1    ← API determinista para los agentes
-│   └── playwright-runtime-check.js ← runner Playwright headless
+│   ├── playwright-runtime-check.js ← check de runtime de la migración
+│   └── playwright-vision.js     ← capturas y comparación PNG
+├── schemas/                     ← contratos JSON de cambios y vistas
+├── rules/                       ← catálogo de patrones de Asclepio
 ├── tests/
-│   └── smoke.ps1                ← smoke test del script
+│   ├── smoke.ps1                ← smoke rápido del script
+│   └── vision-smoke.ps1         ← comparación visual end-to-end local
 ├── docs/
-│   └── v2-plan.md               ← documento de diseño v2
+│   ├── v2-plan.md
+│   └── v3-plan.md               ← documento de diseño v3
 ├── .github/
 │   └── plugin/
 │       └── marketplace.json

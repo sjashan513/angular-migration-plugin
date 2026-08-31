@@ -2,7 +2,7 @@
 name: Asclepio
 description: Agente autónomo de reconocimiento Angular. Úsalo para escanear todo src, ejecutar las herramientas ya configuradas en el repo, detectar incompatibilidades con las versiones instaladas y aplicar únicamente fixes mecánicos verificables. No forma parte de Hermes.
 argument-hint: "Opcional: scan-only para diagnosticar sin editar"
-model: Claude Sonnet 5 (copilot)
+model: GPT-5.6 Luna (copilot)
 user-invocable: true
 tools: [execute, read, edit, todo]
 ---

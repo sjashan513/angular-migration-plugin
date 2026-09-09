@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://sjashan513.github.io/angular-migration-plugin/schemas/result.schema.json",
+  "title": "Angular migration result v5",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "runId",
+    "status",
+    "stage",
+    "migrationStatus",
+    "documentationStatus",
+    "checks",
+    "changes"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "enum": [5] },
+    "runId": { "type": "string", "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": [
+        "running",
+        "needs-repair",
+        "verified",
+        "completed",
+        "blocked",
+        "failed"
+      ]
+    },
+    "stage": {
+      "type": "string",
+      "enum": [
+        "inspect",
+        "baseline",
+        "resolve",
+        "update-angular",
+        "update-dependencies",
+        "validate",
+        "document"
+      ]
+    },
+    "migrationStatus": {
+      "type": "string",
+      "enum": ["pending", "running", "verified", "failed", "blocked"]
+    },
+    "documentationStatus": {
+      "type": "string",
+      "enum": ["pending", "researching", "completed", "failed"]
+    },
+    "checks": { "type": "array" },
+    "changes": { "type": "object" },
+    "diagnostics": { "type": "array" }
+  },
+  "additionalProperties": true
+}

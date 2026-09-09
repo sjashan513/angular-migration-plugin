@@ -5,14 +5,14 @@
     "email": "noreply@github.com"
   },
   "metadata": {
-    "description": "Plugin Angular con pipeline de migración, diagnóstico autónomo y comparación visual.",
-    "version": "3.0.0"
+    "description": "Controlador auditable de migraciones Angular major por major para proyectos npm limpios.",
+    "version": "5.0.0"
   },
   "plugins": [
     {
       "name": "angular-migration",
-      "description": "Siete agentes: migración Angular auditable con @Hermes, diagnóstico mecánico con @Asclepio y documentación visual con @Helios.",
-      "version": "3.0.0",
+      "description": "Migracion Angular auditable con dos agentes: Migration Implementer y Migration Documenter.",
+      "version": "5.0.0",
       "source": "."
     }
   ]

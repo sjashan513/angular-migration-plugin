@@ -1,7 +1,7 @@
 {
   "name": "angular-migration",
-  "version": "3.0.0",
-  "description": "Angular migration pipeline with grouped change ledgers, standalone code diagnostics and browser-native visual comparison. Use @Hermes, @Asclepio or @Helios.",
+  "version": "5.0.0",
+  "description": "Auditable Angular migration controller for sequential major upgrades on clean npm projects.",
   "author": {
     "name": "sjashan513",
     "url": "https://github.com/sjashan513"
@@ -13,10 +13,8 @@
     "migration",
     "copilot",
     "multi-agent",
-    "ionic",
-    "diagnostics",
-    "visual-regression",
-    "browser-tools",
-    "playwright"
+    "npm",
+    "powerShell",
+    "windows"
   ]
 }

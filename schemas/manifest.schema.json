@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://sjashan513.github.io/angular-migration-plugin/schemas/manifest.schema.json",
+  "title": "Angular migration manifest v5",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "manifestType",
+    "runId",
+    "sourceMajor",
+    "targetMajor",
+    "project",
+    "angular",
+    "policy",
+    "checks"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "enum": [5] },
+    "manifestType": { "type": "string", "enum": ["migration"] },
+    "runId": { "type": "string", "minLength": 1 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "sourceMajor": { "type": "integer", "minimum": 0 },
+    "targetMajor": { "type": "integer", "minimum": 1 },
+    "project": { "type": "object" },
+    "angular": { "type": "object" },
+    "dependencies": { "type": "array" },
+    "policies": { "type": "object" },
+    "authorizedOperations": { "type": "array", "items": { "type": "string" } },
+    "policy": {
+      "type": "object",
+      "required": [
+        "sequentialMajor",
+        "exactManifestVersions",
+        "allowForce",
+        "allowDirty",
+        "allowLegacyPeerDeps"
+      ],
+      "properties": {
+        "sequentialMajor": { "type": "boolean" },
+        "exactManifestVersions": { "type": "boolean" },
+        "allowForce": { "type": "boolean", "const": false },
+        "allowDirty": { "type": "boolean", "const": false },
+        "allowLegacyPeerDeps": { "type": "boolean", "const": false }
+      },
+      "additionalProperties": false
+    },
+    "checks": { "type": "array" },
+    "warnings": { "type": "array" }
+  },
+  "additionalProperties": true
+}

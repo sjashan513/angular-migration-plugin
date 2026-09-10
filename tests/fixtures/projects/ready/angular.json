@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "projects": {
+    "app": {
+      "projectType": "application",
+      "architect": {
+        "build": { "builder": "@angular-devkit/build-angular:browser" }
+      }
+    }
+  }
+}

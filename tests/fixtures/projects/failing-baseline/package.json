@@ -1,0 +1,13 @@
+{
+  "name": "failing-baseline-fixture",
+  "dependencies": {
+    "@angular/core": "^7.2.0"
+  },
+  "scripts": {
+    "typecheck": "echo types",
+    "lint": "echo lint",
+    "test:unit": "echo tests",
+    "build": "exit 1",
+    "e2e": "echo e2e"
+  }
+}

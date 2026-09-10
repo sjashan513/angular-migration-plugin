@@ -53,7 +53,8 @@ $toolDirectory = Join-Path $temporaryRoot ("angular-migration-v5-tools-" + [guid
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 New-Item -ItemType Directory -Path $toolDirectory -Force | Out-Null
 try {
-  "@echo off`r`necho v20.11.0" | Set-Content -LiteralPath (Join-Path $toolDirectory 'node.cmd') -Encoding ASCII
+  $nodeFixtureSource = 'public class NodeFixture { public static void Main() { System.Console.WriteLine("v20.11.0"); } }'
+  Add-Type -TypeDefinition $nodeFixtureSource -OutputAssembly (Join-Path $toolDirectory 'node.exe') -OutputType ConsoleApplication
   "@echo off`r`necho 10.2.4" | Set-Content -LiteralPath (Join-Path $toolDirectory 'npm.cmd') -Encoding ASCII
   $env:PATH = $toolDirectory + [IO.Path]::PathSeparator + $originalPath
 
@@ -115,7 +116,10 @@ try {
   "name": "fake-angular-app",
   "lockfileVersion": 1,
   "requires": true,
-  "dependencies": {}
+  "dependencies": {
+    "@angular/core": { "version": "7.2.16" },
+    "@angular/common": { "version": "7.2.16" }
+  }
 }
 '@ | Set-Content -LiteralPath (Join-Path $tmp 'package-lock.json') -Encoding UTF8
   '.angular-migration/' | Set-Content -LiteralPath (Join-Path $tmp '.gitignore') -Encoding ASCII
@@ -130,6 +134,10 @@ try {
         $inspection = Invoke-Facade -ProjectRoot $tmp -Arguments @('-Command', 'inspect')
         Assert-Check 'inspect is ready' ($inspection.ok -eq $true -and $inspection.status -eq 'ready')
         Assert-Check 'detects Angular major 7' ($inspection.data.angular.currentMajor -eq 7)
+        Assert-Check 'inspect does not create migration state' (-not (Test-Path (Join-Path $tmp '.angular-migration')))
+        Assert-Check 'toolchain uses fixtures' ($inspection.data.node.node.executable -eq (Join-Path $toolDirectory 'node.exe') -and $inspection.data.node.npm.executable -eq (Join-Path $toolDirectory 'npm.cmd'))
+        $unpublished = Invoke-Facade -ProjectRoot $tmp -Arguments @('-Command', 'run') -ExpectedExitCode 2
+        Assert-Check 'run is not published in phase 3' ($unpublished.error.code -eq 'unsupported_command')
         Assert-Check 'discovers lint and build' (($inspection.data.checks | Where-Object id -eq 'lint').status -eq 'configured' -and ($inspection.data.checks | Where-Object id -eq 'build').status -eq 'configured')
         Assert-Check 'checks use structured process arguments' ((@(($inspection.data.checks | Where-Object id -eq 'build').arguments) -join ' ') -eq 'run build')
         Assert-Check 'marks e2e as not-configured' (($inspection.data.checks | Where-Object id -eq 'e2e').status -eq 'not-configured')

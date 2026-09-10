@@ -21,6 +21,10 @@ function New-StartManifest {
             root = $Inspection.projectRoot
             packageManager = $Inspection.packageManager
             files = $Inspection.files
+            lockfileVersion = $Inspection.lockfileVersion
+            scripts = $Inspection.scripts
+            builders = $Inspection.builders
+            toolchain = $Inspection.node
             git = [ordered]@{
                 branch = $Inspection.git.branch
                 initialCommit = $Inspection.git.head
@@ -29,6 +33,8 @@ function New-StartManifest {
         sourceMajor = $Inspection.angular.currentMajor
         targetMajor = $Target
         angular = [ordered]@{
+            declaredCoreSpec = $Inspection.angular.declaredCoreSpec
+            resolvedCoreVersion = $Inspection.angular.resolvedCoreVersion
             current = $Inspection.angular.packages
             target = [ordered]@{
                 major = $Target
@@ -150,6 +156,72 @@ function Invoke-StartMigration {
     }
 }
 
+function Invoke-MigrationBaseline {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$RunId
+    )
+
+    $results = @()
+    $checks = @()
+    try {
+        $root = Resolve-MigrationRoot -Path $ProjectRoot
+        Assert-ActiveRunOwnership -ProjectRoot $root -RunId $RunId
+        $paths = Get-MigrationRunPaths -ProjectRoot $root -RunId $RunId
+        $state = Read-MigrationRunState -ProjectRoot $root -RunId $RunId
+        $manifest = Read-MigrationJson -Path $paths.manifest -Required
+        if ($manifest.schemaVersion -ne (Get-MigrationSchemaVersion) -or $manifest.runId -cne $RunId -or
+            $manifest.manifestType -cne 'migration' -or $manifest.project.root -cne $root -or $state.projectRoot -cne $root -or
+            $manifest.sourceMajor -ne $state.sourceMajor -or $manifest.targetMajor -ne $state.targetMajor -or
+            $manifest.project.git.initialCommit -cne $state.initialCommit) {
+            Throw-MigrationError -Code 'invalid_run_manifest' -Message 'Manifest and state must describe the same run and project.' -Status failed
+        }
+        if ($state.status -cne 'running' -or $state.stage -cne 'baseline') {
+            Throw-MigrationError -Code 'invalid_baseline_stage' -Message 'Baseline requires running/baseline.' -Status blocked
+        }
+        $git = Get-ProjectGit -ProjectRoot $root
+        if ($git.errorCode) { Throw-MigrationError -Code $git.errorCode -Message $git.error -Status blocked }
+        if ($git.head -cne $state.initialCommit) {
+            Throw-MigrationError -Code 'baseline_head_changed' -Message 'Git HEAD differs from the initial commit.' -Status blocked
+        }
+        $checks = @($manifest.checks)
+        $discovered = @(Get-ProjectChecks -Package (Get-ProjectPackage -ProjectRoot $root) -ProjectRoot $root -HasLockfile (Test-Path -LiteralPath (Join-Path $root 'package-lock.json') -PathType Leaf))
+        if ((ConvertTo-Json -InputObject $checks -Depth 10 -Compress) -cne (ConvertTo-Json -InputObject $discovered -Depth 10 -Compress)) {
+            Throw-MigrationError -Code 'invalid_check_contract' -Message 'Manifest checks differ from current discovery.' -Status blocked
+        }
+        foreach ($check in $checks) {
+            if ($check.status -eq 'configured') {
+                Add-MigrationEvent -ProjectRoot $root -RunId $RunId -Type 'check-started' -Stage 'baseline' -Data ([PSCustomObject]@{ checkId = $check.id })
+            }
+            $result = Invoke-ProjectCheck -Check $check -LogDirectory (Join-Path $paths.logs 'baseline')
+            $results += $result
+            if ($check.status -eq 'configured') {
+                Add-MigrationEvent -ProjectRoot $root -RunId $RunId -Type 'check-finished' -Stage 'baseline' -Data $result
+            }
+            if ($result.status -notin @('passed', 'not-configured')) {
+                return [PSCustomObject]@{
+                    status = 'blocked'; checks = $results; notStarted = @($checks | Select-Object -Skip $results.Count)
+                    diagnostic = [PSCustomObject]@{
+                        code = 'baseline_check_failed'; checkId = $result.id; exitCode = $result.exitCode; timedOut = $result.timedOut
+                        stdoutLog = $result.stdoutLog; stderrLog = $result.stderrLog
+                        message = "The project does not pass its existing $($result.id) before migration."
+                    }
+                }
+            }
+        }
+        Add-MigrationEvent -ProjectRoot $root -RunId $RunId -Type 'baseline-completed' -Stage 'baseline' -Data ([PSCustomObject]@{ checks = $results })
+        return [PSCustomObject]@{ status = 'passed'; checks = $results; notStarted = @(); diagnostic = $null }
+    }
+    catch {
+        $status = if ($_.Exception.Data['status'] -eq 'blocked') { 'blocked' } else { 'failed' }
+        $code = if ($_.Exception.Data['code']) { $_.Exception.Data['code'] } else { 'baseline_internal_error' }
+        return [PSCustomObject]@{
+            status = $status; checks = $results; notStarted = @($checks | Select-Object -Skip $results.Count)
+            diagnostic = [PSCustomObject]@{ code = $code; message = 'Baseline could not be completed.' }
+        }
+    }
+}
+
 function Invoke-MigrationStatus {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
@@ -186,6 +258,7 @@ function Invoke-MigrationStatus {
 }
 
 Export-ModuleMember -Function @(
+    'Invoke-MigrationBaseline',
     'Invoke-InspectMigration',
     'Invoke-StartMigration',
     'Invoke-MigrationStatus'

@@ -22,7 +22,24 @@
     "sourceMajor": { "type": "integer", "minimum": 0 },
     "targetMajor": { "type": "integer", "minimum": 1 },
     "project": { "type": "object" },
-    "angular": { "type": "object" },
+    "angular": {
+      "type": "object",
+      "required": [
+        "declaredCoreSpec",
+        "resolvedCoreVersion",
+        "current",
+        "target"
+      ],
+      "properties": {
+        "declaredCoreSpec": { "type": "string", "minLength": 1 },
+        "resolvedCoreVersion": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
+        },
+        "current": { "type": "object" },
+        "target": { "type": "object" }
+      }
+    },
     "dependencies": { "type": "array" },
     "policies": { "type": "object" },
     "authorizedOperations": { "type": "array", "items": { "type": "string" } },
@@ -44,7 +61,52 @@
       },
       "additionalProperties": false
     },
-    "checks": { "type": "array" },
+    "checks": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "phase",
+          "status",
+          "blocking",
+          "executable",
+          "arguments",
+          "displayCommand",
+          "cwd",
+          "timeoutSeconds",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "enum": [
+              "install",
+              "dependency-tree",
+              "typecheck",
+              "lint",
+              "unit-test",
+              "build",
+              "e2e"
+            ]
+          },
+          "phase": { "const": "baseline" },
+          "status": { "enum": ["configured", "not-configured", "blocked"] },
+          "blocking": { "const": true },
+          "executable": { "enum": ["npm", null] },
+          "arguments": { "type": "array", "items": { "type": "string" } },
+          "displayCommand": { "type": ["string", "null"] },
+          "cwd": { "type": "string", "minLength": 1 },
+          "timeoutSeconds": {
+            "type": "integer",
+            "enum": [300, 600, 900, 1200, 1800]
+          },
+          "reason": { "type": ["string", "null"] }
+        },
+        "additionalProperties": false
+      }
+    },
     "warnings": { "type": "array" }
   },
   "additionalProperties": true

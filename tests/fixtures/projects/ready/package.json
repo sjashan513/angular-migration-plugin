@@ -1,0 +1,14 @@
+{
+  "name": "baseline-fixture",
+  "dependencies": {
+    "@angular/core": "^7.2.0",
+    "@angular/common": "^7.2.0"
+  },
+  "scripts": {
+    "typecheck": "echo types",
+    "lint": "echo lint",
+    "test:unit": "echo tests",
+    "build": "echo build",
+    "e2e": "echo e2e"
+  }
+}

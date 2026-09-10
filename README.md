@@ -4,10 +4,10 @@ Plugin interno para migraciones Angular auditables en Windows con PowerShell 5.1
 
 ## Estado
 
-La fase 3 implementa la inspeccion, el arranque de un unico salto `N -> N+1`
-y la baseline interna. Angular actual se obtiene del lockfile; se conservan
-el spec declarado, herramientas, configuraciones y checks estructurados.
-La resolucion de versiones y la ejecucion de la migracion quedan pendientes.
+La fase 4 anade la resolucion exacta de dependencias despues de una baseline
+aprobada. El resolver consulta unicamente `npm view`, conserva el estilo de
+los specs, publica un manifest con hash SHA-256 canonico y no modifica
+`package.json`, `package-lock.json`, codigo fuente ni Git.
 La fachada sigue exponiendo solamente `inspect`, `start` y `status`.
 
 ## Uso
@@ -50,6 +50,16 @@ solo en memoria y un diagnostico sin el contenido de logs. Nunca devuelve
 transiciones pertenece a la fase 5. Los eventos son append-only y los logs
 UTF-8 sin BOM quedan en `logs/baseline/` dentro del run.
 
+## Resolucion de dependencias
+
+Tras una baseline `passed`, `Invoke-MigrationResolution` resuelve el manifest
+pendiente en memoria y lo publica atomicamente bajo
+`.angular-migration/runs/<run-id>/manifest.json`. La publicación se relee,
+verifica y registra en `state.json`; cualquier sustitucion posterior produce
+`manifest_integrity_failed` y un manifest resuelto no puede escribirse de nuevo.
+La resolucion utiliza el registry configurado de npm a traves de `npm view`,
+sin consultar la red directamente ni publicar credenciales.
+
 ## Estructura
 
 ```text
@@ -60,6 +70,7 @@ scripts/
   angular-migration.ps1
   modules/
     Migration.Core.psm1
+    Migration.Dependencies.psm1
     Migration.State.psm1
     Migration.Project.psm1
     Migration.Pipeline.psm1
@@ -71,6 +82,9 @@ tests/
   unit/
     Project.Tests.ps1
     Baseline.Tests.ps1
+    Dependencies.Tests.ps1
+  integration/
+    DependencyResolution.Tests.ps1
   fixtures/
 docs/
   phases/
@@ -83,6 +97,8 @@ La instalacion del plugin no escribe artefactos en el propio plugin: la fachada 
 ```powershell
 powershell -NoProfile -File tests\unit\Project.Tests.ps1
 powershell -NoProfile -File tests\unit\Baseline.Tests.ps1
+powershell -NoProfile -File tests\unit\Dependencies.Tests.ps1
+powershell -NoProfile -File tests\integration\DependencyResolution.Tests.ps1
 powershell -NoProfile -File tests\smoke.ps1
 ```
 
@@ -105,5 +121,13 @@ El smoke compila un ejecutable Node ficticio con `Add-Type` de PowerShell 5.1.
 | Logs fuera de state y stdout                     | `Baseline.Tests.ps1`: dos logs por ejecucion, contenido ausente del resultado y state                           |
 | Sin Node/npm/red reales                          | Fixtures de ambas suites; smoke verifica rutas de ejecutables ficticios                                         |
 | run sigue sin publicarse                         | `smoke.ps1`: unsupported_command                                                                                |
+
+## Checklist de salida de fase 4
+
+- `Dependencies.Tests.ps1` cubre alineacion Angular, toolchain, peers, Node, specs, metadata y hash canonico.
+- `DependencyResolution.Tests.ps1` verifica dos runs independientes, publicacion atomica, inmutabilidad y deteccion de manipulacion.
+- El resolver usa solo `npm view` mediante argumentos estructurados y cache por run.
+- Todas las dependencias directas conservan seccion y `writeSpec`; los targets publicados son versiones exactas estables.
+- La resolucion no modifica archivos de dependencias, codigo fuente ni Git.
 
 MIT

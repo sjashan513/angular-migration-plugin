@@ -1,0 +1,11 @@
+{
+  "@angular/core@8": {
+    "version": "8.2.14",
+    "peerDependencies": { "rxjs": "^6.4.0", "zone.js": "~0.9.0" },
+    "peerDependenciesMeta": {},
+    "engines": { "node": ">=10.9.0" },
+    "ng-update": { "migrations": "migrations.json", "packageGroup": "angular" },
+    "deprecated": false,
+    "dist-tags": { "latest": "20.0.0" }
+  }
+}

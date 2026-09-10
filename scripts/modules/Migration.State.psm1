@@ -191,6 +191,9 @@ function New-MigrationRunState {
         attempt = 1
         migrationStatus = 'running'
         documentationStatus = 'pending'
+        baselineStatus = 'pending'
+        resolutionStatus = 'pending'
+        manifestSha256 = $null
         initialCommit = $InitialCommit
         lastDiagnostic = $null
         createdAt = Get-MigrationUtcNow
@@ -221,12 +224,21 @@ function Assert-MigrationRunState {
     $statusProperty = Get-MigrationMember -Object $State -Name 'status'
     $sourceProperty = Get-MigrationMember -Object $State -Name 'sourceMajor'
     $targetProperty = Get-MigrationMember -Object $State -Name 'targetMajor'
+    $baselineProperty = Get-MigrationMember -Object $State -Name 'baselineStatus'
+    $resolutionProperty = Get-MigrationMember -Object $State -Name 'resolutionStatus'
+    $manifestHashProperty = Get-MigrationMember -Object $State -Name 'manifestSha256'
     $validStatuses = @('running', 'needs-repair', 'verified', 'completed', 'blocked', 'failed')
+    $validBaselineStatuses = @('pending', 'passed')
+    $validResolutionStatuses = @('pending', 'resolved')
+    $hashValid = $null -eq $manifestHashProperty.value -or [string]$manifestHashProperty.value -match '^[0-9a-f]{64}$'
     if (-not $schemaProperty.exists -or $schemaProperty.value -ne (Get-MigrationSchemaVersion) -or
         -not $runIdProperty.exists -or $runIdProperty.value -ne $ExpectedRunId -or
         -not $statusProperty.exists -or $validStatuses -notcontains $statusProperty.value -or
         -not $sourceProperty.exists -or -not $targetProperty.exists -or
-        [int]$targetProperty.value -ne ([int]$sourceProperty.value + 1)) {
+        [int]$targetProperty.value -ne ([int]$sourceProperty.value + 1) -or
+        -not $baselineProperty.exists -or $validBaselineStatuses -notcontains $baselineProperty.value -or
+        -not $resolutionProperty.exists -or $validResolutionStatuses -notcontains $resolutionProperty.value -or
+        -not $manifestHashProperty.exists -or -not $hashValid) {
         Throw-MigrationError -Code 'invalid_run_state' -Message "Migration state is invalid for run: $ExpectedRunId" -Status failed
     }
 }
@@ -243,6 +255,25 @@ function Write-MigrationRunState {
     $paths = Get-MigrationRunPaths -ProjectRoot $ProjectRoot -RunId $RunId
     $State.updatedAt = Get-MigrationUtcNow
     Write-MigrationJsonAtomic -Value $State -Path $paths.state
+}
+
+function Write-MigrationRunManifest {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)]$Manifest
+    )
+
+    Assert-ActiveRunOwnership -ProjectRoot $ProjectRoot -RunId $RunId
+    $paths = Get-MigrationRunPaths -ProjectRoot $ProjectRoot -RunId $RunId
+    $state = Read-MigrationRunState -ProjectRoot $ProjectRoot -RunId $RunId
+    if ($state.manifestSha256) {
+        Throw-MigrationError -Code 'manifest_immutable' -Message 'The resolved migration manifest is immutable.' -Status failed
+    }
+    if ($Manifest.schemaVersion -ne (Get-MigrationSchemaVersion) -or $Manifest.manifestType -ne 'migration' -or $Manifest.runId -cne $RunId) {
+        Throw-MigrationError -Code 'invalid_run_manifest' -Message 'Manifest does not belong to the active run.' -Status failed
+    }
+    Write-MigrationJsonAtomic -Value $Manifest -Path $paths.manifest
 }
 
 function Add-MigrationEvent {
@@ -295,5 +326,6 @@ Export-ModuleMember -Function @(
     'Assert-MigrationRunState',
     'Read-MigrationRunState',
     'Write-MigrationRunState',
+    'Write-MigrationRunManifest',
     'Add-MigrationEvent'
 )

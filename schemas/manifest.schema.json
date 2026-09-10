@@ -9,8 +9,12 @@
     "runId",
     "sourceMajor",
     "targetMajor",
+    "resolutionStatus",
+    "resolverVersion",
     "project",
     "angular",
+    "dependencies",
+    "warnings",
     "policy",
     "checks"
   ],
@@ -21,6 +25,10 @@
     "createdAt": { "type": "string", "format": "date-time" },
     "sourceMajor": { "type": "integer", "minimum": 0 },
     "targetMajor": { "type": "integer", "minimum": 1 },
+    "resolutionStatus": { "type": "string", "enum": ["pending", "resolved"] },
+    "resolverVersion": { "type": "integer", "const": 1 },
+    "resolvedAt": { "type": "string", "format": "date-time" },
+    "manifestSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "project": { "type": "object" },
     "angular": {
       "type": "object",
@@ -40,7 +48,44 @@
         "target": { "type": "object" }
       }
     },
-    "dependencies": { "type": "array" },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "section": {
+            "enum": [
+              "dependencies",
+              "devDependencies",
+              "optionalDependencies",
+              "peerDependencies"
+            ]
+          },
+          "role": { "type": "string", "minLength": 1 },
+          "kind": { "type": "string", "enum": ["registry"] },
+          "declaredSpec": { "type": ["string", "null"] },
+          "currentVersion": { "type": ["string", "null"] },
+          "targetVersion": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+          },
+          "writeSpec": { "type": ["string", "null"] },
+          "change": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string", "minLength": 1 },
+          "metadata": { "type": "object" }
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "required": ["activeVersion", "requiredRange", "compatible"],
+      "properties": {
+        "activeVersion": { "type": "string", "minLength": 1 },
+        "requiredRange": { "type": "string", "minLength": 1 },
+        "compatible": { "type": "boolean" }
+      }
+    },
     "policies": { "type": "object" },
     "authorizedOperations": { "type": "array", "items": { "type": "string" } },
     "policy": {
@@ -109,5 +154,32 @@
     },
     "warnings": { "type": "array" }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "resolutionStatus": { "const": "resolved" } } },
+      "then": {
+        "required": ["resolvedAt", "node", "manifestSha256"],
+        "properties": {
+          "dependencies": {
+            "items": {
+              "required": [
+                "name",
+                "section",
+                "role",
+                "kind",
+                "declaredSpec",
+                "currentVersion",
+                "targetVersion",
+                "writeSpec",
+                "change",
+                "reason",
+                "metadata"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
   "additionalProperties": true
 }

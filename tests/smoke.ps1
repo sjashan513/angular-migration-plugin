@@ -53,31 +53,31 @@ $toolDirectory = Join-Path $temporaryRoot ("angular-migration-v5-tools-" + [guid
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 New-Item -ItemType Directory -Path $toolDirectory -Force | Out-Null
 try {
-  $nodeFixtureSource = 'public class NodeFixture { public static void Main() { System.Console.WriteLine("v20.11.0"); } }'
-  Add-Type -TypeDefinition $nodeFixtureSource -OutputAssembly (Join-Path $toolDirectory 'node.exe') -OutputType ConsoleApplication
-  "@echo off`r`necho 10.2.4" | Set-Content -LiteralPath (Join-Path $toolDirectory 'npm.cmd') -Encoding ASCII
-  $env:PATH = $toolDirectory + [IO.Path]::PathSeparator + $originalPath
+    $nodeFixtureSource = 'public class NodeFixture { public static void Main() { System.Console.WriteLine("v20.11.0"); } }'
+    Add-Type -TypeDefinition $nodeFixtureSource -OutputAssembly (Join-Path $toolDirectory 'node.exe') -OutputType ConsoleApplication
+    "@echo off`r`necho 10.2.4" | Set-Content -LiteralPath (Join-Path $toolDirectory 'npm.cmd') -Encoding ASCII
+    $env:PATH = $toolDirectory + [IO.Path]::PathSeparator + $originalPath
 
-  Import-Module (Resolve-Path $coreModulePath) -DisableNameChecking -Force
-  Import-Module (Resolve-Path $projectModulePath) -DisableNameChecking -Force
-  $volumeRoot = [IO.Path]::GetPathRoot($tmp)
-  Assert-Check 'volume root is preserved' ((Resolve-MigrationRoot -Path $volumeRoot) -eq $volumeRoot)
-  Assert-Check 'valid Angular range exposes its major' ((Get-VersionMajor -Spec '^7.2.0') -eq 7)
-  Assert-Check 'ambiguous version text is rejected' ($null -eq (Get-VersionMajor -Spec 'beta7'))
+    Import-Module (Resolve-Path $coreModulePath) -DisableNameChecking -Force
+    Import-Module (Resolve-Path $projectModulePath) -DisableNameChecking -Force
+    $volumeRoot = [IO.Path]::GetPathRoot($tmp)
+    Assert-Check 'volume root is preserved' ((Resolve-MigrationRoot -Path $volumeRoot) -eq $volumeRoot)
+    Assert-Check 'valid Angular range exposes its major' ((Get-VersionMajor -Spec '^7.2.0') -eq 7)
+    Assert-Check 'ambiguous version text is rejected' ($null -eq (Get-VersionMajor -Spec 'beta7'))
 
-  $argumentScript = Join-Path $toolDirectory 'argument-echo.ps1'
-  '[Console]::Write($args[0])' | Set-Content -LiteralPath $argumentScript -Encoding ASCII
-  $powershellPath = (Get-Command powershell.exe).Source
-  $argumentResult = Invoke-MigrationProcess -FilePath $powershellPath -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $argumentScript, 'value with spaces') -WorkingDirectory $tmp -TimeoutSeconds 10
-  Assert-Check 'process arguments preserve boundaries' ($argumentResult.exitCode -eq 0 -and $argumentResult.stdout -eq 'value with spaces')
+    $argumentScript = Join-Path $toolDirectory 'argument-echo.ps1'
+    '[Console]::Write($args[0])' | Set-Content -LiteralPath $argumentScript -Encoding ASCII
+    $powershellPath = (Get-Command powershell.exe).Source
+    $argumentResult = Invoke-MigrationProcess -FilePath $powershellPath -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $argumentScript, 'value with spaces') -WorkingDirectory $tmp -TimeoutSeconds 10
+    Assert-Check 'process arguments preserve boundaries' ($argumentResult.exitCode -eq 0 -and $argumentResult.stdout -eq 'value with spaces')
 
-  $atomicPath = Join-Path $tmp 'atomic.json'
-  Write-MigrationJsonAtomic -Value ([ordered]@{ version = 1 }) -Path $atomicPath
-  Write-MigrationJsonAtomic -Value ([ordered]@{ version = 2 }) -Path $atomicPath
-  $atomicValue = Get-Content -LiteralPath $atomicPath -Raw | ConvertFrom-Json
-  $temporaryFiles = @(Get-ChildItem -LiteralPath $tmp -Filter 'atomic.json.*.tmp' -File -ErrorAction SilentlyContinue)
-  $backupFiles = @(Get-ChildItem -LiteralPath $tmp -Filter 'atomic.json.*.bak' -File -ErrorAction SilentlyContinue)
-  Assert-Check 'atomic write leaves valid latest JSON' ($atomicValue.version -eq 2 -and $temporaryFiles.Count -eq 0 -and $backupFiles.Count -eq 0)
+    $atomicPath = Join-Path $tmp 'atomic.json'
+    Write-MigrationJsonAtomic -Value ([ordered]@{ version = 1 }) -Path $atomicPath
+    Write-MigrationJsonAtomic -Value ([ordered]@{ version = 2 }) -Path $atomicPath
+    $atomicValue = Get-Content -LiteralPath $atomicPath -Raw | ConvertFrom-Json
+    $temporaryFiles = @(Get-ChildItem -LiteralPath $tmp -Filter 'atomic.json.*.tmp' -File -ErrorAction SilentlyContinue)
+    $backupFiles = @(Get-ChildItem -LiteralPath $tmp -Filter 'atomic.json.*.bak' -File -ErrorAction SilentlyContinue)
+    Assert-Check 'atomic write leaves valid latest JSON' ($atomicValue.version -eq 2 -and $temporaryFiles.Count -eq 0 -and $backupFiles.Count -eq 0)
 
     Push-Location $tmp
     try {
@@ -122,7 +122,7 @@ try {
   }
 }
 '@ | Set-Content -LiteralPath (Join-Path $tmp 'package-lock.json') -Encoding UTF8
-  '.angular-migration/' | Set-Content -LiteralPath (Join-Path $tmp '.gitignore') -Encoding ASCII
+        '.angular-migration/' | Set-Content -LiteralPath (Join-Path $tmp '.gitignore') -Encoding ASCII
 
         & git init --quiet
         & git config user.email 'smoke@example.invalid'
@@ -137,7 +137,7 @@ try {
         Assert-Check 'inspect does not create migration state' (-not (Test-Path (Join-Path $tmp '.angular-migration')))
         Assert-Check 'toolchain uses fixtures' ($inspection.data.node.node.executable -eq (Join-Path $toolDirectory 'node.exe') -and $inspection.data.node.npm.executable -eq (Join-Path $toolDirectory 'npm.cmd'))
         $unpublished = Invoke-Facade -ProjectRoot $tmp -Arguments @('-Command', 'run') -ExpectedExitCode 2
-        Assert-Check 'run is not published in phase 3' ($unpublished.error.code -eq 'unsupported_command')
+        Assert-Check 'run is not published in phase 4' ($unpublished.error.code -eq 'unsupported_command')
         Assert-Check 'discovers lint and build' (($inspection.data.checks | Where-Object id -eq 'lint').status -eq 'configured' -and ($inspection.data.checks | Where-Object id -eq 'build').status -eq 'configured')
         Assert-Check 'checks use structured process arguments' ((@(($inspection.data.checks | Where-Object id -eq 'build').arguments) -join ' ') -eq 'run build')
         Assert-Check 'marks e2e as not-configured' (($inspection.data.checks | Where-Object id -eq 'e2e').status -eq 'not-configured')
@@ -177,6 +177,10 @@ try {
         Assert-Check 'state exists' (Test-Path (Join-Path $runRoot 'state.json'))
         Assert-Check 'events exist' (Test-Path (Join-Path $runRoot 'events.jsonl'))
         Assert-Check 'ownership lock exists' (Test-Path (Join-Path $tmp '.angular-migration\active.lock'))
+        $startManifest = Get-Content -LiteralPath (Join-Path $runRoot 'manifest.json') -Raw | ConvertFrom-Json
+        $startState = Get-Content -LiteralPath (Join-Path $runRoot 'state.json') -Raw | ConvertFrom-Json
+        Assert-Check 'manifest starts pending' ($startManifest.resolutionStatus -eq 'pending' -and $startManifest.resolverVersion -eq 1)
+        Assert-Check 'state starts with resolution contract' ($startState.baselineStatus -eq 'pending' -and $startState.resolutionStatus -eq 'pending' -and $null -eq $startState.manifestSha256)
 
         Write-Host '3. status and ownership' -ForegroundColor Cyan
         $status = Invoke-Facade -ProjectRoot $tmp -Arguments @('-Command', 'status', '-RunId', $runId)

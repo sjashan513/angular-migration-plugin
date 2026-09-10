@@ -1,13 +1,17 @@
 # angular-migration
 
-Plugin interno para migraciones Angular auditables en Windows con PowerShell 5.1.
+Plugin interno para migraciones Angular auditables en Copilot CLI sobre Windows.
+El facade es compatible con Windows PowerShell 5.1; los hooks de Copilot CLI
+requieren PowerShell 7 o superior. Copilot cloud agent no esta soportado.
 
 ## Estado
 
-La fase 5 ejecuta o reanuda de forma determinista el salto autorizado por el
+La fase 6 incorpora reparaciones controladas sobre el salto autorizado por el
 manifest. Crea una rama dedicada, ejecuta Angular CLI local con versiones
 exactas, alinea el lockfile, instala con `npm ci`, valida el proyecto y publica
-un resultado tecnico inmutable. No invoca agentes ni genera documentacion final.
+un resultado tecnico inmutable. `migration-implementer` recibe un contexto
+cerrado; no decide versiones ni transiciones. La documentacion final sigue
+reservada para la fase documental.
 
 ## Uso
 
@@ -54,6 +58,70 @@ El resultado estable es `verified/document`, con el lock mantenido para la fase
 documental. Los fallos de codigo con scope seguro producen `needs-repair`; las
 precondiciones o incompatibilidades producen `blocked`; los errores internos,
 `failed`. Una segunda llamada sobre un resultado verificado no repite procesos.
+
+## Reparacion controlada
+
+Un fallo tecnico con perimetro seguro deja el run en `needs-repair`. `run` no
+reanuda ese estado por si solo. El controlador entrega al implementador el
+contexto y las invocaciones exactas, usando la ruta absoluta instalada del facade:
+
+```powershell
+& '<plugin>\scripts\angular-migration.ps1' repair-context -RunId <run-id>
+& '<plugin>\scripts\angular-migration.ps1' record-repair -RunId <run-id> -InputFile '.angular-migration/runs/<run-id>/inbox/repair.json'
+```
+
+`repair-context` no escribe estado. Su envelope usa `status: needs-repair` y
+exit code 2 aunque el contexto se haya obtenido correctamente. El agente solo
+puede editar `allowedPaths`, salvo el archivo contractual `submissionPath`.
+No puede ejecutar herramientas de build ni comandos arbitrarios. Los nombres
+de herramienta desconocidos se deniegan; `edit`/`create` usan rutas explicitas,
+y las lecturas/busquedas rechazan credenciales y enlaces. El hook deniega
+busquedas recursivas cuyo directorio contenga credenciales o enlaces.
+
+`record-repair` exige ownership exclusivo de proceso, schema cerrado, identidad
+del intento, manifest y HEAD intactos, diff real coincidente con el informe,
+rutas canonicas sin enlaces, modos validos y hashes protegidos. Rechaza informes
+con datos sensibles detectables. Aceptar crea un commit de rutas exactas y
+devuelve `running / rerun-failed-check`, nunca `verified`.
+
+El controlador, fuera del subagente, ejecuta `run` para repetir el check fallido
+y continuar con los restantes. Los checks y comandos Angular anteriores ya
+confirmados no se repiten. El runtime del hook se copia durante `start` y su
+SHA-256 se guarda en state; el plugin registra `preToolUse` y `subagentStop`.
+No se guardan argumentos ni resultados completos de herramientas.
+
+Tres rechazos o fallos equivalentes bloquean el run con
+`repair_attempts_exhausted`; se permiten como maximo cinco intervenciones
+totales. El quinto cambio aceptado aun debe pasar su gate y no habilita un sexto.
+Un diagnostico nuevo empieza en intento uno. Como el checkpoint cambia tras
+cada commit aceptado, el fingerprint contractual tambien cambia: el presupuesto
+de fallos equivalentes se conserva mediante la identidad del diagnostico sin
+checkpoint. Reconsultar el mismo contexto no altera fingerprint ni intento.
+
+Los informes se archivan como `repairs/<digest>-attempt-<n>.json`, donde
+`digest` es el hexadecimal del fingerprint sin `sha256:` (el colon no es un
+nombre de archivo valido en Windows). El rollback restaura solo tracked del
+intento y elimina solo untracked inventariados por el hook antes de crearlos.
+Los untracked no inventariados y cambios previos del usuario se conservan;
+pueden requerir revision manual antes de continuar. Un lock de registro dejado
+por un proceso interrumpido requiere confirmar que ese proceso termino antes
+de retirarlo manualmente.
+
+### Limite de seguridad
+
+La garantia es detectar y rechazar entregas indebidas, con rollback selectivo;
+no es impedir absolutamente toda escritura previa. Los timeouts de hooks son
+fail-open y estos archivos pertenecen al mismo usuario del sistema operativo.
+El estado del controlador y su instalacion son la base de confianza. Un proceso
+con acceso arbitrario a esos archivos no queda aislado por este plugin. Para
+esa garantia se necesita una sandbox o separacion de permisos externa.
+
+La configuracion es exclusivamente para Copilot CLI en Windows: no hay
+implementacion Bash ni soporte parcial para cloud agent. Las pruebas del hook
+usan fixtures JSON por stdin, sin arrancar Copilot. Contrato, hook, ciclo de
+reparacion y pipeline verificados en Windows PowerShell 5.1 y PowerShell 7.6.6.
+La lectura JSON conserva timestamps como texto cuando el runtime lo permite,
+para mantener estables los hashes del manifest y del resultado entre runtimes.
 
 ## Baseline interna
 
@@ -128,6 +196,9 @@ powershell -NoProfile -File tests\unit\StateMachine.Tests.ps1
 powershell -NoProfile -File tests\unit\PackageManifestWriter.Tests.ps1
 powershell -NoProfile -File tests\integration\DependencyResolution.Tests.ps1
 powershell -NoProfile -File tests\integration\PipelineExecution.Tests.ps1
+powershell -NoProfile -File tests\unit\RepairContract.Tests.ps1
+powershell -NoProfile -File tests\unit\CopilotPolicyHook.Tests.ps1
+powershell -NoProfile -File tests\integration\RepairCycle.Tests.ps1
 powershell -NoProfile -File tests\smoke.ps1
 ```
 

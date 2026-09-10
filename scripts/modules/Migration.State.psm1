@@ -215,6 +215,13 @@ function New-MigrationRunState {
         activeOperation     = $null
         completedOperations = @()
         lastDiagnostic      = $null
+        repair              = $null
+        repairTotal         = 0
+        repairs             = @()
+        validationResults   = @()
+        angularCommandIndex = 0
+        runtimeSha256       = $null
+        configRepairAllowed = $false
         createdAt           = Get-MigrationUtcNow
         updatedAt           = Get-MigrationUtcNow
     }

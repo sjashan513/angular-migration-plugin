@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "powershell": "if (Test-Path -LiteralPath '.\\.angular-migration\\runtime\\copilot-policy.ps1' -PathType Leaf) { & '.\\.angular-migration\\runtime\\copilot-policy.ps1' -Event preToolUse } else { [Console]::Out.Write('{}') }",
+        "cwd": ".",
+        "timeoutSec": 10
+      }
+    ],
+    "subagentStop": [
+      {
+        "type": "command",
+        "powershell": "if (Test-Path -LiteralPath '.\\.angular-migration\\runtime\\copilot-policy.ps1' -PathType Leaf) { & '.\\.angular-migration\\runtime\\copilot-policy.ps1' -Event subagentStop } else { [Console]::Out.Write('{}') }",
+        "cwd": ".",
+        "timeoutSec": 10
+      }
+    ]
+  }
+}

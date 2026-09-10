@@ -181,6 +181,12 @@ try {
         $startState = Get-Content -LiteralPath (Join-Path $runRoot 'state.json') -Raw | ConvertFrom-Json
         Assert-Check 'manifest starts pending' ($startManifest.resolutionStatus -eq 'pending' -and $startManifest.resolverVersion -eq 1)
         Assert-Check 'state starts with resolution contract' ($startState.baselineStatus -eq 'pending' -and $startState.resolutionStatus -eq 'pending' -and $null -eq $startState.manifestSha256)
+        $runtimePath = Join-Path $tmp '.angular-migration/runtime/copilot-policy.ps1'
+        Assert-Check 'start copies the pinned hook runtime' ((Test-Path -LiteralPath $runtimePath) -and $startState.runtimeSha256 -ceq (Get-FileHash -LiteralPath $runtimePath).Hash.ToLowerInvariant())
+        $noRepair = Invoke-Facade -ProjectRoot $tmp -Arguments @('-Command', 'repair-context', '-RunId', $runId) -ExpectedExitCode 2
+        Assert-Check 'repair-context refuses running baseline' ($noRepair.error.code -eq 'invalid_repair_stage')
+        $noRecord = Invoke-Facade -ProjectRoot $tmp -Arguments @('-Command', 'record-repair', '-RunId', $runId, '-InputFile', ".angular-migration/runs/$runId/inbox/repair.json") -ExpectedExitCode 2
+        Assert-Check 'record-repair refuses running baseline' ($noRecord.error.code -eq 'invalid_repair_stage')
 
         Write-Host '3. status and ownership' -ForegroundColor Cyan
         $status = Invoke-Facade -ProjectRoot $tmp -Arguments @('-Command', 'status', '-RunId', $runId)

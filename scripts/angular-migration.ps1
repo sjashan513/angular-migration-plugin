@@ -4,7 +4,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$Command,
     [int]$TargetMajor = 0,
-    [string]$RunId
+    [string]$RunId,
+    [string]$InputFile
 )
 
 Set-StrictMode -Version 2.0
@@ -50,8 +51,10 @@ try {
         'start' { Invoke-StartMigration -ProjectRoot $projectRoot -TargetMajor $TargetMajor }
         'status' { Invoke-MigrationStatus -ProjectRoot $projectRoot -RunId $RunId }
         'run' { Invoke-MigrationRun -ProjectRoot $projectRoot -RunId $RunId }
+        'repair-context' { Invoke-MigrationRepairContext -ProjectRoot $projectRoot -RunId $RunId }
+        'record-repair' { Invoke-MigrationRecordRepair -ProjectRoot $projectRoot -RunId $RunId -InputFile $InputFile }
         default {
-            Throw-MigrationError -Code 'unsupported_command' -Message "Unsupported v5 command: $Command" -Status blocked -Details ([PSCustomObject]@{ supported = @('inspect', 'start', 'status', 'run') })
+            Throw-MigrationError -Code 'unsupported_command' -Message "Unsupported v5 command: $Command" -Status blocked -Details ([PSCustomObject]@{ supported = @('inspect', 'start', 'status', 'run', 'repair-context', 'record-repair') })
         }
     }
 

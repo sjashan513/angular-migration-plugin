@@ -92,6 +92,7 @@ function Invoke-HappyPath {
     $start = Invoke-StartMigration -ProjectRoot $ProjectRoot -TargetMajor 8
     $runId = [string]$start.data.runId
     $result = Invoke-MigrationRun -ProjectRoot $ProjectRoot -RunId $runId
+    if (-not $result.ok) { throw ('Happy path failed: ' + ($result | ConvertTo-Json -Depth 20 -Compress)) }
     Assert-Integration 'happy path reaches verified' ($result.ok -and $result.status -eq 'verified')
     $state = Read-MigrationRunState -ProjectRoot $ProjectRoot -RunId $runId
     $paths = Get-MigrationRunPaths -ProjectRoot $ProjectRoot -RunId $runId
@@ -191,8 +192,24 @@ try {
     Assert-Integration 'final check failure produces scoped needs-repair' ($repairFirst.status -eq 'needs-repair' -and $repairFirst.error.code -eq 'validation_failed' -and (Test-Path -LiteralPath (Join-Path $repairRoot ('.angular-migration/runs/' + $repairStart.data.runId + '/failure-context.json'))))
     Assert-Integration 'needs-repair keeps ownership' (Test-Path -LiteralPath (Join-Path $repairRoot '.angular-migration/active.lock') -PathType Leaf)
     Remove-Item -LiteralPath (Join-Path $repairRoot '.fixture-fail-second-build') -Force
+    $unregistered = Invoke-MigrationRun -ProjectRoot $repairRoot -RunId $repairStart.data.runId
+    Assert-Integration 'run cannot resume without record-repair' ($unregistered.status -eq 'needs-repair')
+    $context = (Invoke-MigrationRepairContext -ProjectRoot $repairRoot -RunId $repairStart.data.runId).data
+    Add-Content -LiteralPath (Join-Path $repairRoot 'src/app.component.ts') -Value 'export const repaired = true;'
+    $submission = [PSCustomObject]@{
+        schemaVersion = 1; runId = $context.runId; fingerprint = $context.fingerprint; attempt = $context.attempt
+        rootCause = 'Fixture compilation diagnostic requires source adaptation.'
+        changes = @([PSCustomObject]@{ path = 'src/app.component.ts'; summary = 'Adapt fixture source.'; reason = 'Build diagnostic.' })
+        evidence = @([PSCustomObject]@{ kind = 'diagnostic'; reference = $context.diagnostic.logFiles[0]; claim = 'Original build failed.' })
+        unresolvedWarnings = @()
+    }
+    Write-MigrationJsonAtomic -Value $submission -Path (Join-Path $repairRoot $context.submissionPath)
+    $accepted = Invoke-MigrationRecordRepair -ProjectRoot $repairRoot -RunId $context.runId -InputFile $context.submissionPath
+    Assert-Integration 'record-repair accepts minimal source change' ($accepted.ok -and $accepted.data.nextAction -eq 'rerun-failed-check')
+    $traceCount = @(Get-Trace $repairRoot).Count
     $repairSecond = Invoke-MigrationRun -ProjectRoot $repairRoot -RunId $repairStart.data.runId
-    Assert-Integration 'explicit rerun after repair reaches verified' ($repairSecond.status -eq 'verified')
+    Assert-Integration 'registered repair reaches verified' ($repairSecond.status -eq 'verified')
+    Assert-Integration 'rerun executes only failed check and remaining gates' (((Get-Trace $repairRoot | Select-Object -Skip $traceCount) -join '|') -eq 'npm-run:build|npm-run:e2e')
 
     $repairLimitRoot = Join-Path $temporaryRoot 'repair-limit'
     New-PipelineProject -Path $repairLimitRoot
@@ -204,7 +221,7 @@ try {
     $repairLimitState.lastDiagnostic = [PSCustomObject]@{ code = 'validation_failed'; details = [PSCustomObject]@{ context = [PSCustomObject]@{ fingerprint = 'same-fingerprint' } } }
     Write-MigrationRunState -ProjectRoot $repairLimitRoot -RunId $repairLimitStart.data.runId -State $repairLimitState
     $repairLimitRun = Invoke-MigrationRun -ProjectRoot $repairLimitRoot -RunId $repairLimitStart.data.runId
-    Assert-Integration 'fourth identical repair attempt is blocked' ($repairLimitRun.status -eq 'blocked' -and $repairLimitRun.error.code -eq 'repair_attempt_limit_reached' -and -not (Test-Path -LiteralPath (Join-Path $repairLimitRoot '.angular-migration/active.lock')))
+    Assert-Integration 'run leaves unregistered attempt unchanged' ($repairLimitRun.status -eq 'needs-repair' -and (Test-Path -LiteralPath (Join-Path $repairLimitRoot '.angular-migration/active.lock')))
 
     $recoveryRoot = Join-Path $temporaryRoot 'interrupted-operation'
     New-PipelineProject -Path $recoveryRoot

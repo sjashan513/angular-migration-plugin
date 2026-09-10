@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "sourceMajor",
+    "targetMajor",
+    "status",
+    "stage",
+    "failedCheck",
+    "fingerprint",
+    "attempt",
+    "maxAttempts",
+    "checkpointCommit",
+    "manifestSha256",
+    "allowedPaths",
+    "forbiddenPaths",
+    "diagnostic",
+    "submissionPath"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "runId": { "type": "string", "pattern": "^[a-z0-9TZ]+(?:-[a-z0-9TZ]+)*$" },
+    "sourceMajor": { "type": "integer", "minimum": 1 },
+    "targetMajor": { "type": "integer", "minimum": 2 },
+    "status": { "type": "string", "const": "needs-repair" },
+    "stage": { "type": "string", "enum": ["validate", "update-angular"] },
+    "failedCheck": { "type": "string", "pattern": "\\S" },
+    "fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "attempt": { "type": "integer", "minimum": 1, "maximum": 3 },
+    "maxAttempts": { "type": "integer", "const": 3 },
+    "checkpointCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "manifestSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "allowedPaths": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "\\S" }
+    },
+    "forbiddenPaths": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "\\S" }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "summary",
+        "exitCode",
+        "logFiles",
+        "relatedFiles",
+        "warnings"
+      ],
+      "properties": {
+        "summary": { "type": "string", "pattern": "\\S" },
+        "exitCode": { "type": "integer" },
+        "logFiles": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "\\S" }
+        },
+        "relatedFiles": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "\\S" }
+        },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "\\S" }
+        }
+      }
+    },
+    "submissionPath": {
+      "type": "string",
+      "pattern": "^\\.angular-migration/runs/[a-z0-9TZ-]+/inbox/repair\\.json$"
+    }
+  }
+}

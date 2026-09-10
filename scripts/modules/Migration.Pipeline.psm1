@@ -4,6 +4,7 @@ Import-Module (Join-Path $PSScriptRoot 'Migration.Core.psm1') -DisableNameChecki
 Import-Module (Join-Path $PSScriptRoot 'Migration.State.psm1') -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Migration.Project.psm1') -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'Migration.Dependencies.psm1') -DisableNameChecking
+. (Join-Path $PSScriptRoot '../hooks/copilot-policy.ps1')
 
 function New-StartManifest {
     param(
@@ -126,6 +127,10 @@ function Invoke-StartMigration {
 
         $manifest = New-StartManifest -Inspection $inspection -RunId $runId -Target $TargetMajor
         $state = New-MigrationRunState -RunId $runId -ProjectRoot $ProjectRoot -SourceMajor $inspection.angular.currentMajor -TargetMajor $TargetMajor -InitialCommit $inspection.git.head -InitialBranch $inspection.git.branch
+        $runtime = Resolve-RepairPath $ProjectRoot '.angular-migration/runtime/copilot-policy.ps1'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $runtime) -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../hooks/copilot-policy.ps1') -Destination $runtime -Force
+        $state.runtimeSha256 = (Get-FileHash -LiteralPath $runtime -Algorithm SHA256).Hash.ToLowerInvariant()
         Write-MigrationRunState -ProjectRoot $ProjectRoot -RunId $runId -State $state
         Write-MigrationRunManifest -ProjectRoot $ProjectRoot -RunId $runId -Manifest $manifest
         Add-MigrationEvent -ProjectRoot $ProjectRoot -RunId $runId -Type 'run-started' -Stage 'baseline' -Data ([PSCustomObject]@{
@@ -894,7 +899,7 @@ function Assert-PipelineManifestTargets {
         }
     }
     try { Get-ProjectLockfile -ProjectRoot $ProjectRoot | Out-Null } catch { Throw-PipelineError -Code 'lockfile_invalid' -Message 'package-lock.json is invalid after Angular update.' -Status blocked }
-    Assert-PipelineNoProtectedChanges -StatusItems (Get-PipelineGitStatus -ProjectRoot $ProjectRoot)
+    Assert-PipelineNoProtectedChanges -StatusItems @(Get-PipelineGitStatus -ProjectRoot $ProjectRoot)
 }
 
 function Invoke-PipelineRenderer {
@@ -1043,51 +1048,29 @@ function Get-PipelineRepairPaths {
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
         [Parameter(Mandatory = $true)][string]$Stage,
         [string]$CheckId,
-        [string]$Output
+        [string]$Output,
+        [switch]$ConfigRepairAllowed
     )
 
     $paths = @()
     $root = Resolve-MigrationRoot -Path $ProjectRoot
-    foreach ($match in [regex]::Matches([string]$Output, '(?i)(?:^|[\s(])((?:src|projects|e2e)[\\/][^\s):]+)(?::\d+(?::\d+)?)?')) {
+    foreach ($match in [regex]::Matches([string]$Output, '(?:^|[\s(])(src[\\/][a-zA-Z0-9_./\\-]+)(?::\d+(?::\d+)?)?')) {
         $candidate = $match.Groups[1].Value.TrimEnd('.', ',', ';')
-        try { $paths += ConvertTo-PipelineRelativePath -ProjectRoot $root -Path $candidate } catch { }
+        if ($candidate -notmatch '(^|[\\/])\.\.([\\/]|$)') {
+            try { $paths += ConvertTo-PipelineRelativePath -ProjectRoot $root -Path $candidate } catch { }
+        }
     }
     $configFiles = @('angular.json', 'tsconfig.json', 'tsconfig.app.json', 'tsconfig.spec.json', 'tsconfig.base.json', '.eslintrc.json', '.eslintrc.js', 'eslint.config.js', 'tslint.json', 'karma.conf.js', 'jest.config.js', 'browserslist', 'polyfills.ts')
+    if ($Stage -eq 'update-angular' -and $ConfigRepairAllowed -and $Output -cmatch '(?<![\w/\\.-])angular\.json(?=[:\s(]|$)') { $paths += 'angular.json' }
     if ($Stage -ne 'update-angular') {
-        $angular = $null
-        try { $angular = Get-ProjectAngularConfig -ProjectRoot $root } catch { }
-        $projects = if ($angular) { Get-ProjectProperty -Object $angular -Name 'projects' } else { $null }
-        if ($projects) {
-            foreach ($project in $projects.PSObject.Properties) {
-                $sourceRoot = [string](Get-ProjectProperty -Object $project.Value -Name 'sourceRoot')
-                if ($sourceRoot) { $paths += ($sourceRoot.TrimEnd('/') + '/**') }
-            }
+        if ($CheckId -notin @('typecheck', 'lint', 'test', 'unit-test', 'build', 'e2e')) { return @() }
+        $paths += 'src/**/*'
+        foreach ($file in $configFiles) {
+            if ($Output -cmatch ('(?<![\w/\\.-])' + [regex]::Escape($file) + '(?=[:\s(]|$)')) { $paths += $file }
         }
-        if ($CheckId -eq 'e2e' -and (Test-Path -LiteralPath (Join-Path $root 'e2e') -PathType Container)) { $paths += 'e2e/**' }
-        foreach ($file in $configFiles) { if (Test-Path -LiteralPath (Join-Path $root $file) -PathType Leaf) { $paths += $file } }
     }
     $paths = @($paths | Where-Object { $_ -and $_ -notmatch '^(?:\.git|\.github|\.angular-migration|docs)(?:/|$)' -and $_ -notin @('package.json', 'package-lock.json', 'plugin.json') } | Sort-Object -Unique)
     return $paths
-}
-
-function Get-PipelineFingerprint {
-    param(
-        [Parameter(Mandatory = $true)][string]$Stage,
-        [string]$CheckId,
-        [Parameter(Mandatory = $true)][string]$Code,
-        [Parameter(Mandatory = $true)][string[]]$Paths,
-        [string]$Message,
-        [string]$ProjectRoot
-    )
-    $normalized = [string]$Message
-    if ($ProjectRoot) { $normalized = $normalized.Replace((Resolve-MigrationRoot -Path $ProjectRoot), '<project>') }
-    $normalized = [regex]::Replace($normalized, '\b\d{4}[-/]\d{1,2}[-/]\d{1,2}[T\s][^\s]+', '<timestamp>')
-    $normalized = [regex]::Replace($normalized, ':\d+(?::\d+)?', ':<line>')
-    $normalized = [regex]::Replace($normalized, '\s+', ' ').Trim()
-    $canonical = $Stage + "`n" + $CheckId + "`n" + $Code.ToLowerInvariant() + "`n" + (($Paths | Sort-Object -Unique) -join "`n") + "`n" + $normalized
-    $sha = [Security.Cryptography.SHA256]::Create()
-    try { return (($sha.ComputeHash((New-Object Text.UTF8Encoding($false)).GetBytes($canonical)) | ForEach-Object { $_.ToString('x2') }) -join '') }
-    finally { $sha.Dispose() }
 }
 
 function New-PipelineFailureContext {
@@ -1098,29 +1081,267 @@ function New-PipelineFailureContext {
         [string]$CheckId,
         [Parameter(Mandatory = $true)][string]$Code,
         [Parameter(Mandatory = $true)][string]$Message,
-        [string]$Output
+        [string]$Output,
+        [int]$ExitCode = 1,
+        [string[]]$LogFiles = @()
     )
-    $paths = @(Get-PipelineRepairPaths -ProjectRoot $ProjectRoot -Stage $Stage -CheckId $CheckId -Output $Output)
-    $firstMessage = @(([string]$Output -split "`r?`n") | Where-Object { $_.Trim() } | Select-Object -First 1)
-    $fingerprint = Get-PipelineFingerprint -Stage $Stage -CheckId $CheckId -Code $Code -Paths $paths -Message ([string]$firstMessage) -ProjectRoot $ProjectRoot
-    $context = [ordered]@{
-        schemaVersion                  = Get-MigrationSchemaVersion
-        stage                          = $Stage
-        checkId                        = $CheckId
-        normalizedErrorCode            = $Code
-        diagnosticPaths                = @($paths)
-        normalizedFirstRelevantMessage = [string]$firstMessage
-        fingerprint                    = $fingerprint
-        scope                          = @($paths)
-        generatedAt                    = Get-MigrationUtcNow
+    $runId = Split-Path -Leaf $RunPaths.root
+    $state = Read-MigrationRunState -ProjectRoot $ProjectRoot -RunId $runId
+    $paths = @(Get-PipelineRepairPaths -ProjectRoot $ProjectRoot -Stage $Stage -CheckId $CheckId -Output $Output -ConfigRepairAllowed:$state.configRepairAllowed)
+    $safeOutput = Protect-RepairText -Text $Output -Root $ProjectRoot
+    $normalized = [regex]::Replace($safeOutput, '\b\d{4}[-/]\d{1,2}[-/]\d{1,2}[T\s][^\s]+|\b\d+(?:\.\d+)?\s*(?:ms|seconds)\b', '<time>')
+    $normalized = [regex]::Replace($normalized, '\s+', ' ').Trim()
+    $identity = [PSCustomObject]@{ stage = $Stage; check = $CheckId; exitCode = $ExitCode; diagnostic = $normalized; manifest = $state.manifestSha256 }
+    $diagnosticHash = Get-PipelineObjectHash -Value $identity
+    $fingerprint = 'sha256:' + (Get-PipelineObjectHash -Value ([PSCustomObject]@{ diagnostic = $identity; checkpoint = $state.checkpointCommit }))
+    $attempt = 1
+    if ($state.repair -and $state.repair.diagnosticHash -ceq $diagnosticHash) { $attempt = [int]$state.repair.context.attempt + 1 }
+    if ($attempt -gt 3 -or $state.repairTotal -ge 5) {
+        Throw-PipelineError -Code 'repair_attempts_exhausted' -Message 'Repair attempts are exhausted.' -Status blocked
     }
-    Write-MigrationJsonAtomic -Value ([PSCustomObject]$context) -Path (Join-Path $RunPaths.root 'failure-context.json')
-    return [PSCustomObject]$context
+    $forbidden = @('.git/**', '.github/**', '.angular-migration/**', 'package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml', 'scripts/**', 'hooks.json', 'agents/**', 'docs/**', 'plugin.json', '**/.npmrc', '**/.env*', '**/*.pem', '**/*.key', '**/*.pfx', '**/*.p12')
+    if ($paths -cnotcontains 'angular.json') { $forbidden += 'angular.json' }
+    $logs = @()
+    foreach ($log in $LogFiles) {
+        if (-not $log) { continue }
+        $relative = '.angular-migration/runs/' + $runId + '/' + $log.Replace('\', '/')
+        $full = Resolve-RepairPath $ProjectRoot $relative
+        $safeLog = Protect-RepairText -Text ([IO.File]::ReadAllText($full)) -Root $ProjectRoot
+        Write-MigrationTextAtomic -Text $safeLog -Path $full
+        $logs += $relative
+    }
+    $context = [PSCustomObject][ordered]@{
+        schemaVersion = 1; runId = $runId; sourceMajor = $state.sourceMajor; targetMajor = $state.targetMajor
+        status = 'needs-repair'; stage = $Stage; failedCheck = $CheckId; fingerprint = $fingerprint
+        attempt = $attempt; maxAttempts = 3; checkpointCommit = $state.checkpointCommit; manifestSha256 = $state.manifestSha256
+        allowedPaths = @($paths); forbiddenPaths = $forbidden
+        diagnostic = [PSCustomObject]@{
+            summary = Protect-RepairText -Text $Message -Root $ProjectRoot
+            exitCode = $ExitCode; logFiles = $logs
+            relatedFiles = @($paths | Where-Object { $_ -notmatch '\*' }); warnings = @()
+        }
+        submissionPath = '.angular-migration/runs/' + $runId + '/inbox/repair.json'
+    }
+    $before = @(Get-PipelineGitStatus -ProjectRoot $ProjectRoot)
+    $tracked = Invoke-PipelineGit -ProjectRoot $ProjectRoot -Arguments @('ls-files', '-z')
+    if ($tracked.exitCode -ne 0) { Throw-PipelineError -Code 'git_status_failed' -Message 'Cannot inventory repair files.' }
+    $protected = @()
+    foreach ($path in @($tracked.stdout -split [char]0 | Where-Object { $_ })) {
+        $full = Resolve-RepairPath $ProjectRoot $path
+        if (-not (Test-RepairAllowedPath $path $context) -or $path -in @($before | ForEach-Object { $_.path })) {
+            $hash = if (Test-Path -LiteralPath $full -PathType Leaf) { (Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash } else { $null }
+            $protected += [PSCustomObject]@{ path = $path; hash = $hash }
+        }
+    }
+    foreach ($item in $before | Where-Object untracked) {
+        $full = Resolve-RepairPath $ProjectRoot $item.path
+        $protected += [PSCustomObject]@{ path = $item.path; hash = (Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash }
+    }
+    $inbox = Resolve-RepairPath $ProjectRoot ('.angular-migration/runs/' + $runId + '/inbox')
+    New-Item -ItemType Directory -Path $inbox -Force | Out-Null
+    Write-MigrationJsonAtomic -Value @() -Path (Join-Path $inbox 'edit-inventory.json')
+    $state.repair = [PSCustomObject]@{
+        context = $context; diagnosticHash = $diagnosticHash; before = $before; protected = $protected
+        accepted = $null; facadePath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../angular-migration.ps1'))
+    }
+    $state.attempt = $attempt
+    Write-MigrationRunState -ProjectRoot $ProjectRoot -RunId $runId -State $state
+    Write-MigrationJsonAtomic -Value $context -Path (Join-Path $RunPaths.root 'failure-context.json')
+    return $context
+}
+
+function Assert-RepairSchema {
+    param($Value, $Schema)
+    if ($null -eq $Value) { throw 'Invalid repair contract.' }
+    switch ([string]$Schema.type) {
+        'object' {
+            if ($Value -isnot [PSCustomObject]) { throw 'Invalid repair object.' }
+            $names = @($Value.PSObject.Properties.Name)
+            if (@($names | Where-Object { $_ -cnotin @($Schema.properties.PSObject.Properties.Name) }).Count -gt 0) { throw 'Unknown repair property.' }
+            foreach ($name in $Schema.required) { if ($names -cnotcontains $name) { throw 'Missing repair property.' } }
+            foreach ($name in $names) { Assert-RepairSchema $Value.$name $Schema.properties.$name }
+        }
+        'array' {
+            if ($Value -isnot [array]) { throw 'Invalid repair array.' }
+            if ($Schema.PSObject.Properties['minItems'] -and $Value.Count -lt $Schema.minItems) { throw 'Empty repair array.' }
+            foreach ($item in $Value) { Assert-RepairSchema $item $Schema.items }
+        }
+        'string' {
+            if ($Value -isnot [string] -or [string]::IsNullOrWhiteSpace($Value)) { throw 'Empty repair string.' }
+            if ($Schema.PSObject.Properties['pattern'] -and $Value -cnotmatch $Schema.pattern) { throw 'Invalid repair string.' }
+        }
+        'integer' {
+            if ($Value -isnot [int] -and $Value -isnot [long]) { throw 'Invalid repair integer.' }
+            if ($Schema.PSObject.Properties['minimum'] -and $Value -lt $Schema.minimum) { throw 'Invalid repair minimum.' }
+            if ($Schema.PSObject.Properties['maximum'] -and $Value -gt $Schema.maximum) { throw 'Invalid repair maximum.' }
+        }
+        default { throw 'Unsupported repair schema.' }
+    }
+    if ($Schema.PSObject.Properties['const'] -and $Value -cne $Schema.const) { throw 'Invalid repair constant.' }
+    if ($Schema.PSObject.Properties['enum'] -and $Value -cnotin $Schema.enum) { throw 'Invalid repair enum.' }
+}
+
+function Get-ValidatedRepairContext {
+    param([string]$ProjectRoot, [string]$RunId)
+    Assert-ActiveRunOwnership -ProjectRoot $ProjectRoot -RunId $RunId
+    $state = Read-MigrationRunState -ProjectRoot $ProjectRoot -RunId $RunId
+    if ($state.status -cne 'needs-repair' -or -not $state.repair -or $state.repair.context.stage -cne $state.stage) {
+        Throw-PipelineError -Code 'invalid_repair_stage' -Message 'Repair requires needs-repair and a controller context.' -Status blocked
+    }
+    if ($state.repair.context.runId -cne $RunId -or $state.repair.context.checkpointCommit -cne $state.checkpointCommit -or
+        $state.repair.context.manifestSha256 -cne $state.manifestSha256 -or $state.repair.context.attempt -ne $state.attempt) {
+        Throw-PipelineError -Code 'invalid_repair_context' -Message 'Repair context does not match current state.'
+    }
+    $paths = Get-MigrationRunPaths -ProjectRoot $ProjectRoot -RunId $RunId
+    $manifest = Read-MigrationJson -Path (Resolve-RepairPath $ProjectRoot $paths.manifest) -Required
+    if (-not $state.manifestSha256 -or (Get-ResolvedManifestHash $manifest) -cne $state.manifestSha256 -or $manifest.manifestSha256 -cne $state.manifestSha256) {
+        Throw-PipelineError -Code 'manifest_integrity_failed' -Message 'Repair manifest integrity failed.'
+    }
+    Assert-RepairSchema $state.repair.context (Read-MigrationJson -Path (Join-Path $PSScriptRoot '../../schemas/repair-context.schema.json') -Required)
+    return $state.repair.context
+}
+
+function Invoke-MigrationRepairContext {
+    param([string]$ProjectRoot, [string]$RunId)
+    $context = Get-ValidatedRepairContext $ProjectRoot $RunId
+    return [PSCustomObject]@{ ok = $true; status = 'needs-repair'; data = $context; error = $null }
+}
+
+function Undo-MigrationRepair {
+    param([string]$ProjectRoot, $State)
+    $context = $State.repair.context
+    $beforePaths = @($State.repair.before | ForEach-Object { $_.path })
+    $changes = @(Get-PipelineGitStatus -ProjectRoot $ProjectRoot)
+    foreach ($item in $changes | Where-Object { -not $_.untracked -and $_.path -notin $beforePaths }) {
+        try { $null = Resolve-RepairPath $ProjectRoot $item.path } catch { continue }
+        $result = Invoke-PipelineGit -ProjectRoot $ProjectRoot -Arguments @('restore', '--source', $context.checkpointCommit, '--staged', '--worktree', '--', $item.path)
+        if ($result.exitCode -ne 0) { Throw-PipelineError -Code 'repair_rollback_failed' -Message 'Repair rollback requires manual review.' }
+    }
+    $inventoryPath = Resolve-RepairPath $ProjectRoot ('.angular-migration/runs/' + $State.runId + '/inbox/edit-inventory.json')
+    $inventory = @(Read-MigrationJson -Path $inventoryPath)
+    foreach ($item in $changes | Where-Object { $_.untracked -and $_.path -notin $beforePaths -and $_.path -cin $inventory }) {
+        try { $full = Resolve-RepairPath $ProjectRoot $item.path } catch { continue }
+        if (Test-RepairAllowedPath $item.path $context) { Remove-Item -LiteralPath $full -Force }
+    }
+}
+
+function Invoke-MigrationRecordRepair {
+    param([string]$ProjectRoot, [string]$RunId, [string]$InputFile)
+    Assert-ActiveRunOwnership -ProjectRoot $ProjectRoot -RunId $RunId
+    $paths = Get-MigrationRunPaths -ProjectRoot $ProjectRoot -RunId $RunId
+    $leasePath = Resolve-RepairPath $ProjectRoot ('.angular-migration/runs/' + $RunId + '/record-repair.lock')
+    $lease = $null
+    try { $lease = [IO.File]::Open($leasePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
+    catch { Throw-PipelineError -Code 'repair_process_not_owner' -Message 'Another process owns repair registration.' -Status blocked }
+    $state = $null
+    $scopeViolation = $false
+    try {
+        $bytes = [Text.Encoding]::UTF8.GetBytes([string]$PID)
+        $lease.Write($bytes, 0, $bytes.Length)
+        $lease.Flush($true)
+        $state = Read-MigrationRunState -ProjectRoot $ProjectRoot -RunId $RunId
+        if ($state.status -cne 'needs-repair' -or -not $state.repair) { Throw-PipelineError -Code 'invalid_repair_stage' -Message 'No active repair contract.' -Status blocked }
+        $context = $state.repair.context
+        if ($context.runId -cne $RunId -or $context.stage -cne $state.stage -or $context.attempt -ne $state.attempt) { throw 'Stale repair context.' }
+        try {
+            $expected = Resolve-RepairPath $ProjectRoot $context.submissionPath
+            $inputPath = Resolve-RepairPath $ProjectRoot $InputFile
+            if ($inputPath -cne $expected) { throw 'Invalid submission path.' }
+        }
+        catch { $scopeViolation = $true; throw }
+        $report = Read-MigrationJson -Path $inputPath -Required
+        if ($report.runId -cne $RunId -or $report.fingerprint -cne $context.fingerprint -or $report.attempt -ne $context.attempt) { throw 'Stale repair submission.' }
+        $schema = Read-MigrationJson -Path (Join-Path $PSScriptRoot '../../schemas/repair-input.schema.json') -Required
+        Assert-RepairSchema $report $schema
+        try { $null = Get-ValidatedRepairContext $ProjectRoot $RunId } catch { $scopeViolation = $true; throw }
+        if ((Get-PipelineGitHead $ProjectRoot) -cne $context.checkpointCommit) { $scopeViolation = $true; throw 'Repair HEAD changed.' }
+        $changes = @(Get-PipelineGitStatus -ProjectRoot $ProjectRoot)
+        $before = @($state.repair.before | ForEach-Object { $_.path })
+        $actual = @($changes | Where-Object { $_.path -notin $before } | ForEach-Object { $_.path } | Sort-Object -Unique)
+        foreach ($path in $actual) {
+            try { $null = Resolve-RepairPath $ProjectRoot $path } catch { $scopeViolation = $true; throw }
+            if (-not (Test-RepairAllowedPath $path $context)) { $scopeViolation = $true; throw 'Repair scope violation.' }
+        }
+        $declared = @($report.changes | ForEach-Object { $_.path } | Sort-Object -Unique)
+        foreach ($path in $declared) {
+            try { $null = Resolve-RepairPath $ProjectRoot $path } catch { $scopeViolation = $true; throw }
+        }
+        if ($actual.Count -eq 0 -or ($actual -join "`n") -cne ($declared -join "`n") -or $declared.Count -ne @($report.changes).Count) { throw 'Repair diff does not match report.' }
+        $raw = Invoke-PipelineGit -ProjectRoot $ProjectRoot -Arguments @('diff', '--raw', '--no-abbrev', '--no-renames', 'HEAD')
+        if ($raw.exitCode -ne 0) { throw 'Repair diff unavailable.' }
+        foreach ($line in $raw.stdout -split "`n") {
+            if ($line -match '^:(\d{6}) (\d{6}) ') {
+                if ($Matches[1] -in @('120000', '160000') -or $Matches[2] -in @('120000', '160000') -or
+                    ($Matches[1] -ne '000000' -and $Matches[2] -ne '000000' -and $Matches[1] -ne $Matches[2])) { $scopeViolation = $true; throw 'Repair mode or link changed.' }
+            }
+        }
+        foreach ($protected in $state.repair.protected) {
+            try { $full = Resolve-RepairPath $ProjectRoot $protected.path } catch { $scopeViolation = $true; throw }
+            $hash = if (Test-Path -LiteralPath $full -PathType Leaf) { (Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash } else { $null }
+            if ($hash -cne $protected.hash) { $scopeViolation = $true; throw 'Protected repair file changed.' }
+        }
+        $runtime = Resolve-RepairPath $ProjectRoot '.angular-migration/runtime/copilot-policy.ps1'
+        if ((Get-FileHash -LiteralPath $runtime -Algorithm SHA256).Hash.ToLowerInvariant() -cne $state.runtimeSha256) { $scopeViolation = $true; throw 'Repair runtime changed.' }
+        foreach ($evidence in $report.evidence) {
+            if ($evidence.reference -cnotin $context.diagnostic.logFiles) { throw 'Unknown repair evidence.' }
+        }
+        if ($context.attempt -gt 3 -or $state.repairTotal -ge 5) { throw 'Repair attempts exhausted.' }
+        $reportText = [IO.File]::ReadAllText($inputPath)
+        if ((Protect-RepairText -Text $reportText -Root $ProjectRoot) -cne $reportText) { throw 'Repair submission contains sensitive data.' }
+        $archiveName = $context.fingerprint.Substring(7) + '-attempt-' + $context.attempt + '.json'
+        $archive = Resolve-RepairPath $ProjectRoot ('.angular-migration/runs/' + $RunId + '/repairs/' + $archiveName)
+        New-Item -ItemType Directory -Path (Split-Path -Parent $archive) -Force | Out-Null
+        $archiveFilePath = if ($archive.Length -ge 248 -and $archive -match '^[A-Za-z]:\\') { '\\?\' + $archive } else { $archive }
+        Move-Item -LiteralPath $inputPath -Destination $archiveFilePath -ErrorAction Stop
+        $add = Invoke-PipelineGit -ProjectRoot $ProjectRoot -Arguments (@('add', '--') + $actual)
+        if ($add.exitCode -ne 0) { throw 'Cannot stage repair.' }
+        $commit = Invoke-PipelineGit -ProjectRoot $ProjectRoot -Arguments (@('-c', 'core.hooksPath=NUL', 'commit', '--only', '-m', "chore(angular-migration): repair $($context.failedCheck) attempt $($context.attempt)", '--') + $actual)
+        if ($commit.exitCode -ne 0) { throw 'Cannot commit repair.' }
+        $accepted = [PSCustomObject]@{
+            fingerprint = $context.fingerprint; attempt = $context.attempt; commit = Get-PipelineGitHead $ProjectRoot
+            report = '.angular-migration/runs/' + $RunId + '/repairs/' + $archiveName
+            reportSha256 = (Get-FileHash -LiteralPath $archiveFilePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        $state.repair.accepted = $accepted
+        $state.repairTotal = [int]$state.repairTotal + 1
+        $state.repairs = @($state.repairs) + $accepted
+        $state.checkpointCommit = $accepted.commit
+        Write-MigrationRunState -ProjectRoot $ProjectRoot -RunId $RunId -State $state
+        Add-MigrationEvent -ProjectRoot $ProjectRoot -RunId $RunId -Type 'repair-accepted' -Stage $state.stage -Data $accepted
+        $null = Move-MigrationState -ProjectRoot $ProjectRoot -RunId $RunId -ExpectedStatus 'needs-repair' -ExpectedStage $state.stage -ExpectedRevision $state.stageRevision -NewStatus running -NewStage $state.stage
+        return [PSCustomObject]@{ ok = $true; status = 'running'; data = [PSCustomObject]@{ runId = $RunId; nextAction = 'rerun-failed-check'; repair = $accepted }; error = $null }
+    }
+    catch {
+        if ($state -and $state.status -eq 'needs-repair' -and $state.repair) {
+            $rollbackFailed = $false
+            try { Undo-MigrationRepair $ProjectRoot $state } catch { $rollbackFailed = $true }
+            Add-MigrationEvent -ProjectRoot $ProjectRoot -RunId $RunId -Type 'repair-rejected' -Stage $state.stage -Data ([PSCustomObject]@{ fingerprint = $state.repair.context.fingerprint; attempt = $state.repair.context.attempt; scopeViolation = $scopeViolation; rollbackFailed = $rollbackFailed })
+            $state.repairTotal = [int]$state.repairTotal + 1
+            $status = 'needs-repair'
+            $code = 'repair_rejected'
+            if ($scopeViolation -or $rollbackFailed) { $status = 'failed'; $code = if ($scopeViolation) { 'repair_scope_violation' } else { 'repair_rollback_failed' } }
+            elseif ($state.attempt -ge 3 -or $state.repairTotal -ge 5) { $status = 'blocked'; $code = 'repair_attempts_exhausted' }
+            else { $state.attempt++; $state.repair.context.attempt = $state.attempt }
+            Write-MigrationRunState -ProjectRoot $ProjectRoot -RunId $RunId -State $state
+            $diagnostic = [PSCustomObject]@{ code = $code; message = 'Repair was rejected by the controller.'; details = $null }
+            if ($status -ne 'needs-repair') {
+                $null = Move-MigrationState -ProjectRoot $ProjectRoot -RunId $RunId -ExpectedStatus 'needs-repair' -ExpectedStage $state.stage -ExpectedRevision $state.stageRevision -NewStatus $status -NewStage $state.stage -Diagnostic $diagnostic
+                Remove-ActiveRunLock -ProjectRoot $ProjectRoot -RunId $RunId
+            }
+            return [PSCustomObject]@{ ok = $false; status = $status; data = @{}; error = $diagnostic }
+        }
+        throw
+    }
+    finally {
+        if ($lease) { $lease.Dispose(); Remove-Item -LiteralPath $leasePath -Force }
+    }
 }
 
 function ConvertTo-PipelineCanonicalValue {
     param($Value)
     if ($null -eq $Value) { return $null }
+    if ($Value -is [datetime]) { return $Value.ToUniversalTime().ToString('o') }
+    if ($Value -is [datetimeoffset]) { return $Value.UtcDateTime.ToString('o') }
     if ($Value -is [Collections.IDictionary]) {
         $ordered = [ordered]@{}
         foreach ($key in @($Value.Keys | ForEach-Object { [string]$_ } | Sort-Object)) { $ordered[$key] = ConvertTo-PipelineCanonicalValue $Value[$key] }
@@ -1201,7 +1422,7 @@ function Write-PipelineTechnicalResult {
         changedFiles         = @(Get-PipelineChangedFiles -ProjectRoot $ProjectRoot -InitialCommit ((Read-MigrationRunState -ProjectRoot $ProjectRoot -RunId $RunId).initialCommit))
         dependencyChanges    = $dependencyChanges
         checks               = @($CheckResults)
-        repairs              = @()
+        repairs              = @((Read-MigrationRunState -ProjectRoot $ProjectRoot -RunId $RunId).repairs)
         warnings             = @($Manifest.warnings)
         verifiedAt           = Get-MigrationUtcNow
     }
@@ -1305,6 +1526,7 @@ function Invoke-PipelineAngularStage {
         $index = 0
         foreach ($command in $commands) {
             $index++
+            if ($index -le $state.angularCommandIndex) { continue }
             $commandResults += Invoke-PipelineLoggedProcess -RunPaths $paths -Stage 'update-angular' -Prefix ('{0:D2}-{1}' -f $index, ($command.id -replace '[^a-zA-Z0-9._-]', '_')) -FilePath $ng -Arguments $command.arguments -WorkingDirectory $ProjectRoot -TimeoutSeconds 1800
             $last = $commandResults[-1]
             if ($last.timedOut -or $last.exitCode -ne 0) {
@@ -1313,10 +1535,17 @@ function Invoke-PipelineAngularStage {
                 Clear-PipelineOperation -ProjectRoot $ProjectRoot -RunId $RunId | Out-Null
                 $blocked = [string]$last.stderr + "`n" + [string]$last.stdout
                 if ($blocked -match '(?i)(ERESOLVE|peer depend|conflict|integrity|version)') { Throw-PipelineError -Code 'angular_update_conflict' -Message 'Angular update encountered a dependency or version conflict.' -Status blocked -Details $last }
-                $context = New-PipelineFailureContext -ProjectRoot $ProjectRoot -RunPaths $paths -Stage 'update-angular' -CheckId $command.id -Code 'angular_update_failed' -Message 'Angular update failed.' -Output $blocked
-                if (@($context.scope).Count -eq 0) { Throw-PipelineError -Code 'repair_scope_unknown' -Message 'Angular update failure has no safe repair scope.' -Status blocked -Details $context }
+                $context = New-PipelineFailureContext -ProjectRoot $ProjectRoot -RunPaths $paths -Stage 'update-angular' -CheckId $command.id -Code 'angular_update_failed' -Message 'Angular update failed.' -Output $blocked -ExitCode $last.exitCode -LogFiles @($last.stdoutLog, $last.stderrLog)
+                if (@($context.allowedPaths).Count -eq 0) { Throw-PipelineError -Code 'repair_scope_unknown' -Message 'Angular update failure has no safe repair scope.' -Status blocked -Details $context }
                 Throw-PipelineError -Code 'angular_update_failed' -Message 'Angular update requires a scoped repair.' -Status needs-repair -Details $context
             }
+            Assert-PipelineManifestTargets -ProjectRoot $ProjectRoot -Manifest $manifest
+            $checkpoint = New-PipelineCheckpoint -ProjectRoot $ProjectRoot -RunId $RunId -Message "chore(migration): Angular $($state.sourceMajor) to $($state.targetMajor) schematics [$RunId]"
+            $state = Read-MigrationRunState -ProjectRoot $ProjectRoot -RunId $RunId
+            $state.checkpointCommit = $checkpoint
+            $state.angularCommandIndex = $index
+            $state.activeOperation.checkpointCommit = $checkpoint
+            Write-MigrationRunState -ProjectRoot $ProjectRoot -RunId $RunId -State $state
         }
         Assert-PipelineManifestTargets -ProjectRoot $ProjectRoot -Manifest $manifest
         $checkpoint = New-PipelineCheckpoint -ProjectRoot $ProjectRoot -RunId $RunId -Message "chore(migration): Angular $($state.sourceMajor) to $($state.targetMajor) schematics [$RunId]"
@@ -1440,8 +1669,9 @@ function Invoke-PipelineValidationStage {
     $paths = Get-MigrationRunPaths -ProjectRoot $ProjectRoot -RunId $RunId
     $manifest = Read-MigrationJson -Path $paths.manifest -Required
     $null = Start-PipelineOperation -ProjectRoot $ProjectRoot -RunId $RunId -Id 'validate' -Stage 'validate'
-    $results = @()
+    $results = @($state.validationResults)
     foreach ($check in @($manifest.checks | Where-Object { $_.id -in $script:TechnicalCheckIds })) {
+        if ($check.id -in @($results | ForEach-Object { $_.id })) { continue }
         if ($check.status -eq 'not-configured') {
             $results += [PSCustomObject]@{
                 id = $check.id; status = 'not-configured'; exitCode = $null; timedOut = $false
@@ -1461,10 +1691,13 @@ function Invoke-PipelineValidationStage {
             if ($result.stderrLog) { $output += "`n" + [IO.File]::ReadAllText((Join-Path $paths.root $result.stderrLog)) }
             Finish-PipelineOperation -ProjectRoot $ProjectRoot -RunId $RunId -Stage 'validate' -Data ([PSCustomObject]@{ status = $result.status; exitCode = $result.exitCode; timedOut = $result.timedOut; stdoutLog = $result.stdoutLog; stderrLog = $result.stderrLog })
             Clear-PipelineOperation -ProjectRoot $ProjectRoot -RunId $RunId | Out-Null
-            $context = New-PipelineFailureContext -ProjectRoot $ProjectRoot -RunPaths $paths -Stage 'validate' -CheckId $result.id -Code 'validation_failed' -Message $result.diagnosticSummary -Output $output
-            if (@($context.scope).Count -eq 0) { Throw-PipelineError -Code 'repair_scope_unknown' -Message 'Validation failure has no safe repair scope.' -Status blocked -Details $context }
+            $context = New-PipelineFailureContext -ProjectRoot $ProjectRoot -RunPaths $paths -Stage 'validate' -CheckId $result.id -Code 'validation_failed' -Message $result.diagnosticSummary -Output $output -ExitCode $result.exitCode -LogFiles @($result.stdoutLog, $result.stderrLog)
+            if (@($context.allowedPaths).Count -eq 0) { Throw-PipelineError -Code 'repair_scope_unknown' -Message 'Validation failure has no safe repair scope.' -Status blocked -Details $context }
             Throw-PipelineError -Code 'validation_failed' -Message "Validation check failed: $($result.id)" -Status needs-repair -Details ([PSCustomObject]@{ context = $context; check = $result })
         }
+        $state = Read-MigrationRunState -ProjectRoot $ProjectRoot -RunId $RunId
+        $state.validationResults = @($results)
+        Write-MigrationRunState -ProjectRoot $ProjectRoot -RunId $RunId -State $state
     }
     Finish-PipelineOperation -ProjectRoot $ProjectRoot -RunId $RunId -Stage 'validate' -Data ([PSCustomObject]@{ status = 'passed'; checks = @($results) })
     $state = Complete-PipelineOperation -ProjectRoot $ProjectRoot -RunId $RunId -Id 'validate' -Stage 'validate'
@@ -1526,32 +1759,14 @@ function Invoke-MigrationRun {
             Assert-PipelineTechnicalResult -ProjectRoot $root -RunId $RunId -RunPaths $paths | Out-Null
             return ConvertTo-PipelineRunEnvelope -ProjectRoot $root -RunId $RunId
         }
-        if ($state.status -in @('blocked', 'failed')) { return ConvertTo-PipelineRunEnvelope -ProjectRoot $root -RunId $RunId }
+        if ($state.status -in @('needs-repair', 'blocked', 'failed')) { return ConvertTo-PipelineRunEnvelope -ProjectRoot $root -RunId $RunId }
         $state = Invoke-PipelineActiveOperationRecovery -ProjectRoot $root -RunId $RunId
         if ($state.status -in @('blocked', 'failed')) { return ConvertTo-PipelineRunEnvelope -ProjectRoot $root -RunId $RunId }
-        $allowDirtyResume = $state.status -eq 'needs-repair'
-        Assert-PipelineRunGitContext -ProjectRoot $root -State $state -AllowDirty:$allowDirtyResume
-        if ($state.status -eq 'needs-repair') {
-            $lastFingerprint = $null
-            if ($state.lastDiagnostic -and $state.lastDiagnostic.details -and $state.lastDiagnostic.details.context) {
-                $lastFingerprint = [string]$state.lastDiagnostic.details.context.fingerprint
-            }
-            if ($state.attempt -ge 3 -and $lastFingerprint) {
-                $diagnostic = [PSCustomObject]@{ code = 'repair_attempt_limit_reached'; message = 'The same repair fingerprint reached the maximum attempts.'; details = $state.lastDiagnostic.details }
-                Move-MigrationState -ProjectRoot $root -RunId $RunId -ExpectedStatus 'needs-repair' -ExpectedStage $state.stage -NewStatus 'blocked' -NewStage $state.stage -ExpectedRevision $state.stageRevision -Diagnostic $diagnostic | Out-Null
-                Remove-ActiveRunLock -ProjectRoot $root -RunId $RunId
-                return ConvertTo-PipelineRunEnvelope -ProjectRoot $root -RunId $RunId
-            }
-            $oldRevision = $state.stageRevision
-            $state = Move-MigrationState -ProjectRoot $root -RunId $RunId -ExpectedStatus 'needs-repair' -ExpectedStage $state.stage -NewStatus 'running' -NewStage $state.stage -ExpectedRevision $oldRevision
-            $state.attempt = [int]$state.attempt + 1
-            Write-MigrationRunState -ProjectRoot $root -RunId $RunId -State $state
-        }
+        Assert-PipelineRunGitContext -ProjectRoot $root -State $state
         while ($true) {
             $state = Read-MigrationRunState -ProjectRoot $root -RunId $RunId
             if ($state.status -ne 'running') { break }
-            Assert-PipelineRunGitContext -ProjectRoot $root -State $state -AllowDirty:$allowDirtyResume
-            $allowDirtyResume = $false
+            Assert-PipelineRunGitContext -ProjectRoot $root -State $state
             switch ($state.stage) {
                 'baseline' { Invoke-PipelineBaselineStage -ProjectRoot $root -RunId $RunId }
                 'resolve' { Invoke-PipelineResolveStage -ProjectRoot $root -RunId $RunId }
@@ -1610,5 +1825,7 @@ Export-ModuleMember -Function @(
     'Invoke-InspectMigration',
     'Invoke-StartMigration',
     'Invoke-MigrationStatus',
+    'Invoke-MigrationRepairContext',
+    'Invoke-MigrationRecordRepair',
     'Invoke-MigrationRun'
 )

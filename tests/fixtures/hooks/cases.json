@@ -1,0 +1,104 @@
+[
+  {
+    "name": "edit inside glob",
+    "toolName": "edit",
+    "toolArgs": { "path": "src/app.ts", "old_str": "old", "new_str": "new" },
+    "decision": "allow"
+  },
+  {
+    "name": "edit outside glob",
+    "toolName": "edit",
+    "toolArgs": { "path": "user.txt", "old_str": "old", "new_str": "new" },
+    "decision": "deny"
+  },
+  {
+    "name": "forbidden overrides allowed",
+    "toolName": "edit",
+    "toolArgs": { "path": "src/protected.ts" },
+    "decision": "deny"
+  },
+  {
+    "name": "multiple paths deny atomically",
+    "toolName": "edit",
+    "toolArgs": { "paths": ["src/app.ts", "package.json"] },
+    "decision": "deny"
+  },
+  {
+    "name": "unknown arguments",
+    "toolName": "edit",
+    "toolArgs": { "target": "src/app.ts" },
+    "decision": "deny"
+  },
+  {
+    "name": "unknown additional argument",
+    "toolName": "edit",
+    "toolArgs": { "path": "src/app.ts", "destination": "package.json" },
+    "decision": "deny"
+  },
+  {
+    "name": "npmrc read",
+    "toolName": "view",
+    "toolArgs": { "path": ".npmrc" },
+    "decision": "deny"
+  },
+  {
+    "name": "env read",
+    "toolName": "read",
+    "toolArgs": { "path": ".env.local" },
+    "decision": "deny"
+  },
+  {
+    "name": "source read",
+    "toolName": "view",
+    "toolArgs": { "path": "src/app.ts" },
+    "decision": "allow"
+  },
+  {
+    "name": "traversal",
+    "toolName": "edit",
+    "toolArgs": { "path": "src/../package.json" },
+    "decision": "deny"
+  },
+  {
+    "name": "case alias",
+    "toolName": "edit",
+    "toolArgs": { "path": "src/App.ts" },
+    "decision": "deny"
+  },
+  {
+    "name": "ADS",
+    "toolName": "edit",
+    "toolArgs": { "path": "src/app.ts:stream" },
+    "decision": "deny"
+  },
+  {
+    "name": "npm",
+    "toolName": "powershell",
+    "toolArgs": { "command": "npm install" },
+    "decision": "deny"
+  },
+  {
+    "name": "npx",
+    "toolName": "powershell",
+    "toolArgs": { "command": "npx ng update" },
+    "decision": "deny"
+  },
+  {
+    "name": "ng",
+    "toolName": "execute",
+    "toolArgs": { "command": "ng build" },
+    "decision": "deny"
+  },
+  {
+    "name": "git",
+    "toolName": "powershell",
+    "toolArgs": { "command": "git status" },
+    "decision": "deny"
+  },
+  {
+    "name": "unknown tool",
+    "toolName": "web_fetch",
+    "toolArgs": { "url": "https://example.invalid" },
+    "decision": "deny"
+  }
+]

@@ -81,7 +81,7 @@ function Resolve-MigrationPath {
         $root + [IO.Path]::DirectorySeparatorChar
     }
     $insideRoot = $fullPath.Equals($root, [StringComparison]::OrdinalIgnoreCase) -or
-        $fullPath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)
+    $fullPath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)
     if (-not $insideRoot) {
         Throw-MigrationError -Code 'path_outside_project' -Message "Path is outside the project root: $Path" -Status blocked
     }
@@ -107,7 +107,9 @@ function Read-MigrationJson {
     }
 
     try {
-        return (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json)
+        $jsonParameters = @{}
+        if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $jsonParameters.DateKind = 'String' }
+        return (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json @jsonParameters)
     }
     catch {
         Throw-MigrationError -Code 'invalid_json' -Message "Invalid JSON file: $Path" -Status failed -Details $_.Exception.Message
@@ -232,10 +234,10 @@ function Invoke-MigrationProcess {
 
     try {
         $startParameters = @{
-            FilePath             = $FilePath
-            WorkingDirectory     = $WorkingDirectory
-            NoNewWindow          = $true
-            PassThru              = $true
+            FilePath               = $FilePath
+            WorkingDirectory       = $WorkingDirectory
+            NoNewWindow            = $true
+            PassThru               = $true
             RedirectStandardOutput = $stdoutPath
             RedirectStandardError  = $stderrPath
         }
@@ -283,8 +285,8 @@ function Invoke-MigrationProcess {
 
         return [PSCustomObject]@{
             exitCode = $exitCode
-            stdout = $stdout
-            stderr = $stderr
+            stdout   = $stdout
+            stderr   = $stderr
             timedOut = $timedOut
         }
     }

@@ -150,6 +150,41 @@ function Write-MigrationJsonAtomic {
     }
 }
 
+function Write-MigrationTextAtomic {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    $directory = Split-Path -Parent $Path
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+
+    $tempPath = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
+    $backupPath = "$Path.$([guid]::NewGuid().ToString('N')).bak"
+    try {
+        [IO.File]::WriteAllText($tempPath, $Text, (New-Object System.Text.UTF8Encoding($false)))
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            [IO.File]::Replace($tempPath, $Path, $backupPath)
+        }
+        else {
+            [IO.File]::Move($tempPath, $Path)
+        }
+    }
+    catch {
+        Throw-MigrationError -Code 'atomic_write_failed' -Message "Could not write text atomically: $Path" -Status failed -Details $_.Exception.Message
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
+            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Find-MigrationExecutable {
     param([Parameter(Mandatory = $true)][string[]]$Names)
 
@@ -183,13 +218,15 @@ function Invoke-MigrationProcess {
         [Parameter(Mandatory = $true)][string]$FilePath,
         [string[]]$Arguments = @(),
         [Parameter(Mandatory = $true)][string]$WorkingDirectory,
-        [int]$TimeoutSeconds = 0
+        [int]$TimeoutSeconds = 0,
+        [AllowNull()][AllowEmptyString()][string]$StandardInput = $null
     )
 
     $processId = [guid]::NewGuid().ToString('N')
     $temporaryDirectory = [IO.Path]::GetTempPath()
     $stdoutPath = Join-Path $temporaryDirectory "angular-migration-$processId.out"
     $stderrPath = Join-Path $temporaryDirectory "angular-migration-$processId.err"
+    $stdinPath = Join-Path $temporaryDirectory "angular-migration-$processId.in"
     $process = $null
     $timedOut = $false
 
@@ -201,6 +238,10 @@ function Invoke-MigrationProcess {
             PassThru              = $true
             RedirectStandardOutput = $stdoutPath
             RedirectStandardError  = $stderrPath
+        }
+        if ($null -ne $StandardInput) {
+            [IO.File]::WriteAllText($stdinPath, $StandardInput, (New-Object System.Text.UTF8Encoding($false)))
+            $startParameters.RedirectStandardInput = $stdinPath
         }
         if ($Arguments -and $Arguments.Count -gt 0) {
             $startParameters.ArgumentList = (($Arguments | ForEach-Object {
@@ -252,7 +293,7 @@ function Invoke-MigrationProcess {
     }
     finally {
         if ($process) { $process.Dispose() }
-        Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $stdinPath, $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -264,6 +305,7 @@ Export-ModuleMember -Function @(
     'Resolve-MigrationPath',
     'Read-MigrationJson',
     'Write-MigrationJsonAtomic',
+    'Write-MigrationTextAtomic',
     'Find-MigrationExecutable',
     'Invoke-MigrationProcess'
 )

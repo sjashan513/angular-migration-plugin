@@ -1,0 +1,67 @@
+{
+  "@angular/core@8": {
+    "version": "8.2.14",
+    "peerDependencies": { "rxjs": "^6.4.0", "zone.js": "~0.9.0" },
+    "peerDependenciesMeta": {},
+    "engines": { "node": ">=10.9.0" },
+    "ng-update": { "migrations": "migrations.json", "packageGroup": "angular" },
+    "deprecated": false,
+    "dist-tags": { "latest": "20.0.0" }
+  },
+  "@angular/common@8": {
+    "version": "8.2.14",
+    "peerDependencies": { "@angular/core": "^8.0.0" },
+    "peerDependenciesMeta": {},
+    "engines": {},
+    "deprecated": false,
+    "dist-tags": {}
+  },
+  "@angular/compiler@8": {
+    "version": "8.2.14",
+    "peerDependencies": { "@angular/core": "^8.0.0" },
+    "peerDependenciesMeta": {},
+    "engines": {},
+    "deprecated": false,
+    "dist-tags": {}
+  },
+  "@angular/cli@8": {
+    "version": "8.3.29",
+    "peerDependencies": {},
+    "peerDependenciesMeta": {},
+    "engines": { "node": ">=10.9.0" },
+    "deprecated": false,
+    "dist-tags": {}
+  },
+  "@angular/compiler-cli@8": {
+    "version": "8.2.14",
+    "peerDependencies": { "typescript": ">=3.4.0 <3.6.0" },
+    "peerDependenciesMeta": {},
+    "engines": { "node": ">=10.9.0" },
+    "deprecated": false,
+    "dist-tags": {}
+  },
+  "rxjs@6": {
+    "version": "6.5.5",
+    "peerDependencies": {},
+    "peerDependenciesMeta": {},
+    "engines": {},
+    "deprecated": false,
+    "dist-tags": {}
+  },
+  "zone.js@0": {
+    "version": "0.9.1",
+    "peerDependencies": {},
+    "peerDependenciesMeta": {},
+    "engines": {},
+    "deprecated": false,
+    "dist-tags": {}
+  },
+  "typescript@3": {
+    "version": "3.5.3",
+    "peerDependencies": {},
+    "peerDependenciesMeta": {},
+    "engines": {},
+    "deprecated": false,
+    "dist-tags": {}
+  }
+}

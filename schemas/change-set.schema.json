@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://sjashan513.github.io/angular-migration-plugin/schemas/change-set.schema.json",
+  "title": "Angular migration dependency change v5",
+  "type": "object",
+  "required": ["name", "section", "from", "to", "change", "writeSpec"],
+  "properties": {
+    "name": { "type": "string", "minLength": 1 },
+    "section": {
+      "type": "string",
+      "enum": [
+        "dependencies",
+        "devDependencies",
+        "optionalDependencies",
+        "peerDependencies"
+      ]
+    },
+    "from": { "type": ["string", "null"] },
+    "to": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "change": { "type": "string", "minLength": 1 },
+    "writeSpec": { "type": ["string", "null"], "minLength": 1 }
+  },
+  "additionalProperties": false
+}

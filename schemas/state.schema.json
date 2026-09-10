@@ -1,0 +1,139 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://sjashan513.github.io/angular-migration-plugin/schemas/state.schema.json",
+  "title": "Angular migration state v5",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "runId",
+    "projectRoot",
+    "sourceMajor",
+    "targetMajor",
+    "status",
+    "stage",
+    "stageRevision",
+    "attempt",
+    "migrationStatus",
+    "documentationStatus",
+    "baselineStatus",
+    "resolutionStatus",
+    "initialBranch",
+    "initialCommit",
+    "migrationBranch",
+    "checkpointCommit",
+    "manifestSha256",
+    "activeOperation",
+    "completedOperations",
+    "lastDiagnostic",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 5 },
+    "runId": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+    "projectRoot": { "type": "string", "minLength": 1 },
+    "sourceMajor": { "type": "integer", "minimum": 0 },
+    "targetMajor": { "type": "integer", "minimum": 1 },
+    "status": {
+      "enum": [
+        "running",
+        "needs-repair",
+        "verified",
+        "completed",
+        "blocked",
+        "failed"
+      ]
+    },
+    "stage": {
+      "enum": [
+        "baseline",
+        "resolve",
+        "update-angular",
+        "update-dependencies",
+        "install",
+        "validate",
+        "document"
+      ]
+    },
+    "stageRevision": { "type": "integer", "minimum": 0 },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "migrationStatus": { "enum": ["running", "verified", "blocked", "failed"] },
+    "documentationStatus": {
+      "enum": ["pending", "running", "completed", "blocked"]
+    },
+    "baselineStatus": { "enum": ["pending", "passed"] },
+    "resolutionStatus": { "enum": ["pending", "resolved"] },
+    "initialBranch": { "type": ["string", "null"], "minLength": 1 },
+    "initialCommit": { "type": "string", "pattern": "^[a-fA-F0-9]{40}$" },
+    "migrationBranch": {
+      "type": ["string", "null"],
+      "pattern": "^migration/angular-[0-9]+-to-[0-9]+-[a-f0-9]{8}$"
+    },
+    "checkpointCommit": {
+      "type": ["string", "null"],
+      "pattern": "^[a-fA-F0-9]{40}$"
+    },
+    "manifestSha256": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "activeOperation": {
+      "type": ["object", "null"],
+      "required": [
+        "id",
+        "stage",
+        "startedAt",
+        "checkpointCommit",
+        "expectedManifestSha256",
+        "preexistingFiles"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "stage": { "type": "string", "minLength": 1 },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "checkpointCommit": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{40}$"
+        },
+        "expectedManifestSha256": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "preexistingFiles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["status", "path", "untracked"],
+            "properties": {
+              "status": { "type": "string" },
+              "path": { "type": "string", "minLength": 1 },
+              "untracked": { "type": "boolean" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "completedOperations": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "baseline",
+          "resolve-manifest",
+          "create-branch",
+          "update-angular",
+          "update-dependencies",
+          "install",
+          "validate",
+          "technical-result"
+        ]
+      }
+    },
+    "lastDiagnostic": {},
+    "createdAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": true
+}

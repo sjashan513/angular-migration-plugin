@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "projects": {
+    "pipeline-migration-fixture": {
+      "projectType": "application",
+      "sourceRoot": "src",
+      "architect": {
+        "build": {
+          "builder": "@angular-devkit/build-angular:browser"
+        }
+      }
+    }
+  }
+}

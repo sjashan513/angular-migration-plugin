@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://sjashan513.github.io/angular-migration-plugin/schemas/check-result.schema.json",
+  "title": "Angular migration check result v5",
+  "type": "object",
+  "required": [
+    "id",
+    "status",
+    "exitCode",
+    "timedOut",
+    "startedAt",
+    "finishedAt",
+    "durationMs",
+    "stdoutLog",
+    "stderrLog",
+    "diagnosticSummary"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "enum": ["typecheck", "lint", "unit-test", "build", "e2e"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["passed", "failed", "timed-out", "blocked", "not-configured"]
+    },
+    "exitCode": { "type": ["integer", "null"] },
+    "timedOut": { "type": "boolean" },
+    "startedAt": { "type": ["string", "null"], "format": "date-time" },
+    "finishedAt": { "type": ["string", "null"], "format": "date-time" },
+    "durationMs": { "type": "integer", "minimum": 0 },
+    "stdoutLog": { "type": ["string", "null"], "minLength": 1 },
+    "stderrLog": { "type": ["string", "null"], "minLength": 1 },
+    "diagnosticSummary": { "type": ["string", "null"] },
+    "executable": { "type": ["string", "null"], "minLength": 1 }
+  },
+  "additionalProperties": false
+}

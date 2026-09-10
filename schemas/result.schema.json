@@ -6,39 +6,28 @@
   "required": [
     "schemaVersion",
     "runId",
+    "sourceMajor",
+    "targetMajor",
     "status",
-    "stage",
     "migrationStatus",
     "documentationStatus",
+    "manifestSha256",
+    "initialCommit",
+    "finalTechnicalCommit",
+    "changedFiles",
+    "dependencyChanges",
     "checks",
-    "changes"
+    "repairs",
+    "warnings",
+    "verifiedAt",
+    "resultSha256"
   ],
   "properties": {
     "schemaVersion": { "type": "integer", "enum": [5] },
     "runId": { "type": "string", "minLength": 1 },
-    "status": {
-      "type": "string",
-      "enum": [
-        "running",
-        "needs-repair",
-        "verified",
-        "completed",
-        "blocked",
-        "failed"
-      ]
-    },
-    "stage": {
-      "type": "string",
-      "enum": [
-        "inspect",
-        "baseline",
-        "resolve",
-        "update-angular",
-        "update-dependencies",
-        "validate",
-        "document"
-      ]
-    },
+    "sourceMajor": { "type": "integer", "minimum": 0 },
+    "targetMajor": { "type": "integer", "minimum": 1 },
+    "status": { "type": "string", "enum": ["verified"] },
     "migrationStatus": {
       "type": "string",
       "enum": ["pending", "running", "verified", "failed", "blocked"]
@@ -47,9 +36,28 @@
       "type": "string",
       "enum": ["pending", "researching", "completed", "failed"]
     },
-    "checks": { "type": "array" },
-    "changes": { "type": "object" },
-    "diagnostics": { "type": "array" }
+    "manifestSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "initialCommit": { "type": "string", "pattern": "^[a-fA-F0-9]{40}$" },
+    "finalTechnicalCommit": {
+      "type": "string",
+      "pattern": "^[a-fA-F0-9]{40}$"
+    },
+    "changedFiles": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "dependencyChanges": {
+      "type": "array",
+      "items": { "$ref": "change-set.schema.json" }
+    },
+    "checks": {
+      "type": "array",
+      "items": { "$ref": "check-result.schema.json" }
+    },
+    "repairs": { "type": "array" },
+    "warnings": { "type": "array" },
+    "verifiedAt": { "type": "string", "format": "date-time" },
+    "resultSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }

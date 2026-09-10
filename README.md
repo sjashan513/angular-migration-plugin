@@ -4,11 +4,10 @@ Plugin interno para migraciones Angular auditables en Windows con PowerShell 5.1
 
 ## Estado
 
-La fase 4 anade la resolucion exacta de dependencias despues de una baseline
-aprobada. El resolver consulta unicamente `npm view`, conserva el estilo de
-los specs, publica un manifest con hash SHA-256 canonico y no modifica
-`package.json`, `package-lock.json`, codigo fuente ni Git.
-La fachada sigue exponiendo solamente `inspect`, `start` y `status`.
+La fase 5 ejecuta o reanuda de forma determinista el salto autorizado por el
+manifest. Crea una rama dedicada, ejecuta Angular CLI local con versiones
+exactas, alinea el lockfile, instala con `npm ci`, valida el proyecto y publica
+un resultado tecnico inmutable. No invoca agentes ni genera documentacion final.
 
 ## Uso
 
@@ -18,6 +17,7 @@ Ejecuta la fachada desde la raiz de un proyecto Angular CLI:
 powershell -NoProfile -File <plugin>\scripts\angular-migration.ps1 -Command inspect
 powershell -NoProfile -File <plugin>\scripts\angular-migration.ps1 -Command start -TargetMajor 8
 powershell -NoProfile -File <plugin>\scripts\angular-migration.ps1 -Command status -RunId <run-id>
+powershell -NoProfile -File <plugin>\scripts\angular-migration.ps1 -Command run -RunId <run-id>
 ```
 
 La salida estandar contiene exactamente un JSON v5. Los errores humanos y el progreso se reservan para stderr.
@@ -34,6 +34,26 @@ La salida estandar contiene exactamente un JSON v5. Los errores humanos y el pro
 - Las aplicaciones necesitan un script npm `build`.
 
 Cada run se guarda bajo `.angular-migration/runs/<run-id>/`. El lock de ownership impide dos runs mutantes sobre el mismo proyecto.
+
+## Ejecucion tecnica
+
+`run` obtiene todas sus decisiones de `state.json` y `manifest.json`; no acepta
+paquetes, flags, rama ni etapa. Tras la baseline y la resolucion crea
+`migration/angular-<origen>-to-<destino>-<sufijo>`, usa exclusivamente
+`node_modules/.bin/ng.cmd` y aplica este orden:
+
+```text
+ng update con targets exactos
+npm install --package-lock-only
+npm ci
+npm ls --all
+typecheck, lint, unit-test, build, e2e
+```
+
+El resultado estable es `verified/document`, con el lock mantenido para la fase
+documental. Los fallos de codigo con scope seguro producen `needs-repair`; las
+precondiciones o incompatibilidades producen `blocked`; los errores internos,
+`failed`. Una segunda llamada sobre un resultado verificado no repite procesos.
 
 ## Baseline interna
 
@@ -76,6 +96,9 @@ scripts/
     Migration.Pipeline.psm1
 schemas/
   manifest.schema.json
+  state.schema.json
+  check-result.schema.json
+  change-set.schema.json
   result.schema.json
 tests/
   smoke.ps1
@@ -83,8 +106,11 @@ tests/
     Project.Tests.ps1
     Baseline.Tests.ps1
     Dependencies.Tests.ps1
+    StateMachine.Tests.ps1
+    PackageManifestWriter.Tests.ps1
   integration/
     DependencyResolution.Tests.ps1
+    PipelineExecution.Tests.ps1
   fixtures/
 docs/
   phases/
@@ -98,13 +124,17 @@ La instalacion del plugin no escribe artefactos en el propio plugin: la fachada 
 powershell -NoProfile -File tests\unit\Project.Tests.ps1
 powershell -NoProfile -File tests\unit\Baseline.Tests.ps1
 powershell -NoProfile -File tests\unit\Dependencies.Tests.ps1
+powershell -NoProfile -File tests\unit\StateMachine.Tests.ps1
+powershell -NoProfile -File tests\unit\PackageManifestWriter.Tests.ps1
 powershell -NoProfile -File tests\integration\DependencyResolution.Tests.ps1
+powershell -NoProfile -File tests\integration\PipelineExecution.Tests.ps1
 powershell -NoProfile -File tests\smoke.ps1
 ```
 
 Las pruebas usan herramientas controladas y repositorios Git temporales.
-No necesitan Node, npm, acceso a internet ni un framework de tests instalado.
-El smoke compila un ejecutable Node ficticio con `Add-Type` de PowerShell 5.1.
+No necesitan npm, acceso a internet ni un framework de tests instalado. La
+prueba del renderer requiere Node; el resto usa ejecutables fixture y el smoke
+compila uno con `Add-Type` de PowerShell 5.1.
 
 ## Checklist de salida de fase 3
 
@@ -120,7 +150,7 @@ El smoke compila un ejecutable Node ficticio con `Add-Type` de PowerShell 5.1.
 | Sin shell libre ni interpolacion ejecutable      | Runner usa solo `Invoke-MigrationProcess`; `Baseline.Tests.ps1` rechaza ejecutables, argumentos y cwd alterados |
 | Logs fuera de state y stdout                     | `Baseline.Tests.ps1`: dos logs por ejecucion, contenido ausente del resultado y state                           |
 | Sin Node/npm/red reales                          | Fixtures de ambas suites; smoke verifica rutas de ejecutables ficticios                                         |
-| run sigue sin publicarse                         | `smoke.ps1`: unsupported_command                                                                                |
+| run exige identidad explicita                    | `smoke.ps1`: `run_id_required`                                                                                  |
 
 ## Checklist de salida de fase 4
 
@@ -129,5 +159,17 @@ El smoke compila un ejecutable Node ficticio con `Add-Type` de PowerShell 5.1.
 - El resolver usa solo `npm view` mediante argumentos estructurados y cache por run.
 - Todas las dependencias directas conservan seccion y `writeSpec`; los targets publicados son versiones exactas estables.
 - La resolucion no modifica archivos de dependencias, codigo fuente ni Git.
+
+## Checklist de salida de fase 5
+
+- `run -RunId` recorre la maquina de estados cerrada hasta `verified/document`.
+- Cada operacion persiste inicio, fin correlacionado, logs y postcondiciones.
+- Git usa una rama dedicada, checkpoints de rutas exactas y rollback selectivo.
+- Angular usa solo la CLI local; no se usa `npx`, CLI global, `git clean` ni push.
+- `package.json` pasa por versiones exactas antes de recuperar los rangos declarados.
+- El lockfile y todas las dependencias directas se verifican contra el manifest.
+- `npm ci`, `npm ls --all` y los checks finales se ejecutan en orden fijo.
+- El resultado tecnico tiene hash, es inmutable y mantiene el lock para documentacion.
+- La integracion simulada cubre reanudacion, rollback, rutas protegidas y rerun idempotente.
 
 MIT

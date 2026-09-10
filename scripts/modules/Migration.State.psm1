@@ -3,6 +3,18 @@ Set-StrictMode -Version 2.0
 Import-Module (Join-Path $PSScriptRoot 'Migration.Core.psm1') -DisableNameChecking
 
 $script:RunIdPattern = '^[a-z0-9]+(?:-[a-z0-9]+)*$'
+$script:AllowedStages = @('baseline', 'resolve', 'update-angular', 'update-dependencies', 'install', 'validate', 'document')
+$script:AllowedTransitions = @{
+    'running|baseline'            = @('running|resolve', 'blocked|baseline', 'failed|baseline')
+    'running|resolve'             = @('running|update-angular', 'blocked|resolve', 'failed|resolve')
+    'running|update-angular'      = @('running|update-dependencies', 'needs-repair|update-angular', 'blocked|update-angular', 'failed|update-angular')
+    'running|update-dependencies' = @('running|install', 'blocked|update-dependencies', 'failed|update-dependencies')
+    'running|install'             = @('running|validate', 'blocked|install', 'failed|install')
+    'running|validate'            = @('verified|document', 'needs-repair|validate', 'blocked|validate', 'failed|validate')
+    'needs-repair|update-angular' = @('running|update-angular', 'blocked|update-angular', 'failed|update-angular')
+    'needs-repair|validate'       = @('running|validate', 'blocked|validate', 'failed|validate')
+}
+$script:CompletedOperationIds = @('baseline', 'resolve-manifest', 'create-branch', 'update-angular', 'update-dependencies', 'install', 'validate', 'technical-result')
 
 function Get-MigrationMember {
     param(
@@ -34,13 +46,13 @@ function Get-MigrationRunPaths {
     Assert-MigrationRunId -RunId $RunId
     $runDirectory = Join-Path (Join-Path (Get-MigrationDirectory -ProjectRoot $ProjectRoot) 'runs') $RunId
     return [PSCustomObject]@{
-        root = $runDirectory
+        root     = $runDirectory
         manifest = Join-Path $runDirectory 'manifest.json'
-        state = Join-Path $runDirectory 'state.json'
-        events = Join-Path $runDirectory 'events.jsonl'
-        result = Join-Path $runDirectory 'result.json'
+        state    = Join-Path $runDirectory 'state.json'
+        events   = Join-Path $runDirectory 'events.jsonl'
+        result   = Join-Path $runDirectory 'result.json'
         research = Join-Path $runDirectory 'research.json'
-        logs = Join-Path $runDirectory 'logs'
+        logs     = Join-Path $runDirectory 'logs'
     }
 }
 
@@ -110,9 +122,9 @@ function New-ActiveRunLock {
     $path = Get-ActiveLockPath -ProjectRoot $ProjectRoot
     $lock = [ordered]@{
         schemaVersion = Get-MigrationSchemaVersion
-        runId = $RunId
-        processId = $PID
-        createdAt = Get-MigrationUtcNow
+        runId         = $RunId
+        processId     = $PID
+        createdAt     = Get-MigrationUtcNow
     }
     $stream = $null
     try {
@@ -172,7 +184,8 @@ function New-MigrationRunState {
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
         [Parameter(Mandatory = $true)][int]$SourceMajor,
         [Parameter(Mandatory = $true)][int]$TargetMajor,
-        [Parameter(Mandatory = $true)][string]$InitialCommit
+        [Parameter(Mandatory = $true)][string]$InitialCommit,
+        [string]$InitialBranch = $null
     )
 
     Assert-MigrationRunId -RunId $RunId
@@ -181,23 +194,29 @@ function New-MigrationRunState {
     }
 
     return [ordered]@{
-        schemaVersion = Get-MigrationSchemaVersion
-        runId = $RunId
-        projectRoot = $ProjectRoot
-        sourceMajor = $SourceMajor
-        targetMajor = $TargetMajor
-        status = 'running'
-        stage = 'baseline'
-        attempt = 1
-        migrationStatus = 'running'
+        schemaVersion       = Get-MigrationSchemaVersion
+        runId               = $RunId
+        projectRoot         = $ProjectRoot
+        sourceMajor         = $SourceMajor
+        targetMajor         = $TargetMajor
+        status              = 'running'
+        stage               = 'baseline'
+        stageRevision       = 0
+        attempt             = 1
+        migrationStatus     = 'running'
         documentationStatus = 'pending'
-        baselineStatus = 'pending'
-        resolutionStatus = 'pending'
-        manifestSha256 = $null
-        initialCommit = $InitialCommit
-        lastDiagnostic = $null
-        createdAt = Get-MigrationUtcNow
-        updatedAt = Get-MigrationUtcNow
+        baselineStatus      = 'pending'
+        resolutionStatus    = 'pending'
+        initialBranch       = $InitialBranch
+        manifestSha256      = $null
+        migrationBranch     = $null
+        initialCommit       = $InitialCommit
+        checkpointCommit    = $InitialCommit
+        activeOperation     = $null
+        completedOperations = @()
+        lastDiagnostic      = $null
+        createdAt           = Get-MigrationUtcNow
+        updatedAt           = Get-MigrationUtcNow
     }
 }
 
@@ -222,25 +241,83 @@ function Assert-MigrationRunState {
     $schemaProperty = Get-MigrationMember -Object $State -Name 'schemaVersion'
     $runIdProperty = Get-MigrationMember -Object $State -Name 'runId'
     $statusProperty = Get-MigrationMember -Object $State -Name 'status'
+    $stageProperty = Get-MigrationMember -Object $State -Name 'stage'
+    $revisionProperty = Get-MigrationMember -Object $State -Name 'stageRevision'
     $sourceProperty = Get-MigrationMember -Object $State -Name 'sourceMajor'
     $targetProperty = Get-MigrationMember -Object $State -Name 'targetMajor'
     $baselineProperty = Get-MigrationMember -Object $State -Name 'baselineStatus'
     $resolutionProperty = Get-MigrationMember -Object $State -Name 'resolutionStatus'
     $manifestHashProperty = Get-MigrationMember -Object $State -Name 'manifestSha256'
+    $initialBranchProperty = Get-MigrationMember -Object $State -Name 'initialBranch'
+    $initialCommitProperty = Get-MigrationMember -Object $State -Name 'initialCommit'
+    $checkpointProperty = Get-MigrationMember -Object $State -Name 'checkpointCommit'
+    $activeOperationProperty = Get-MigrationMember -Object $State -Name 'activeOperation'
+    $completedOperationsProperty = Get-MigrationMember -Object $State -Name 'completedOperations'
     $validStatuses = @('running', 'needs-repair', 'verified', 'completed', 'blocked', 'failed')
     $validBaselineStatuses = @('pending', 'passed')
     $validResolutionStatuses = @('pending', 'resolved')
     $hashValid = $null -eq $manifestHashProperty.value -or [string]$manifestHashProperty.value -match '^[0-9a-f]{64}$'
+    $completedValid = $completedOperationsProperty.exists -and $null -ne $completedOperationsProperty.value -and
+    @($completedOperationsProperty.value | Where-Object { $_ -notin $script:CompletedOperationIds }).Count -eq 0 -and
+    @($completedOperationsProperty.value | Sort-Object -Unique).Count -eq @($completedOperationsProperty.value).Count
+    $branchesValid = $initialBranchProperty.exists -and ($null -eq $initialBranchProperty.value -or [string]$initialBranchProperty.value -match '^[^\s]+$') -and
+    $checkpointProperty.exists -and ($null -eq $checkpointProperty.value -or [string]$checkpointProperty.value -match '^[a-fA-F0-9]{40}$') -and
+    $initialCommitProperty.exists -and [string]$initialCommitProperty.value -match '^[a-fA-F0-9]{40}$'
     if (-not $schemaProperty.exists -or $schemaProperty.value -ne (Get-MigrationSchemaVersion) -or
         -not $runIdProperty.exists -or $runIdProperty.value -ne $ExpectedRunId -or
         -not $statusProperty.exists -or $validStatuses -notcontains $statusProperty.value -or
+        -not $stageProperty.exists -or @('baseline', 'resolve', 'update-angular', 'update-dependencies', 'install', 'validate', 'document') -notcontains $stageProperty.value -or
+        -not $revisionProperty.exists -or [int]$revisionProperty.value -lt 0 -or
         -not $sourceProperty.exists -or -not $targetProperty.exists -or
         [int]$targetProperty.value -ne ([int]$sourceProperty.value + 1) -or
         -not $baselineProperty.exists -or $validBaselineStatuses -notcontains $baselineProperty.value -or
         -not $resolutionProperty.exists -or $validResolutionStatuses -notcontains $resolutionProperty.value -or
-        -not $manifestHashProperty.exists -or -not $hashValid) {
+        -not $manifestHashProperty.exists -or -not $hashValid -or
+        -not $activeOperationProperty.exists -or -not $completedValid -or -not $branchesValid) {
         Throw-MigrationError -Code 'invalid_run_state' -Message "Migration state is invalid for run: $ExpectedRunId" -Status failed
     }
+}
+
+function Move-MigrationState {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][string]$ExpectedStatus,
+        [Parameter(Mandatory = $true)][string]$ExpectedStage,
+        [Parameter(Mandatory = $true)][string]$NewStatus,
+        [Parameter(Mandatory = $true)][string]$NewStage,
+        [Parameter(Mandatory = $true)][int]$ExpectedRevision,
+        $Diagnostic = $null
+    )
+
+    $root = Resolve-MigrationRoot -Path $ProjectRoot
+    Assert-ActiveRunOwnership -ProjectRoot $root -RunId $RunId
+    $state = Read-MigrationRunState -ProjectRoot $root -RunId $RunId
+    if ($state.status -cne $ExpectedStatus -or $state.stage -cne $ExpectedStage -or [int]$state.stageRevision -ne $ExpectedRevision) {
+        Throw-MigrationError -Code 'state_revision_conflict' -Message 'Migration state changed since the operation started.' -Status blocked -Details ([PSCustomObject]@{
+                expectedStatus = $ExpectedStatus; expectedStage = $ExpectedStage; expectedRevision = $ExpectedRevision
+                actualStatus = $state.status; actualStage = $state.stage; actualRevision = $state.stageRevision
+            })
+    }
+    $transitionKey = "$ExpectedStatus|$ExpectedStage"
+    $transition = "$NewStatus|$NewStage"
+    if (-not $script:AllowedTransitions.ContainsKey($transitionKey) -or $transition -notin $script:AllowedTransitions[$transitionKey]) {
+        Throw-MigrationError -Code 'invalid_state_transition' -Message "Transition is not allowed: $transitionKey -> $transition" -Status blocked
+    }
+    $state.status = $NewStatus
+    $state.stage = $NewStage
+    $state.stageRevision = $ExpectedRevision + 1
+    $state.lastDiagnostic = $Diagnostic
+    Write-MigrationRunState -ProjectRoot $root -RunId $RunId -State $state
+    $verified = Read-MigrationRunState -ProjectRoot $root -RunId $RunId
+    if ($verified.status -cne $NewStatus -or $verified.stage -cne $NewStage -or [int]$verified.stageRevision -ne ($ExpectedRevision + 1)) {
+        Throw-MigrationError -Code 'state_persistence_failed' -Message 'Persisted migration state did not match the requested transition.' -Status failed
+    }
+    Add-MigrationEvent -ProjectRoot $root -RunId $RunId -Type 'state-transitioned' -Stage $NewStage -Data ([PSCustomObject]@{
+            expectedStatus = $ExpectedStatus; expectedStage = $ExpectedStage; expectedRevision = $ExpectedRevision
+            status = $NewStatus; stage = $NewStage; stageRevision = $verified.stageRevision; diagnostic = $Diagnostic
+        })
+    return $verified
 }
 
 function Write-MigrationRunState {
@@ -289,12 +366,12 @@ function Add-MigrationEvent {
     $paths = Get-MigrationRunPaths -ProjectRoot $ProjectRoot -RunId $RunId
     $event = [ordered]@{
         schemaVersion = Get-MigrationSchemaVersion
-        eventId = [guid]::NewGuid().ToString('N')
-        runId = $RunId
-        type = $Type
-        stage = $Stage
-        timestamp = Get-MigrationUtcNow
-        data = $Data
+        eventId       = [guid]::NewGuid().ToString('N')
+        runId         = $RunId
+        type          = $Type
+        stage         = $Stage
+        timestamp     = Get-MigrationUtcNow
+        data          = $Data
     }
     $line = ($event | ConvertTo-Json -Depth 30 -Compress) + [Environment]::NewLine
     $stream = $null
@@ -324,6 +401,7 @@ Export-ModuleMember -Function @(
     'Assert-ActiveRunOwnership',
     'New-MigrationRunState',
     'Assert-MigrationRunState',
+    'Move-MigrationState',
     'Read-MigrationRunState',
     'Write-MigrationRunState',
     'Write-MigrationRunManifest',

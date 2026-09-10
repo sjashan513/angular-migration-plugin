@@ -136,8 +136,8 @@ try {
         Assert-Check 'detects Angular major 7' ($inspection.data.angular.currentMajor -eq 7)
         Assert-Check 'inspect does not create migration state' (-not (Test-Path (Join-Path $tmp '.angular-migration')))
         Assert-Check 'toolchain uses fixtures' ($inspection.data.node.node.executable -eq (Join-Path $toolDirectory 'node.exe') -and $inspection.data.node.npm.executable -eq (Join-Path $toolDirectory 'npm.cmd'))
-        $unpublished = Invoke-Facade -ProjectRoot $tmp -Arguments @('-Command', 'run') -ExpectedExitCode 2
-        Assert-Check 'run is not published in phase 4' ($unpublished.error.code -eq 'unsupported_command')
+        $missingRunId = Invoke-Facade -ProjectRoot $tmp -Arguments @('-Command', 'run') -ExpectedExitCode 2
+        Assert-Check 'run requires an explicit run id' ($missingRunId.error.code -eq 'run_id_required')
         Assert-Check 'discovers lint and build' (($inspection.data.checks | Where-Object id -eq 'lint').status -eq 'configured' -and ($inspection.data.checks | Where-Object id -eq 'build').status -eq 'configured')
         Assert-Check 'checks use structured process arguments' ((@(($inspection.data.checks | Where-Object id -eq 'build').arguments) -join ' ') -eq 'run build')
         Assert-Check 'marks e2e as not-configured' (($inspection.data.checks | Where-Object id -eq 'e2e').status -eq 'not-configured')

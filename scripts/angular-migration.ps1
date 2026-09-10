@@ -49,8 +49,9 @@ try {
         'inspect' { Invoke-InspectMigration -ProjectRoot $projectRoot }
         'start' { Invoke-StartMigration -ProjectRoot $projectRoot -TargetMajor $TargetMajor }
         'status' { Invoke-MigrationStatus -ProjectRoot $projectRoot -RunId $RunId }
+        'run' { Invoke-MigrationRun -ProjectRoot $projectRoot -RunId $RunId }
         default {
-            Throw-MigrationError -Code 'unsupported_command' -Message "Unsupported v5 command: $Command" -Status blocked -Details ([PSCustomObject]@{ supported = @('inspect', 'start', 'status') })
+            Throw-MigrationError -Code 'unsupported_command' -Message "Unsupported v5 command: $Command" -Status blocked -Details ([PSCustomObject]@{ supported = @('inspect', 'start', 'status', 'run') })
         }
     }
 

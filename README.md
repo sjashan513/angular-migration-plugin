@@ -24,6 +24,7 @@ La salida estandar contiene exactamente un JSON v5. Los errores humanos y el pro
 - Proyecto Angular CLI con `package.json`, `angular.json` y `package-lock.json` en la raiz.
 - npm como gestor de paquetes.
 - Working tree Git limpio.
+- `.angular-migration/` ignorado por Git.
 - Node y npm disponibles.
 - El destino debe ser exactamente el major actual mas uno.
 
@@ -41,6 +42,7 @@ scripts/
     Migration.Core.psm1
     Migration.State.psm1
     Migration.Project.psm1
+    Migration.Pipeline.psm1
 schemas/
   manifest.schema.json
   result.schema.json

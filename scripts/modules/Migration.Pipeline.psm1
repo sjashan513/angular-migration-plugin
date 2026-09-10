@@ -1,0 +1,192 @@
+Set-StrictMode -Version 2.0
+
+Import-Module (Join-Path $PSScriptRoot 'Migration.Core.psm1') -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'Migration.State.psm1') -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'Migration.Project.psm1') -DisableNameChecking
+
+function New-StartManifest {
+    param(
+        [Parameter(Mandatory = $true)]$Inspection,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][int]$Target
+    )
+
+    return [ordered]@{
+        schemaVersion = Get-MigrationSchemaVersion
+        manifestType = 'migration'
+        runId = $RunId
+        createdAt = Get-MigrationUtcNow
+        project = [ordered]@{
+            name = $Inspection.projectName
+            root = $Inspection.projectRoot
+            packageManager = $Inspection.packageManager
+            files = $Inspection.files
+            git = [ordered]@{
+                branch = $Inspection.git.branch
+                initialCommit = $Inspection.git.head
+            }
+        }
+        sourceMajor = $Inspection.angular.currentMajor
+        targetMajor = $Target
+        angular = [ordered]@{
+            current = $Inspection.angular.packages
+            target = [ordered]@{
+                major = $Target
+                resolved = $false
+                resolutionStatus = 'pending'
+            }
+        }
+        dependencies = $Inspection.dependencies
+        policies = $Inspection.policies
+        authorizedOperations = @(
+            'resolve-manifest',
+            'update-angular',
+            'update-dependencies',
+            'install',
+            'dependency-tree',
+            'typecheck',
+            'lint',
+            'unit-test',
+            'build',
+            'e2e'
+        )
+        policy = [ordered]@{
+            sequentialMajor = $true
+            exactManifestVersions = $true
+            allowForce = $false
+            allowDirty = $false
+            allowLegacyPeerDeps = $false
+        }
+        checks = $Inspection.checks
+        warnings = @()
+    }
+}
+
+function Invoke-InspectMigration {
+    param([Parameter(Mandatory = $true)][string]$ProjectRoot)
+
+    $inspection = Get-ProjectInspection -ProjectRoot $ProjectRoot
+    return [PSCustomObject]@{
+        ok = [bool]$inspection.ready
+        status = $inspection.status
+        data = $inspection
+        error = if ($inspection.ready) { $null } else {
+            [PSCustomObject]@{
+                code = 'project_not_ready'
+                message = 'Project inspection found blocking preconditions.'
+                details = $inspection.blockers
+            }
+        }
+    }
+}
+
+function Invoke-StartMigration {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][int]$TargetMajor
+    )
+
+    if ($TargetMajor -lt 1) {
+        Throw-MigrationError -Code 'target_major_required' -Message '-TargetMajor must be a positive Angular major.' -Status blocked
+    }
+
+    $inspection = Get-ProjectInspection -ProjectRoot $ProjectRoot
+    if (-not $inspection.ready) {
+        Throw-MigrationError -Code 'project_not_ready' -Message 'Project inspection found blocking preconditions.' -Status blocked -Details $inspection.blockers
+    }
+
+    $expectedTarget = [int]$inspection.angular.currentMajor + 1
+    if ($TargetMajor -ne $expectedTarget) {
+        Throw-MigrationError -Code 'non_sequential_target' -Message "Only the next Angular major is allowed. Expected $expectedTarget, received $TargetMajor." -Status blocked -Details ([PSCustomObject]@{
+                sourceMajor = $inspection.angular.currentMajor
+                expectedTargetMajor = $expectedTarget
+                requestedTargetMajor = $TargetMajor
+            })
+    }
+
+    $runId = New-MigrationRunId -SourceMajor $inspection.angular.currentMajor -TargetMajor $TargetMajor
+    $paths = Get-MigrationRunPaths -ProjectRoot $ProjectRoot -RunId $runId
+    $createdRunDirectory = $false
+    $lockCreated = $false
+    try {
+        New-ActiveRunLock -ProjectRoot $ProjectRoot -RunId $runId
+        $lockCreated = $true
+
+        New-Item -ItemType Directory -Path $paths.logs | Out-Null
+        $createdRunDirectory = $true
+
+        $manifest = New-StartManifest -Inspection $inspection -RunId $runId -Target $TargetMajor
+        $state = New-MigrationRunState -RunId $runId -ProjectRoot $ProjectRoot -SourceMajor $inspection.angular.currentMajor -TargetMajor $TargetMajor -InitialCommit $inspection.git.head
+        Write-MigrationJsonAtomic -Value $manifest -Path $paths.manifest
+        Write-MigrationRunState -ProjectRoot $ProjectRoot -RunId $runId -State $state
+        Add-MigrationEvent -ProjectRoot $ProjectRoot -RunId $runId -Type 'run-started' -Stage 'baseline' -Data ([PSCustomObject]@{
+                sourceMajor = $inspection.angular.currentMajor
+                targetMajor = $TargetMajor
+                initialCommit = $inspection.git.head
+            })
+
+        return [PSCustomObject]@{
+            ok = $true
+            status = 'running'
+            data = [PSCustomObject]@{
+                runId = $runId
+                sourceMajor = $inspection.angular.currentMajor
+                targetMajor = $TargetMajor
+                stage = 'baseline'
+                manifest = '.angular-migration/runs/' + $runId + '/manifest.json'
+                state = '.angular-migration/runs/' + $runId + '/state.json'
+            }
+            error = $null
+        }
+    }
+    catch {
+        if ($createdRunDirectory -and (Test-Path -LiteralPath $paths.root -PathType Container)) {
+            Remove-Item -LiteralPath $paths.root -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if ($lockCreated) {
+            Remove-ActiveRunLock -ProjectRoot $ProjectRoot -RunId $runId
+        }
+        throw
+    }
+}
+
+function Invoke-MigrationStatus {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$RunId
+    )
+
+    if ([string]::IsNullOrWhiteSpace($RunId)) {
+        Throw-MigrationError -Code 'run_id_required' -Message '-RunId is required for status.' -Status blocked
+    }
+    Assert-MigrationRunId -RunId $RunId
+    $paths = Get-MigrationRunPaths -ProjectRoot $ProjectRoot -RunId $RunId
+    if (-not (Test-Path -LiteralPath $paths.state -PathType Leaf)) {
+        Throw-MigrationError -Code 'run_not_found' -Message "Migration run not found: $RunId" -Status blocked
+    }
+
+    $state = Read-MigrationRunState -ProjectRoot $ProjectRoot -RunId $RunId
+    $successful = @('running', 'verified', 'completed') -contains $state.status
+    return [PSCustomObject]@{
+        ok = $successful
+        status = $state.status
+        data = [PSCustomObject]@{
+            runId = $state.runId
+            status = $state.status
+            stage = $state.stage
+            attempt = $state.attempt
+            migrationStatus = $state.migrationStatus
+            documentationStatus = $state.documentationStatus
+            lastDiagnostic = $state.lastDiagnostic
+            manifest = '.angular-migration/runs/' + $RunId + '/manifest.json'
+            state = '.angular-migration/runs/' + $RunId + '/state.json'
+        }
+        error = $null
+    }
+}
+
+Export-ModuleMember -Function @(
+    'Invoke-InspectMigration',
+    'Invoke-StartMigration',
+    'Invoke-MigrationStatus'
+)

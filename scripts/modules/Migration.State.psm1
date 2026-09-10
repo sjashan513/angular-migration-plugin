@@ -4,9 +4,25 @@ Import-Module (Join-Path $PSScriptRoot 'Migration.Core.psm1') -DisableNameChecki
 
 $script:RunIdPattern = '^[a-z0-9]+(?:-[a-z0-9]+)*$'
 
+function Get-MigrationMember {
+    param(
+        [Parameter(Mandatory = $true)]$Object,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($Object -is [Collections.IDictionary] -and $Object.Contains($Name)) {
+        return [PSCustomObject]@{ exists = $true; value = $Object[$Name] }
+    }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($property) {
+        return [PSCustomObject]@{ exists = $true; value = $property.Value }
+    }
+    return [PSCustomObject]@{ exists = $false; value = $null }
+}
+
 function Get-MigrationDirectory {
     param([Parameter(Mandatory = $true)][string]$ProjectRoot)
-    return (Join-Path $ProjectRoot '.angular-migration')
+    return Resolve-MigrationPath -ProjectRoot $ProjectRoot -Path '.angular-migration' -PathType Container
 }
 
 function Get-MigrationRunPaths {
@@ -36,43 +52,19 @@ function Assert-MigrationRunId {
     }
 }
 
-function Assert-NoLegacyMigrationMetadata {
-    param([Parameter(Mandatory = $true)][string]$ProjectRoot)
-
-    $migrationDirectory = Get-MigrationDirectory -ProjectRoot $ProjectRoot
-    if (-not (Test-Path -LiteralPath $migrationDirectory -PathType Container)) {
-        return
-    }
-
-    $legacyFiles = @(@('config.json', 'state.json', 'progress.json') | ForEach-Object {
-        $path = Join-Path $migrationDirectory $_
-        if (Test-Path -LiteralPath $path -PathType Leaf) { $path }
-    })
-    $legacyDirectories = @(Get-ChildItem -LiteralPath $migrationDirectory -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match '^v\d+-v\d+\.log$' } |
-        Select-Object -ExpandProperty FullName)
-
-    if ($legacyFiles.Count -gt 0 -or $legacyDirectories.Count -gt 0) {
-        Throw-MigrationError -Code 'legacy_metadata_present' -Message 'Existing migration metadata is not accepted by v5. Preserve it in Git history and remove it before starting a v5 run.' -Status blocked
-    }
-}
-
 function New-MigrationRunId {
     param(
         [Parameter(Mandatory = $true)][int]$SourceMajor,
-        [Parameter(Mandatory = $true)][int]$TargetMajor,
-        [Parameter(Mandatory = $true)][string]$ProjectRoot
+        [Parameter(Mandatory = $true)][int]$TargetMajor
     )
 
-    $timestamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
-    $base = "angular-$SourceMajor-to-$TargetMajor-$timestamp"
-    $candidate = $base
-    $counter = 0
-    while (Test-Path -LiteralPath (Get-MigrationRunPaths -ProjectRoot $ProjectRoot -RunId $candidate).root -PathType Container) {
-        $counter++
-        $candidate = "$base-$counter"
+    if ($TargetMajor -ne ($SourceMajor + 1)) {
+        Throw-MigrationError -Code 'non_sequential_target' -Message 'A run id can only be created for the next Angular major.' -Status blocked
     }
-    return $candidate
+
+    $timestamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssfffZ')
+    $suffix = [guid]::NewGuid().ToString('N').Substring(0, 8)
+    return "angular-$SourceMajor-to-$TargetMajor-$timestamp-$suffix"
 }
 
 function Get-ActiveLockPath {
@@ -89,7 +81,15 @@ function Read-ActiveRunLock {
     }
 
     try {
-        return Read-MigrationJson -Path $path -Required
+        $lock = Read-MigrationJson -Path $path -Required
+        $schemaProperty = Get-MigrationMember -Object $lock -Name 'schemaVersion'
+        $runIdProperty = Get-MigrationMember -Object $lock -Name 'runId'
+        if (-not $schemaProperty.exists -or $schemaProperty.value -ne (Get-MigrationSchemaVersion) -or
+            -not $runIdProperty.exists -or [string]::IsNullOrWhiteSpace([string]$runIdProperty.value)) {
+            throw 'Invalid active lock contract.'
+        }
+        Assert-MigrationRunId -RunId ([string]$runIdProperty.value)
+        return $lock
     }
     catch {
         Throw-MigrationError -Code 'active_lock_invalid' -Message 'The active migration lock is invalid. Inspect it and remove it only after confirming no migration is running.' -Status blocked
@@ -123,7 +123,12 @@ function New-ActiveRunLock {
         $stream.Flush($true)
     }
     catch [IO.IOException] {
-        $existing = Read-ActiveRunLock -ProjectRoot $ProjectRoot
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            Throw-MigrationError -Code 'lock_create_failed' -Message 'Could not create the migration ownership lock.' -Status failed -Details $_.Exception.Message
+        }
+        $existing = $null
+        try { $existing = Read-MigrationJson -Path $path -Required }
+        catch { }
         $owner = if ($existing) { $existing.runId } else { 'unknown' }
         Throw-MigrationError -Code 'active_run' -Message "Another migration run owns this project: $owner" -Status blocked -Details $existing
     }
@@ -161,22 +166,6 @@ function Assert-ActiveRunOwnership {
     }
 }
 
-function Get-RunningMigrationRuns {
-    param([Parameter(Mandatory = $true)][string]$ProjectRoot)
-
-    $runsDirectory = Join-Path (Get-MigrationDirectory -ProjectRoot $ProjectRoot) 'runs'
-    if (-not (Test-Path -LiteralPath $runsDirectory -PathType Container)) { return @() }
-
-    $running = @()
-    foreach ($directory in @(Get-ChildItem -LiteralPath $runsDirectory -Directory -ErrorAction SilentlyContinue)) {
-        $statePath = Join-Path $directory.FullName 'state.json'
-        if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) { continue }
-        $state = Read-MigrationJson -Path $statePath -Required
-        if ($state.status -eq 'running') { $running += $state }
-    }
-    return $running
-}
-
 function New-MigrationRunState {
     param(
         [Parameter(Mandatory = $true)][string]$RunId,
@@ -185,6 +174,11 @@ function New-MigrationRunState {
         [Parameter(Mandatory = $true)][int]$TargetMajor,
         [Parameter(Mandatory = $true)][string]$InitialCommit
     )
+
+    Assert-MigrationRunId -RunId $RunId
+    if ($TargetMajor -ne ($SourceMajor + 1)) {
+        Throw-MigrationError -Code 'non_sequential_target' -Message 'Run state requires a sequential Angular major.' -Status blocked
+    }
 
     return [ordered]@{
         schemaVersion = Get-MigrationSchemaVersion
@@ -211,7 +205,30 @@ function Read-MigrationRunState {
     )
 
     $paths = Get-MigrationRunPaths -ProjectRoot $ProjectRoot -RunId $RunId
-    return Read-MigrationJson -Path $paths.state -Required
+    $state = Read-MigrationJson -Path $paths.state -Required
+    Assert-MigrationRunState -State $state -ExpectedRunId $RunId
+    return $state
+}
+
+function Assert-MigrationRunState {
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)][string]$ExpectedRunId
+    )
+
+    $schemaProperty = Get-MigrationMember -Object $State -Name 'schemaVersion'
+    $runIdProperty = Get-MigrationMember -Object $State -Name 'runId'
+    $statusProperty = Get-MigrationMember -Object $State -Name 'status'
+    $sourceProperty = Get-MigrationMember -Object $State -Name 'sourceMajor'
+    $targetProperty = Get-MigrationMember -Object $State -Name 'targetMajor'
+    $validStatuses = @('running', 'needs-repair', 'verified', 'completed', 'blocked', 'failed')
+    if (-not $schemaProperty.exists -or $schemaProperty.value -ne (Get-MigrationSchemaVersion) -or
+        -not $runIdProperty.exists -or $runIdProperty.value -ne $ExpectedRunId -or
+        -not $statusProperty.exists -or $validStatuses -notcontains $statusProperty.value -or
+        -not $sourceProperty.exists -or -not $targetProperty.exists -or
+        [int]$targetProperty.value -ne ([int]$sourceProperty.value + 1)) {
+        Throw-MigrationError -Code 'invalid_run_state' -Message "Migration state is invalid for run: $ExpectedRunId" -Status failed
+    }
 }
 
 function Write-MigrationRunState {
@@ -221,6 +238,8 @@ function Write-MigrationRunState {
         [Parameter(Mandatory = $true)]$State
     )
 
+    Assert-ActiveRunOwnership -ProjectRoot $ProjectRoot -RunId $RunId
+    Assert-MigrationRunState -State $State -ExpectedRunId $RunId
     $paths = Get-MigrationRunPaths -ProjectRoot $ProjectRoot -RunId $RunId
     $State.updatedAt = Get-MigrationUtcNow
     Write-MigrationJsonAtomic -Value $State -Path $paths.state
@@ -235,6 +254,7 @@ function Add-MigrationEvent {
         $Data = $null
     )
 
+    Assert-ActiveRunOwnership -ProjectRoot $ProjectRoot -RunId $RunId
     $paths = Get-MigrationRunPaths -ProjectRoot $ProjectRoot -RunId $RunId
     $event = [ordered]@{
         schemaVersion = Get-MigrationSchemaVersion
@@ -246,22 +266,33 @@ function Add-MigrationEvent {
         data = $Data
     }
     $line = ($event | ConvertTo-Json -Depth 30 -Compress) + [Environment]::NewLine
-    [IO.File]::AppendAllText($paths.events, $line, (New-Object System.Text.UTF8Encoding($false)))
+    $stream = $null
+    try {
+        $stream = [IO.File]::Open($paths.events, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+        $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($line)
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+    }
+    catch {
+        Throw-MigrationError -Code 'event_write_failed' -Message "Could not append migration event for run: $RunId" -Status failed -Details $_.Exception.Message
+    }
+    finally {
+        if ($stream) { $stream.Dispose() }
+    }
 }
 
 Export-ModuleMember -Function @(
     'Get-MigrationDirectory',
     'Get-MigrationRunPaths',
     'Assert-MigrationRunId',
-    'Assert-NoLegacyMigrationMetadata',
     'New-MigrationRunId',
     'Get-ActiveLockPath',
     'Read-ActiveRunLock',
     'New-ActiveRunLock',
     'Remove-ActiveRunLock',
     'Assert-ActiveRunOwnership',
-    'Get-RunningMigrationRuns',
     'New-MigrationRunState',
+    'Assert-MigrationRunState',
     'Read-MigrationRunState',
     'Write-MigrationRunState',
     'Add-MigrationEvent'

@@ -34,7 +34,7 @@ function Get-VersionMajor {
     param([string]$Spec)
 
     if ([string]::IsNullOrWhiteSpace($Spec)) { return $null }
-    $match = [regex]::Match($Spec, '(?<!\d)(\d+)(?:\.\d+)?')
+    $match = [regex]::Match($Spec, '^\s*(?:~|\^|>=?)?\s*(\d+)(?:\.(?:\d+|x|\*)){0,2}(?:-[0-9A-Za-z.-]+)?\s*$')
     if (-not $match.Success) { return $null }
     return [int]$match.Groups[1].Value
 }
@@ -46,7 +46,7 @@ function Get-DependencyKind {
     if ($Spec -match '^npm:') { return 'alias' }
     if ($Spec -match '^(git\+|git@|git://|github:|bitbucket:|gitlab:)') { return 'git' }
     if ($Spec -match '^https?://') { return 'url' }
-    if ($Spec -match '^(file:|workspace:)') { return 'local' }
+    if ($Spec -match '^(file:|link:|workspace:|patch:|\.{1,2}[\\/]|[a-zA-Z]:[\\/])') { return 'local' }
     return 'registry'
 }
 
@@ -120,18 +120,22 @@ function Get-ProjectChecks {
 
     $scripts = Get-NpmScripts -Package $Package
     $checks = @()
-    $installCommand = if ($HasLockfile) { 'npm ci' } else { 'npm install' }
+    $installArguments = if ($HasLockfile) { @('ci') } else { @('install') }
     $checks += [PSCustomObject]@{
         id = 'install'
         status = if ($HasLockfile) { 'configured' } else { 'blocked' }
-        command = $installCommand
+        executable = 'npm'
+        arguments = @($installArguments)
+        command = if ($HasLockfile) { 'npm ci' } else { 'npm install' }
         cwd = $ProjectRoot
         reason = if ($HasLockfile) { $null } else { 'package-lock.json is required for the supported npm workflow' }
     }
     $checks += [PSCustomObject]@{
         id = 'dependency-tree'
         status = if ($HasLockfile) { 'configured' } else { 'blocked' }
-        command = 'npm ls --all --depth=0'
+        executable = 'npm'
+        arguments = @('ls', '--all')
+        command = 'npm ls --all'
         cwd = $ProjectRoot
         reason = if ($HasLockfile) { $null } else { 'package-lock.json is required for the supported npm workflow' }
     }
@@ -145,9 +149,12 @@ function Get-ProjectChecks {
     )
     foreach ($definition in $definitions) {
         $scriptName = Find-NpmScript -Scripts $scripts -Names $definition.names
+        $scriptArguments = if ($scriptName) { @('run', $scriptName) } else { @() }
         $checks += [PSCustomObject]@{
             id = $definition.id
             status = if ($scriptName) { 'configured' } else { 'not-configured' }
+            executable = if ($scriptName) { 'npm' } else { $null }
+            arguments = @($scriptArguments)
             command = if ($scriptName) { "npm run $scriptName" } else { $null }
             cwd = $ProjectRoot
             reason = if ($scriptName) { $null } else { 'No matching npm script was found' }
@@ -163,11 +170,13 @@ function Get-ProjectGit {
     if (-not $git) {
         return [PSCustomObject]@{
             available = $false
+            valid = $false
             clean = $false
             branch = $null
             head = $null
             repositoryRoot = $null
             dirtyFiles = @()
+            stateDirectoryIgnored = $false
             error = 'git is not available'
         }
     }
@@ -176,11 +185,13 @@ function Get-ProjectGit {
     if ($rootResult.exitCode -ne 0) {
         return [PSCustomObject]@{
             available = $true
+            valid = $false
             clean = $false
             branch = $null
             head = $null
             repositoryRoot = $null
             dirtyFiles = @()
+            stateDirectoryIgnored = $false
             error = 'project is not inside a Git repository'
         }
     }
@@ -189,20 +200,35 @@ function Get-ProjectGit {
     $statusResult = Invoke-MigrationProcess -FilePath $git -Arguments @('status', '--porcelain') -WorkingDirectory $ProjectRoot -TimeoutSeconds 15
     $branchResult = Invoke-MigrationProcess -FilePath $git -Arguments @('rev-parse', '--abbrev-ref', 'HEAD') -WorkingDirectory $ProjectRoot -TimeoutSeconds 15
     $headResult = Invoke-MigrationProcess -FilePath $git -Arguments @('rev-parse', 'HEAD') -WorkingDirectory $ProjectRoot -TimeoutSeconds 15
+    $ignoreResult = Invoke-MigrationProcess -FilePath $git -Arguments @('check-ignore', '--quiet', '--', '.angular-migration/.probe') -WorkingDirectory $ProjectRoot -TimeoutSeconds 15
     $dirtyFiles = @($statusResult.stdout -split "`r?`n" | Where-Object { $_ -and $_.Trim() })
-    $sameRepository = [IO.Path]::GetFullPath($repositoryRoot).TrimEnd('\').Equals(
-        [IO.Path]::GetFullPath($ProjectRoot).TrimEnd('\'),
+    $sameRepository = (Resolve-MigrationRoot -Path $repositoryRoot).Equals(
+        (Resolve-MigrationRoot -Path $ProjectRoot),
         [StringComparison]::OrdinalIgnoreCase
     )
 
+    $gitContextValid = $statusResult.exitCode -eq 0 -and $branchResult.exitCode -eq 0 -and $headResult.exitCode -eq 0
+    $gitError = if (-not $sameRepository) {
+        'Git repository root does not match the project root'
+    }
+    elseif (-not $gitContextValid) {
+        $diagnostic = (@($statusResult.stderr, $branchResult.stderr, $headResult.stderr) | Where-Object { $_ } | ForEach-Object { $_.Trim() }) -join [Environment]::NewLine
+        if ($diagnostic) { $diagnostic } else { 'Git context commands failed' }
+    }
+    else {
+        $null
+    }
+
     return [PSCustomObject]@{
         available = $true
-        clean = $statusResult.exitCode -eq 0 -and $dirtyFiles.Count -eq 0 -and $sameRepository
-        branch = $branchResult.stdout.Trim()
+        valid = $gitContextValid -and $sameRepository
+        clean = $gitContextValid -and $dirtyFiles.Count -eq 0 -and $sameRepository
+        branch = if ($branchResult.exitCode -eq 0) { $branchResult.stdout.Trim() } else { $null }
         head = if ($headResult.exitCode -eq 0) { $headResult.stdout.Trim() } else { $null }
         repositoryRoot = $repositoryRoot
         dirtyFiles = $dirtyFiles
-        error = if (-not $sameRepository) { 'Git repository root does not match the project root' } elseif ($statusResult.exitCode -ne 0) { $statusResult.stderr.Trim() } else { $null }
+        stateDirectoryIgnored = $ignoreResult.exitCode -eq 0
+        error = $gitError
     }
 }
 
@@ -226,8 +252,8 @@ function Get-ProjectNode {
     else { $errors += 'npm is not available' }
 
     return [PSCustomObject]@{
-        node = [PSCustomObject]@{ available = [bool]$node; version = $nodeVersion }
-        npm = [PSCustomObject]@{ available = [bool]$npm; version = $npmVersion }
+        node = [PSCustomObject]@{ available = [bool]($node -and $nodeVersion); version = $nodeVersion }
+        npm = [PSCustomObject]@{ available = [bool]($npm -and $npmVersion); version = $npmVersion }
         errors = @($errors | Where-Object { $_ })
     }
 }
@@ -250,8 +276,12 @@ function Get-ProjectInspection {
     $packagePath = Join-Path $root 'package.json'
     $angularPath = Join-Path $root 'angular.json'
     $lockPath = Join-Path $root 'package-lock.json'
+    $yarnLockPath = Join-Path $root 'yarn.lock'
+    $pnpmLockPath = Join-Path $root 'pnpm-lock.yaml'
+    $nxPath = Join-Path $root 'nx.json'
     $package = $null
     $angular = $null
+    $packageManager = $null
 
     if (-not (Test-Path -LiteralPath $packagePath -PathType Leaf)) {
         $errors += [PSCustomObject]@{ code = 'package_missing'; message = 'package.json is required at the project root' }
@@ -269,6 +299,15 @@ function Get-ProjectInspection {
     }
 
     $inventory = if ($package) { Get-DependencyInventory -Package $package } else { [PSCustomObject]@{ items = @(); policies = @{} } }
+    if ($package) {
+        $packageManager = [string](Get-ProjectProperty -Object $package -Name 'packageManager')
+        if ($packageManager -and $packageManager -notmatch '^npm(?:@|$)') {
+            $errors += [PSCustomObject]@{ code = 'unsupported_package_manager'; message = "Only npm is supported, but package.json declares: $packageManager" }
+        }
+        if ($null -ne (Get-ProjectProperty -Object $package -Name 'workspaces')) {
+            $errors += [PSCustomObject]@{ code = 'workspaces_not_supported'; message = 'npm workspaces are not supported by this migration controller' }
+        }
+    }
     $coreSpec = $null
     if ($package) {
         foreach ($section in @('dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies')) {
@@ -279,20 +318,37 @@ function Get-ProjectInspection {
             }
         }
     }
+    $coreDependency = @($inventory.items | Where-Object { $_.name -eq '@angular/core' } | Select-Object -First 1)
     $currentMajor = Get-VersionMajor -Spec $coreSpec
-    if ($null -eq $currentMajor) {
+    if ($null -eq $currentMajor -or $coreDependency.Count -eq 0) {
         $errors += [PSCustomObject]@{ code = 'angular_core_missing'; message = '@angular/core with a numeric major is required' }
+    }
+    elseif ($coreDependency[0].kind -ne 'registry') {
+        $errors += [PSCustomObject]@{ code = 'unsupported_angular_core_spec'; message = '@angular/core must use an npm registry version spec'; dependency = $coreDependency[0] }
     }
 
     $git = Get-ProjectGit -ProjectRoot $root
     if (-not $git.available) { $errors += [PSCustomObject]@{ code = 'git_missing'; message = $git.error } }
+    elseif (-not $git.valid) { $errors += [PSCustomObject]@{ code = 'git_context_invalid'; message = $git.error } }
     elseif (-not $git.clean) { $errors += [PSCustomObject]@{ code = 'git_dirty'; message = 'The Git working tree must be clean'; files = $git.dirtyFiles } }
+    if ($git.valid -and -not $git.stateDirectoryIgnored) {
+        $errors += [PSCustomObject]@{ code = 'migration_state_not_ignored'; message = '.angular-migration/ must be ignored by Git before starting a run' }
+    }
     $node = Get-ProjectNode -ProjectRoot $root
     if (-not $node.node.available -or -not $node.npm.available) {
-        $errors += [PSCustomObject]@{ code = 'node_toolchain_missing'; message = 'node and npm are required' }
+        $errors += [PSCustomObject]@{ code = 'node_toolchain_missing'; message = 'node and npm must be available and executable'; details = $node.errors }
     }
     if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
         $errors += [PSCustomObject]@{ code = 'lockfile_missing'; message = 'package-lock.json is required for the npm workflow' }
+    }
+    if (Test-Path -LiteralPath $yarnLockPath -PathType Leaf) {
+        $errors += [PSCustomObject]@{ code = 'unsupported_lockfile'; message = 'yarn.lock is not supported by the npm-only workflow' }
+    }
+    if (Test-Path -LiteralPath $pnpmLockPath -PathType Leaf) {
+        $errors += [PSCustomObject]@{ code = 'unsupported_lockfile'; message = 'pnpm-lock.yaml is not supported by the npm-only workflow' }
+    }
+    if (Test-Path -LiteralPath $nxPath -PathType Leaf) {
+        $errors += [PSCustomObject]@{ code = 'nx_not_supported'; message = 'Nx workspaces are outside the current migration scope' }
     }
 
     $unsupported = @($inventory.items | Where-Object { $_.kind -ne 'registry' })
@@ -300,9 +356,14 @@ function Get-ProjectInspection {
         $errors += [PSCustomObject]@{ code = 'unsupported_dependency_spec'; message = "Dependency requires an explicit policy: $($dependency.name)"; dependency = $dependency }
     }
 
+    $angularProjects = if ($angular) { Get-ProjectProperty -Object $angular -Name 'projects' } else { $null }
+    if ($angular -and $null -eq $angularProjects) {
+        $errors += [PSCustomObject]@{ code = 'angular_projects_missing'; message = 'angular.json must contain a projects object' }
+    }
+    $projectNames = if ($angularProjects) { @($angularProjects.PSObject.Properties.Name | Sort-Object) } else { @() }
     $projectConfig = [PSCustomObject]@{
         present = $null -ne $angular
-        projects = if ($angular) { @((Get-ProjectProperty -Object $angular -Name 'projects').PSObject.Properties.Name | Sort-Object) } else { @() }
+        projects = @($projectNames)
     }
     $checks = Get-ProjectChecks -Package $(if ($package) { $package } else { [PSCustomObject]@{} }) -ProjectRoot $root -HasLockfile (Test-Path -LiteralPath $lockPath -PathType Leaf)
     $projectName = if ($package -and (Get-ProjectProperty -Object $package -Name 'name')) { [string](Get-ProjectProperty -Object $package -Name 'name') } else { Split-Path -Leaf $root }
@@ -323,9 +384,9 @@ function Get-ProjectInspection {
             currentMajor = $currentMajor
             coreSpec = $coreSpec
             packages = Get-AngularPackageVersions -Inventory $inventory
-            projects = $projectConfig.projects
+            projects = @($projectConfig.projects)
         }
-        packageManager = 'npm'
+        packageManager = if ($packageManager) { $packageManager } else { 'npm' }
         dependencies = $inventory.items
         policies = $inventory.policies
         git = $git

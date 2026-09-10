@@ -2,6 +2,17 @@ Set-StrictMode -Version 2.0
 
 $script:MigrationSchemaVersion = 5
 
+function Get-NormalizedMigrationPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $pathRoot = [IO.Path]::GetPathRoot($fullPath)
+    if ($fullPath.Equals($pathRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        return $pathRoot
+    }
+    return $fullPath.TrimEnd([char[]]@('\', '/'))
+}
+
 function Get-MigrationSchemaVersion {
     return $script:MigrationSchemaVersion
 }
@@ -40,7 +51,7 @@ function Resolve-MigrationRoot {
         Throw-MigrationError -Code 'project_root_not_found' -Message "Project root not found: $root" -Status blocked
     }
 
-    return $root.TrimEnd('\')
+    return Get-NormalizedMigrationPath -Path $root
 }
 
 function Resolve-MigrationPath {
@@ -55,7 +66,7 @@ function Resolve-MigrationPath {
         Throw-MigrationError -Code 'path_required' -Message 'A project-relative path is required.' -Status blocked
     }
 
-    $root = [IO.Path]::GetFullPath($ProjectRoot).TrimEnd('\')
+    $root = Get-NormalizedMigrationPath -Path $ProjectRoot
     $fullPath = if ([IO.Path]::IsPathRooted($Path)) {
         [IO.Path]::GetFullPath($Path)
     }
@@ -63,8 +74,14 @@ function Resolve-MigrationPath {
         [IO.Path]::GetFullPath((Join-Path $root $Path))
     }
 
+    $rootPrefix = if ($root.EndsWith([string][IO.Path]::DirectorySeparatorChar)) {
+        $root
+    }
+    else {
+        $root + [IO.Path]::DirectorySeparatorChar
+    }
     $insideRoot = $fullPath.Equals($root, [StringComparison]::OrdinalIgnoreCase) -or
-        $fullPath.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)
+        $fullPath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)
     if (-not $insideRoot) {
         Throw-MigrationError -Code 'path_outside_project' -Message "Path is outside the project root: $Path" -Status blocked
     }
@@ -109,10 +126,16 @@ function Write-MigrationJsonAtomic {
     }
 
     $tempPath = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
+    $backupPath = "$Path.$([guid]::NewGuid().ToString('N')).bak"
     $json = $Value | ConvertTo-Json -Depth 50 -Compress
     try {
         [IO.File]::WriteAllText($tempPath, $json, (New-Object System.Text.UTF8Encoding($false)))
-        Move-Item -LiteralPath $tempPath -Destination $Path -Force | Out-Null
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            [IO.File]::Replace($tempPath, $Path, $backupPath)
+        }
+        else {
+            [IO.File]::Move($tempPath, $Path)
+        }
     }
     catch {
         Throw-MigrationError -Code 'atomic_write_failed' -Message "Could not write JSON atomically: $Path" -Status failed -Details $_.Exception.Message
@@ -120,6 +143,9 @@ function Write-MigrationJsonAtomic {
     finally {
         if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
             Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
+            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
         }
     }
 }
@@ -137,6 +163,21 @@ function Find-MigrationExecutable {
     return $null
 }
 
+function ConvertTo-MigrationCommandLineArgument {
+    param([AllowEmptyString()][string]$Argument)
+
+    if ($null -eq $Argument) {
+        Throw-MigrationError -Code 'invalid_process_argument' -Message 'Process arguments cannot be null.' -Status failed
+    }
+    if ($Argument.IndexOf([char]0) -ge 0 -or $Argument -match "[`r`n]") {
+        Throw-MigrationError -Code 'invalid_process_argument' -Message 'Process arguments cannot contain null bytes or line breaks.' -Status failed
+    }
+
+    $escaped = [regex]::Replace($Argument, '(\\*)"', '$1$1\"')
+    $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
+    return '"' + $escaped + '"'
+}
+
 function Invoke-MigrationProcess {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
@@ -146,8 +187,9 @@ function Invoke-MigrationProcess {
     )
 
     $processId = [guid]::NewGuid().ToString('N')
-    $stdoutPath = Join-Path $env:TEMP "angular-migration-$processId.out"
-    $stderrPath = Join-Path $env:TEMP "angular-migration-$processId.err"
+    $temporaryDirectory = [IO.Path]::GetTempPath()
+    $stdoutPath = Join-Path $temporaryDirectory "angular-migration-$processId.out"
+    $stderrPath = Join-Path $temporaryDirectory "angular-migration-$processId.err"
     $process = $null
     $timedOut = $false
 
@@ -161,7 +203,9 @@ function Invoke-MigrationProcess {
             RedirectStandardError  = $stderrPath
         }
         if ($Arguments -and $Arguments.Count -gt 0) {
-            $startParameters.ArgumentList = $Arguments
+            $startParameters.ArgumentList = (($Arguments | ForEach-Object {
+                        ConvertTo-MigrationCommandLineArgument -Argument $_
+                    }) -join ' ')
         }
 
         $process = Start-Process @startParameters
@@ -175,6 +219,16 @@ function Invoke-MigrationProcess {
                     & $taskKill /PID $process.Id /T /F 2>$null | Out-Null
                 }
                 try { [void]$process.WaitForExit(5000) } catch { }
+                if (-not $process.HasExited) {
+                    try {
+                        $process.Kill()
+                        [void]$process.WaitForExit(5000)
+                    }
+                    catch { }
+                }
+                if (-not $process.HasExited) {
+                    Throw-MigrationError -Code 'process_termination_failed' -Message "Timed-out process could not be terminated: $FilePath" -Status failed
+                }
             }
         }
         else {
@@ -182,8 +236,8 @@ function Invoke-MigrationProcess {
         }
 
         $process.Refresh()
-        $stdout = if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { '' }
-        $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { '' }
+        $stdout = if (Test-Path -LiteralPath $stdoutPath) { [string](Get-Content -LiteralPath $stdoutPath -Raw) } else { '' }
+        $stderr = if (Test-Path -LiteralPath $stderrPath) { [string](Get-Content -LiteralPath $stderrPath -Raw) } else { '' }
         $exitCode = if ($timedOut) { 124 } else { $process.ExitCode }
 
         return [PSCustomObject]@{
@@ -197,6 +251,7 @@ function Invoke-MigrationProcess {
         Throw-MigrationError -Code 'process_failed' -Message "Could not execute process: $FilePath" -Status failed -Details $_.Exception.Message
     }
     finally {
+        if ($process) { $process.Dispose() }
         Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
     }
 }

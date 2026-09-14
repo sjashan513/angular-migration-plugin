@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "runId": "__RUN_ID__",
+  "sourceMajor": 7,
+  "targetMajor": 8,
+  "manifestSha256": "__MANIFEST_SHA256__",
+  "researchedAt": "2026-09-10T10:30:00.0000000Z",
+  "sources": [
+    {
+      "id": "S-001",
+      "title": "Angular Update Guide",
+      "url": "https://angular.dev/update-guide",
+      "publisher": "Angular",
+      "primary": true,
+      "accessedAt": "2026-09-10T10:20:00.0000000Z"
+    }
+  ],
+  "findings": [
+    {
+      "id": "F-001",
+      "kind": "official-change",
+      "area": "framework",
+      "title": "Framework migration guidance",
+      "summary": "The official guide identifies the relevant framework migration path.",
+      "affectedPackages": ["@angular/core"],
+      "sourceIds": ["S-001"],
+      "applicability": "applicable"
+    }
+  ],
+  "concepts": [
+    {
+      "id": "C-001",
+      "name": "Migration schematics",
+      "whyItMatters": "The team should review the automated changes before relying on them.",
+      "sourceIds": ["S-001"]
+    }
+  ],
+  "unresolved": []
+}

@@ -224,7 +224,7 @@ function Assert-ProjectCheck {
     if ((Split-Path -Leaf $directory) -notin @('baseline', 'validate') -or
         (Split-Path -Leaf $logs) -cne 'logs' -or (Split-Path -Leaf $runs) -cne 'runs' -or
         (Split-Path -Leaf $migration) -cne '.angular-migration' -or
-        (Split-Path -Leaf $runRoot) -notmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$' -or
+        (Split-Path -Leaf $runRoot) -notmatch '^[a-z0-9TZ]+(?:-[a-z0-9TZ]+)*$' -or
         $Check.cwd -cne $root) {
         Throw-MigrationError -Code 'invalid_check_contract' -Message 'Check and log directory must belong to the normalized project root.' -Status blocked
     }

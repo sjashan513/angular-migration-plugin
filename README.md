@@ -22,6 +22,10 @@ powershell -NoProfile -File <plugin>\scripts\angular-migration.ps1 -Command insp
 powershell -NoProfile -File <plugin>\scripts\angular-migration.ps1 -Command start -TargetMajor 8
 powershell -NoProfile -File <plugin>\scripts\angular-migration.ps1 -Command status -RunId <run-id>
 powershell -NoProfile -File <plugin>\scripts\angular-migration.ps1 -Command run -RunId <run-id>
+powershell -NoProfile -File <plugin>\scripts\angular-migration.ps1 -Command documentation-context -RunId <run-id> -Mode research
+powershell -NoProfile -File <plugin>\scripts\angular-migration.ps1 -Command record-documentation -RunId <run-id> -Mode research -InputFile '.angular-migration/runs/<run-id>/inbox/research.json'
+powershell -NoProfile -File <plugin>\scripts\angular-migration.ps1 -Command documentation-context -RunId <run-id> -Mode publish
+powershell -NoProfile -File <plugin>\scripts\angular-migration.ps1 -Command record-documentation -RunId <run-id> -Mode publish -InputFile '.angular-migration/runs/<run-id>/inbox/documentation.json'
 ```
 
 La salida estandar contiene exactamente un JSON v5. Los errores humanos y el progreso se reservan para stderr.
@@ -123,6 +127,45 @@ reparacion y pipeline verificados en Windows PowerShell 5.1 y PowerShell 7.6.6.
 La lectura JSON conserva timestamps como texto cuando el runtime lo permite,
 para mantener estables los hashes del manifest y del resultado entre runtimes.
 
+## Documentacion controlada
+
+La documentacion tiene dos pasos independientes. `documentation-context -Mode research`
+solo puede emitirse con el manifest resuelto y deja al Documenter escribir
+`.angular-migration/runs/<run-id>/inbox/research.json`; puede ejecutarse mientras la
+migracion tecnica sigue en `running`. `record-documentation -Mode research` valida
+fuentes HTTPS publicas, hashes, paquetes, IDs, evidencia y versiones, y mueve el
+resultado a `artifacts/research.json`. Research nunca escribe `docs/` ni crea un
+commit.
+
+`documentation-context -Mode publish` exige `migrationStatus=verified`, un research
+intacto, `result.json` valido y que `HEAD` siga siendo el commit tecnico. El Documenter
+solo puede escribir exactamente estos ocho archivos bajo
+`docs/migration/v<target>/` y su `documentation.json`:
+
+```text
+README.md
+changes.md
+errors-and-repairs.md
+warnings.md
+new-concepts.md
+dependencies.md
+validation.md
+sources.md
+```
+
+La entrega se valida contra manifest, result, research, eventos, checks, commits,
+reparaciones, enlaces y hashes de disco. Un fallo documental conserva la migracion
+tecnica en `verified`, marca `documentation.status=failed` y mantiene el lock para
+permitir un reintento. Una entrega valida crea exactamente el commit:
+
+```text
+docs(angular-migration): document Angular <source> to <target>
+```
+
+Despues pasa el run a `completed/done` y libera el ownership lock. El agente
+`migration-documenter` solo tiene `read`, `search`, `web` y `edit`; no tiene `execute`
+ni puede modificar codigo, configuracion, manifest, resultado o logs.
+
 ## Baseline interna
 
 `Invoke-MigrationBaseline -ProjectRoot <raiz> -RunId <id>` se importa desde
@@ -168,6 +211,9 @@ schemas/
   check-result.schema.json
   change-set.schema.json
   result.schema.json
+  documentation-context.schema.json
+  documentation-research.schema.json
+  documentation-input.schema.json
 tests/
   smoke.ps1
   unit/
@@ -176,9 +222,11 @@ tests/
     Dependencies.Tests.ps1
     StateMachine.Tests.ps1
     PackageManifestWriter.Tests.ps1
+    DocumentationContract.Tests.ps1
   integration/
     DependencyResolution.Tests.ps1
     PipelineExecution.Tests.ps1
+    DocumentationCycle.Tests.ps1
   fixtures/
 docs/
   phases/
@@ -199,6 +247,8 @@ powershell -NoProfile -File tests\integration\PipelineExecution.Tests.ps1
 powershell -NoProfile -File tests\unit\RepairContract.Tests.ps1
 powershell -NoProfile -File tests\unit\CopilotPolicyHook.Tests.ps1
 powershell -NoProfile -File tests\integration\RepairCycle.Tests.ps1
+powershell -NoProfile -File tests\unit\DocumentationContract.Tests.ps1
+powershell -NoProfile -File tests\integration\DocumentationCycle.Tests.ps1
 powershell -NoProfile -File tests\smoke.ps1
 ```
 
@@ -242,5 +292,18 @@ compila uno con `Add-Type` de PowerShell 5.1.
 - `npm ci`, `npm ls --all` y los checks finales se ejecutan en orden fijo.
 - El resultado tecnico tiene hash, es inmutable y mantiene el lock para documentacion.
 - La integracion simulada cubre reanudacion, rollback, rutas protegidas y rerun idempotente.
+
+## Checklist de salida de fase 7
+
+- `documentation-context` separa research y publish; research puede ejecutarse mientras el run sigue `running`.
+- `research.json` exige manifest resuelto, fuentes HTTPS publicas, paquetes conocidos, IDs unicos y timestamps UTC.
+- Research solo se mueve a `artifacts/research.json`; no modifica `docs/` ni crea commits.
+- Publish exige migracion `verified`, research y result integros, y `HEAD` igual al commit tecnico.
+- El Documenter solo dispone de `read`, `search`, `web` y `edit`; los hooks bloquean ejecucion y scope no autorizado.
+- La entrega contiene exactamente ocho documentos, todos con hashes, enlaces internos, versiones y evidencia validables.
+- Se documentan reparaciones y warnings, incluyendo el texto contractual cuando no existen.
+- El commit documental usa el mensaje fijo y solo contiene los ocho archivos.
+- Un fallo documental conserva `migrationStatus=verified`, mantiene el lock y permite reintentar.
+- Una publicacion valida termina en `completed/done` y libera el lock.
 
 MIT

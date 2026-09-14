@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sjashan513.github.io/angular-migration-plugin/schemas/documentation-input.schema.json",
+  "title": "Angular migration documentation input v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "mode",
+    "manifestSha256",
+    "researchSha256",
+    "technicalVerifiedCommit",
+    "outputDirectory",
+    "files",
+    "claims",
+    "remainingWarnings"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "runId": { "type": "string", "pattern": "^[a-z0-9TZ]+(?:-[a-z0-9TZ]+)*$" },
+    "mode": { "type": "string", "const": "publish" },
+    "manifestSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "researchSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "technicalVerifiedCommit": {
+      "type": "string",
+      "pattern": "^[a-fA-F0-9]{40}$"
+    },
+    "outputDirectory": {
+      "type": "string",
+      "pattern": "^docs/migration/v[0-9]+$"
+    },
+    "files": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        }
+      }
+    },
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "document", "evidence"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^D-[0-9]+$" },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "official-change",
+              "observed-change",
+              "inference",
+              "not-applicable"
+            ]
+          },
+          "document": { "type": "string", "minLength": 1 },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^(event|commit|source|result|repair|check):[^\\s]+$"
+            }
+          }
+        }
+      }
+    },
+    "remainingWarnings": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}

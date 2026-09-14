@@ -28,6 +28,8 @@ $fixture = New-StateFixture
 try {
     $state = Read-MigrationRunState -ProjectRoot $fixture.root -RunId $fixture.runId
     if ($state.stageRevision -ne 0 -or $state.checkpointCommit -ne ('a' * 40) -or $state.completedOperations.Count -ne 0) { throw 'Initial state contract is incomplete' }
+    $state.documentationStatus = 'researched'
+    Assert-Code { Write-MigrationRunState -ProjectRoot $fixture.root -RunId $fixture.runId -State $state } 'invalid_run_state'
 
     $moved = Move-MigrationState -ProjectRoot $fixture.root -RunId $fixture.runId -ExpectedStatus 'running' -ExpectedStage 'baseline' -NewStatus 'running' -NewStage 'resolve' -ExpectedRevision 0
     if ($moved.stage -ne 'resolve' -or $moved.stageRevision -ne 1) { throw 'Allowed transition did not increment revision' }

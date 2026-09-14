@@ -179,7 +179,7 @@ function Invoke-MigrationBaseline {
         $state = Read-MigrationRunState -ProjectRoot $root -RunId $RunId
         $manifest = Read-MigrationJson -Path $paths.manifest -Required
         if ($manifest.schemaVersion -ne (Get-MigrationSchemaVersion) -or $manifest.runId -cne $RunId -or
-            $manifest.manifestType -cne 'migration' -or $manifest.project.root -cne $root -or $state.projectRoot -cne $root -or
+              $manifest.manifestType -cne 'migration' -or $manifest.project.root -cne (Resolve-MigrationRoot -Path $ProjectRoot) -or $state.projectRoot -cne $root -or
             $manifest.sourceMajor -ne $state.sourceMajor -or $manifest.targetMajor -ne $state.targetMajor -or
             $manifest.project.git.initialCommit -cne $state.initialCommit) {
             Throw-MigrationError -Code 'invalid_run_manifest' -Message 'Manifest and state must describe the same run and project.' -Status failed
@@ -333,6 +333,7 @@ function Invoke-MigrationStatus {
             attempt             = $state.attempt
             migrationStatus     = $state.migrationStatus
             documentationStatus = $state.documentationStatus
+            documentation       = $state.documentation
             lastDiagnostic      = $state.lastDiagnostic
             manifest            = '.angular-migration/runs/' + $RunId + '/manifest.json'
             state               = '.angular-migration/runs/' + $RunId + '/state.json'
@@ -1723,9 +1724,10 @@ function ConvertTo-PipelineRunEnvelope {
         attempt                     = $state.attempt
         migrationStatus             = $state.migrationStatus
         documentationStatus         = $state.documentationStatus
+        documentation               = $state.documentation
         completedOperations         = @($state.completedOperations)
-        documentationReady          = $state.status -eq 'verified'
-        documentationContextCommand = if ($state.status -eq 'verified') { 'documentation-context' } else { $null }
+        documentationReady          = $state.status -eq 'verified' -and $state.documentation.status -ne 'completed'
+        documentationContextCommand = if ($state.status -eq 'verified' -and $state.documentation.status -ne 'completed') { 'documentation-context' } else { $null }
         manifest                    = '.angular-migration/runs/' + $RunId + '/manifest.json'
         state                       = '.angular-migration/runs/' + $RunId + '/state.json'
         result                      = if (Test-Path -LiteralPath (Get-MigrationRunPaths -ProjectRoot $ProjectRoot -RunId $RunId).result -PathType Leaf) { '.angular-migration/runs/' + $RunId + '/result.json' } else { $null }
@@ -1819,6 +1821,797 @@ function Invoke-MigrationRun {
     }
 }
 
+$script:DocumentationRequiredFiles = @('README.md', 'changes.md', 'errors-and-repairs.md', 'warnings.md', 'new-concepts.md', 'dependencies.md', 'validation.md', 'sources.md')
+$script:DocumentationFileOrder = @('README.md', 'changes.md', 'dependencies.md', 'errors-and-repairs.md', 'new-concepts.md', 'sources.md', 'validation.md', 'warnings.md')
+$script:DocumentationQuestions = @(
+    'Que breaking changes oficiales aplican al salto de Angular?',
+    'Que migraciones automaticas declara cada paquete actualizado?',
+    'Que conceptos nuevos afectan al mantenimiento del proyecto?',
+    'Que warnings o deprecations oficiales pueden aparecer?'
+)
+
+function Throw-DocumentationError {
+    param(
+        [Parameter(Mandatory = $true)][string]$Code,
+        [Parameter(Mandatory = $true)][string]$Message,
+        [ValidateSet('blocked', 'failed')][string]$Status = 'blocked',
+        $Details = $null
+    )
+    Throw-PipelineError -Code $Code -Message $Message -Status $Status -Details $Details
+}
+
+function Assert-DocumentationObject {
+    param(
+        [Parameter(Mandatory = $true)]$Value,
+        [Parameter(Mandatory = $true)][string[]]$Allowed,
+        [Parameter(Mandatory = $true)][string[]]$Required,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    if ($Value -isnot [PSCustomObject]) { Throw-DocumentationError -Code 'documentation_schema_invalid' -Message "Documentation $Label must be an object." }
+    $names = @($Value.PSObject.Properties.Name)
+    if (@($names | Where-Object { $_ -cnotin $Allowed }).Count -gt 0) { Throw-DocumentationError -Code 'documentation_schema_invalid' -Message "Documentation $Label contains an unknown property." }
+    foreach ($name in $Required) {
+        if ($names -cnotcontains $name) { Throw-DocumentationError -Code 'documentation_schema_invalid' -Message "Documentation $Label is missing a required property: $name" }
+    }
+}
+
+function Assert-DocumentationString {
+    param(
+        [AllowNull()]$Value,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [int]$Maximum = 0,
+        [switch]$AllowEmpty
+    )
+    if ($Value -isnot [string] -or (-not $AllowEmpty -and [string]::IsNullOrWhiteSpace($Value))) {
+        Throw-DocumentationError -Code 'documentation_schema_invalid' -Message "Documentation $Label must be a non-empty string."
+    }
+    if ($Maximum -gt 0 -and $Value.Length -gt $Maximum) { Throw-DocumentationError -Code 'documentation_text_too_long' -Message "Documentation $Label exceeds its length limit." }
+}
+
+function Assert-DocumentationArray {
+    param([AllowNull()]$Value, [Parameter(Mandatory = $true)][string]$Label)
+    if ($null -eq $Value -or $Value -isnot [array]) { Throw-DocumentationError -Code 'documentation_schema_invalid' -Message "Documentation $Label must be an array." }
+}
+
+function Assert-DocumentationUrl {
+    param([Parameter(Mandatory = $true)][string]$Url)
+    $uri = $null
+    if (-not [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$uri) -or $uri.Scheme -cne 'https' -or
+        $uri.IsLoopback -or $uri.UserInfo -or $uri.Query -or $uri.Fragment -or
+        $uri.Host -match '^(?i:localhost|127(?:\.\d+){3}|::1)$') {
+        Throw-DocumentationError -Code 'documentation_source_url_invalid' -Message 'Documentation sources must use a public HTTPS URL without query, fragment or credentials.'
+    }
+    $address = $null
+    if ([Net.IPAddress]::TryParse($uri.DnsSafeHost, [ref]$address)) {
+        $bytes = $address.GetAddressBytes()
+        if (($bytes.Length -eq 4 -and (($bytes[0] -eq 10) -or ($bytes[0] -eq 192 -and $bytes[1] -eq 168) -or ($bytes[0] -eq 172 -and $bytes[1] -ge 16 -and $bytes[1] -le 31) -or ($bytes[0] -eq 169 -and $bytes[1] -eq 254))) -or $address.IsIPv6LinkLocal -or $address.IsIPv6SiteLocal) {
+            Throw-DocumentationError -Code 'documentation_source_url_invalid' -Message 'Documentation sources must use a public HTTPS URL without query, fragment or credentials.'
+        }
+    }
+}
+
+function Assert-DocumentationUtcTimestamp {
+    param([Parameter(Mandatory = $true)][string]$Value, [Parameter(Mandatory = $true)][string]$Label)
+    try { $timestamp = [DateTimeOffset]::Parse($Value) } catch { Throw-DocumentationError -Code 'documentation_timestamp_invalid' -Message "Documentation $Label timestamp is invalid." }
+    if ($timestamp.Offset -ne [TimeSpan]::Zero) { Throw-DocumentationError -Code 'documentation_timestamp_invalid' -Message "Documentation $Label timestamp must be UTC." }
+}
+
+function Get-DocumentationAllowedVersions {
+    param([Parameter(Mandatory = $true)]$Manifest)
+    $versions = @()
+    foreach ($dependency in @($Manifest.dependencies)) {
+        foreach ($property in @('currentVersion', 'targetVersion')) {
+            if ($dependency.PSObject.Properties[$property] -and $dependency.$property) { $versions += [string]$dependency.$property }
+        }
+    }
+    foreach ($container in @($Manifest.angular, $Manifest.node)) {
+        if ($container) {
+            foreach ($property in @('resolvedCoreVersion', 'activeVersion')) {
+                if ($container.PSObject.Properties[$property] -and $container.$property) { $versions += [string]$container.$property }
+            }
+        }
+    }
+    return @($versions | Sort-Object -Unique)
+}
+
+function Assert-DocumentationTextSafe {
+    param(
+        [AllowNull()][string]$Text,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string[]]$AllowedVersions,
+        [switch]$AllowOperationalText
+    )
+    if ($null -eq $Text) { return }
+    if ($ProjectRoot -and $Text.IndexOf($ProjectRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+        $Text -match '(?i)(?:gh[pousr]_[a-z0-9_]+|github_pat_[a-z0-9_]+|npm_[a-z0-9]+|eyJ[a-z0-9_.-]+)' -or
+        $Text -match '(?i)\b(?:authorization|proxy-authorization|cookie|password|secret)\s*[:=]' -or
+        $Text -match '(?i)(?:\.npmrc|\.env(?:\.|\b))' -or
+        $Text -match '(?i)(?:[A-Za-z]:\\|(?<!:)\/(?:Users|home|root)\/)' -or
+        $Text -match '(?i)\bBearer\s+\S+' -or
+        $Text -match '(?i)--(?:force|legacy-peer-deps|ignore-scripts)') {
+        Throw-DocumentationError -Code 'documentation_sensitive_or_executable_text' -Message "Documentation $Label contains a secret, local path or executable fragment."
+    }
+    if (-not $AllowOperationalText -and ($Text -match '```' -or $Text -match '(?im)(?:^|[\s>])(?:npm|n(?:px)|ng|git|powershell|pwsh|cmd(?:\.exe)?|yarn|pnpm)\s+(?:install|ci|run|update|build|test|ls|status|commit|exec|view|config|add|restore|checkout|switch)\b')) {
+        Throw-DocumentationError -Code 'documentation_sensitive_or_executable_text' -Message "Documentation $Label contains an executable fragment."
+    }
+    foreach ($match in [regex]::Matches($Text, '\b\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\b')) {
+        if ($AllowedVersions -cnotcontains $match.Value) {
+            Throw-DocumentationError -Code 'documentation_version_not_in_manifest' -Message "Documentation $Label contains a version not present in the manifest: $($match.Value)"
+        }
+    }
+}
+
+function Assert-DocumentationResearch {
+    param(
+        [Parameter(Mandatory = $true)]$Research,
+        [Parameter(Mandatory = $true)]$Manifest,
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$RunId
+    )
+    Assert-DocumentationObject -Value $Research -Allowed @('schemaVersion', 'runId', 'sourceMajor', 'targetMajor', 'manifestSha256', 'researchedAt', 'sources', 'findings', 'concepts', 'unresolved') -Required @('schemaVersion', 'runId', 'sourceMajor', 'targetMajor', 'manifestSha256', 'researchedAt', 'sources', 'findings', 'concepts', 'unresolved') -Label 'research'
+    if ($Research.schemaVersion -ne 1 -or $Research.runId -cne $RunId -or $Research.sourceMajor -ne $State.sourceMajor -or $Research.targetMajor -ne $State.targetMajor -or $Research.manifestSha256 -cne $State.manifestSha256) {
+        Throw-DocumentationError -Code 'documentation_identity_mismatch' -Message 'Research does not belong to the active run or manifest.'
+    }
+    Assert-DocumentationUtcTimestamp -Value ([string]$Research.researchedAt) -Label 'research'
+    $allowedVersions = Get-DocumentationAllowedVersions -Manifest $Manifest
+    $sourceIds = @()
+    $primarySourceIds = @()
+    Assert-DocumentationArray -Value $Research.sources -Label 'sources'
+    if (@($Research.sources).Count -eq 0) { Throw-DocumentationError -Code 'documentation_source_required' -Message 'Research requires at least one source.' }
+    foreach ($source in @($Research.sources)) {
+        Assert-DocumentationObject -Value $source -Allowed @('id', 'title', 'url', 'publisher', 'primary', 'accessedAt') -Required @('id', 'title', 'url', 'publisher', 'primary', 'accessedAt') -Label 'source'
+        Assert-DocumentationString -Value $source.id -Label 'source.id'
+        if ($source.id -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') { Throw-DocumentationError -Code 'documentation_source_invalid' -Message "Invalid research source id: $($source.id)" }
+        if ($sourceIds -ccontains $source.id) { Throw-DocumentationError -Code 'documentation_source_duplicate' -Message "Research source id is repeated: $($source.id)" }
+        $sourceIds += [string]$source.id
+        Assert-DocumentationString -Value $source.title -Label 'source.title' -Maximum 160
+        Assert-DocumentationString -Value $source.publisher -Label 'source.publisher' -Maximum 160
+        Assert-DocumentationString -Value $source.url -Label 'source.url'
+        Assert-DocumentationUrl -Url $source.url
+        if ($source.primary -isnot [bool]) { Throw-DocumentationError -Code 'documentation_schema_invalid' -Message 'source.primary must be boolean.' }
+        Assert-DocumentationString -Value $source.accessedAt -Label 'source.accessedAt'
+        Assert-DocumentationUtcTimestamp -Value ([string]$source.accessedAt) -Label 'source'
+        Assert-DocumentationTextSafe -Text ([string]$source.title) -Label 'source.title' -ProjectRoot $ProjectRoot -AllowedVersions $allowedVersions
+        Assert-DocumentationTextSafe -Text ([string]$source.publisher) -Label 'source.publisher' -ProjectRoot $ProjectRoot -AllowedVersions $allowedVersions
+        if ($source.primary) { $primarySourceIds += [string]$source.id }
+    }
+    $manifestNames = @($Manifest.dependencies | ForEach-Object { [string]$_.name })
+    Assert-DocumentationArray -Value $Research.findings -Label 'findings'
+    $findingIds = @()
+    foreach ($finding in @($Research.findings)) {
+        Assert-DocumentationObject -Value $finding -Allowed @('id', 'kind', 'area', 'title', 'summary', 'affectedPackages', 'sourceIds', 'applicability') -Required @('id', 'kind', 'area', 'title', 'summary', 'affectedPackages', 'sourceIds', 'applicability') -Label 'finding'
+        Assert-DocumentationString -Value $finding.id -Label 'finding.id'
+        if ($finding.id -notmatch '^F-[0-9]+$' -or $findingIds -ccontains $finding.id) { Throw-DocumentationError -Code 'documentation_finding_invalid' -Message "Finding id is invalid or repeated: $($finding.id)" }
+        $findingIds += [string]$finding.id
+        if ($finding.kind -notin @('official-change', 'observed-change', 'inference', 'not-applicable')) { Throw-DocumentationError -Code 'documentation_kind_invalid' -Message "Unknown finding kind: $($finding.kind)" }
+        Assert-DocumentationString -Value $finding.area -Label 'finding.area' -Maximum 120
+        Assert-DocumentationString -Value $finding.title -Label 'finding.title' -Maximum 160
+        Assert-DocumentationString -Value $finding.summary -Label 'finding.summary' -Maximum 2000
+        Assert-DocumentationArray -Value $finding.affectedPackages -Label 'finding.affectedPackages'
+        if (@($finding.affectedPackages | Sort-Object -Unique).Count -ne @($finding.affectedPackages).Count) { Throw-DocumentationError -Code 'documentation_package_duplicate' -Message "Finding repeats an affected package: $($finding.id)" }
+        foreach ($package in @($finding.affectedPackages)) {
+            Assert-DocumentationString -Value $package -Label 'finding.affectedPackages.item'
+            if ($manifestNames -cnotcontains $package) { Throw-DocumentationError -Code 'documentation_package_not_in_manifest' -Message "Finding names a package absent from the manifest: $package" }
+        }
+        Assert-DocumentationArray -Value $finding.sourceIds -Label 'finding.sourceIds'
+        if (@($finding.sourceIds).Count -eq 0 -or @($finding.sourceIds | Sort-Object -Unique).Count -ne @($finding.sourceIds).Count) { Throw-DocumentationError -Code 'documentation_source_invalid' -Message "Finding sourceIds are empty or repeated: $($finding.id)" }
+        $findingSources = @()
+        foreach ($sourceId in @($finding.sourceIds)) {
+            Assert-DocumentationString -Value $sourceId -Label 'finding.sourceIds.item'
+            if ($findingSources -ccontains $sourceId -or $sourceIds -cnotcontains $sourceId) { Throw-DocumentationError -Code 'documentation_source_unknown' -Message "Finding references an unknown or repeated source: $sourceId" }
+            $findingSources += [string]$sourceId
+        }
+        if ($finding.kind -eq 'official-change' -and @($findingSources | Where-Object { $primarySourceIds -ccontains $_ }).Count -eq 0) {
+            Throw-DocumentationError -Code 'documentation_primary_source_required' -Message "Official finding has no primary source: $($finding.id)"
+        }
+        if ($finding.applicability -notin @('unknown-until-verified', 'applicable', 'not-applicable')) { Throw-DocumentationError -Code 'documentation_applicability_invalid' -Message "Unknown finding applicability: $($finding.applicability)" }
+        foreach ($text in @($finding.area, $finding.title, $finding.summary)) { Assert-DocumentationTextSafe -Text ([string]$text) -Label 'finding' -ProjectRoot $ProjectRoot -AllowedVersions $allowedVersions }
+    }
+    Assert-DocumentationArray -Value $Research.concepts -Label 'concepts'
+    $conceptIds = @()
+    foreach ($concept in @($Research.concepts)) {
+        Assert-DocumentationObject -Value $concept -Allowed @('id', 'name', 'whyItMatters', 'sourceIds') -Required @('id', 'name', 'whyItMatters', 'sourceIds') -Label 'concept'
+        Assert-DocumentationString -Value $concept.id -Label 'concept.id'
+        if ($concept.id -notmatch '^C-[0-9]+$' -or $conceptIds -ccontains $concept.id) { Throw-DocumentationError -Code 'documentation_concept_invalid' -Message "Concept id is invalid or repeated: $($concept.id)" }
+        $conceptIds += [string]$concept.id
+        Assert-DocumentationString -Value $concept.name -Label 'concept.name' -Maximum 160
+        Assert-DocumentationString -Value $concept.whyItMatters -Label 'concept.whyItMatters' -Maximum 2000
+        Assert-DocumentationArray -Value $concept.sourceIds -Label 'concept.sourceIds'
+        if (@($concept.sourceIds).Count -eq 0 -or @($concept.sourceIds | Sort-Object -Unique).Count -ne @($concept.sourceIds).Count) { Throw-DocumentationError -Code 'documentation_source_invalid' -Message "Concept sourceIds are empty or repeated: $($concept.id)" }
+        $conceptSources = @()
+        foreach ($sourceId in @($concept.sourceIds)) {
+            Assert-DocumentationString -Value $sourceId -Label 'concept.sourceIds.item'
+            if ($conceptSources -ccontains $sourceId -or $sourceIds -cnotcontains $sourceId) { Throw-DocumentationError -Code 'documentation_source_unknown' -Message "Concept references an unknown or repeated source: $sourceId" }
+            $conceptSources += [string]$sourceId
+        }
+        foreach ($text in @($concept.name, $concept.whyItMatters)) { Assert-DocumentationTextSafe -Text ([string]$text) -Label 'concept' -ProjectRoot $ProjectRoot -AllowedVersions $allowedVersions }
+    }
+    Assert-DocumentationArray -Value $Research.unresolved -Label 'unresolved'
+    $unresolvedIds = @()
+    foreach ($unresolved in @($Research.unresolved)) {
+        if ($unresolved -is [string]) {
+            Assert-DocumentationString -Value $unresolved -Label 'unresolved.item' -Maximum 2000
+            Assert-DocumentationTextSafe -Text $unresolved -Label 'unresolved.item' -ProjectRoot $ProjectRoot -AllowedVersions $allowedVersions
+            continue
+        }
+        Assert-DocumentationObject -Value $unresolved -Allowed @('id', 'question', 'critical', 'resolution', 'sourceIds') -Required @('id', 'question', 'critical') -Label 'unresolved.item'
+        Assert-DocumentationString -Value $unresolved.id -Label 'unresolved.id'
+        if ($unresolved.id -notmatch '^U-[0-9]+$') { Throw-DocumentationError -Code 'documentation_unresolved_invalid' -Message "Unresolved id is invalid: $($unresolved.id)" }
+        if ($unresolvedIds -ccontains $unresolved.id) { Throw-DocumentationError -Code 'documentation_unresolved_invalid' -Message "Unresolved id is repeated: $($unresolved.id)" }
+        $unresolvedIds += [string]$unresolved.id
+        Assert-DocumentationString -Value $unresolved.question -Label 'unresolved.question' -Maximum 2000
+        if ($unresolved.critical -isnot [bool]) { Throw-DocumentationError -Code 'documentation_schema_invalid' -Message 'unresolved.critical must be boolean.' }
+        $unresolvedResolution = $null
+        if ($unresolved.PSObject.Properties['resolution']) {
+            $unresolvedResolution = $unresolved.resolution
+            if ($null -ne $unresolvedResolution) { Assert-DocumentationString -Value $unresolvedResolution -Label 'unresolved.resolution' -Maximum 2000 }
+        }
+        if ($unresolved.PSObject.Properties['sourceIds']) {
+            Assert-DocumentationArray -Value $unresolved.sourceIds -Label 'unresolved.sourceIds'
+            if (@($unresolved.sourceIds | Sort-Object -Unique).Count -ne @($unresolved.sourceIds).Count) { Throw-DocumentationError -Code 'documentation_source_invalid' -Message "Unresolved sourceIds are repeated: $($unresolved.id)" }
+            foreach ($sourceId in @($unresolved.sourceIds)) {
+                Assert-DocumentationString -Value $sourceId -Label 'unresolved.sourceIds.item'
+                if ($sourceIds -cnotcontains $sourceId) { Throw-DocumentationError -Code 'documentation_source_unknown' -Message "Unresolved item references an unknown source: $sourceId" }
+            }
+        }
+        if ($unresolved.critical -and [string]$unresolvedResolution -eq 'not-applicable' -and (-not $unresolved.PSObject.Properties['sourceIds'] -or @($unresolved.sourceIds).Count -eq 0)) {
+            Throw-DocumentationError -Code 'documentation_unresolved_evidence_missing' -Message "Critical unresolved item lacks not-applicable evidence: $($unresolved.id)"
+        }
+        foreach ($text in @($unresolved.question, $unresolvedResolution)) { Assert-DocumentationTextSafe -Text ([string]$text) -Label 'unresolved.item' -ProjectRoot $ProjectRoot -AllowedVersions $allowedVersions }
+    }
+}
+
+function Get-DocumentationExpectedOutputDirectory {
+    param([Parameter(Mandatory = $true)]$State)
+    return 'docs/migration/v' + [string]$State.targetMajor
+}
+
+function Get-DocumentationExpectedSubmissionPath {
+    param([Parameter(Mandatory = $true)][string]$RunId, [Parameter(Mandatory = $true)][ValidateSet('research', 'publish')][string]$Mode)
+    return '.angular-migration/runs/' + $RunId + '/inbox/' + $(if ($Mode -eq 'research') { 'research.json' } else { 'documentation.json' })
+}
+
+function Get-DocumentationManifest {
+    param([Parameter(Mandatory = $true)][string]$ProjectRoot, [Parameter(Mandatory = $true)][string]$RunId, [Parameter(Mandatory = $true)]$State, [Parameter(Mandatory = $true)]$RunPaths)
+    if (-not $State.manifestSha256 -or -not (Test-Path -LiteralPath $RunPaths.manifest -PathType Leaf)) { Throw-DocumentationError -Code 'manifest_not_resolved' -Message 'Documentation requires a resolved manifest.' }
+    $manifest = Read-MigrationJson -Path $RunPaths.manifest -Required
+    if ($manifest.project.root -cne (Resolve-MigrationRoot -Path $ProjectRoot)) { Throw-DocumentationError -Code 'manifest_project_mismatch' -Message 'Documentation manifest belongs to another project.' -Status failed }
+    if ($manifest.schemaVersion -ne (Get-MigrationSchemaVersion) -or $manifest.manifestType -cne 'migration' -or $manifest.runId -cne $RunId -or $manifest.resolutionStatus -cne 'resolved' -or $manifest.manifestSha256 -cne $State.manifestSha256 -or (Get-ResolvedManifestHash -Manifest $manifest) -cne $State.manifestSha256) {
+        Throw-DocumentationError -Code 'manifest_integrity_failed' -Message 'Documentation manifest integrity failed.' -Status failed
+    }
+    return $manifest
+}
+
+function Get-DocumentationResearchArtifact {
+    param([Parameter(Mandatory = $true)][string]$ProjectRoot, [Parameter(Mandatory = $true)][string]$RunId, [Parameter(Mandatory = $true)]$State, [Parameter(Mandatory = $true)]$Manifest, [Parameter(Mandatory = $true)]$RunPaths)
+    if ($State.documentation.status -notin @('researched', 'publishing', 'completed') -and -not ($State.documentation.status -eq 'failed' -and $State.documentation.phase -eq 'publish') -or -not $State.documentation.researchSha256) { Throw-DocumentationError -Code 'research_required' -Message 'A valid research artifact is required before publish.' }
+    if (-not (Test-Path -LiteralPath $RunPaths.researchArtifact -PathType Leaf)) { Throw-DocumentationError -Code 'research_missing' -Message 'Research artifact is missing.' }
+    $research = Read-MigrationJson -Path $RunPaths.researchArtifact -Required
+    Assert-DocumentationResearch -Research $research -Manifest $Manifest -State $State -ProjectRoot $ProjectRoot -RunId $RunId
+    $hash = (Get-FileHash -LiteralPath $RunPaths.researchArtifact -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($hash -cne [string]$State.documentation.researchSha256) { Throw-DocumentationError -Code 'research_integrity_failed' -Message 'Research artifact hash differs from state.' -Status failed }
+    return $research
+}
+
+function Get-DocumentationTechnicalResult {
+    param([Parameter(Mandatory = $true)][string]$ProjectRoot, [Parameter(Mandatory = $true)][string]$RunId, [Parameter(Mandatory = $true)]$State, [Parameter(Mandatory = $true)]$RunPaths)
+    if ($State.migrationStatus -cne 'verified' -or $State.status -cne 'verified' -or $State.stage -cne 'document') { Throw-DocumentationError -Code 'technical_result_required' -Message 'Publish requires a verified technical migration.' }
+    $result = Assert-PipelineTechnicalResult -ProjectRoot $ProjectRoot -RunId $RunId -RunPaths $RunPaths
+    if ($result.manifestSha256 -cne $State.manifestSha256 -or $result.migrationStatus -cne 'verified' -or $result.finalTechnicalCommit -notmatch '^[a-fA-F0-9]{40}$') { Throw-DocumentationError -Code 'result_integrity_failed' -Message 'Technical result is not valid for documentation.' -Status failed }
+    return $result
+}
+
+function Assert-DocumentationInput {
+    param([Parameter(Mandatory = $true)]$DocumentationInput, [Parameter(Mandatory = $true)]$State, [Parameter(Mandatory = $true)][string]$RunId)
+    Assert-DocumentationObject -Value $DocumentationInput -Allowed @('schemaVersion', 'runId', 'mode', 'manifestSha256', 'researchSha256', 'technicalVerifiedCommit', 'outputDirectory', 'files', 'claims', 'remainingWarnings') -Required @('schemaVersion', 'runId', 'mode', 'manifestSha256', 'researchSha256', 'technicalVerifiedCommit', 'outputDirectory', 'files', 'claims', 'remainingWarnings') -Label 'publish input'
+    if ($DocumentationInput.schemaVersion -ne 1 -or $DocumentationInput.mode -cne 'publish' -or $DocumentationInput.runId -cne $RunId -or $DocumentationInput.manifestSha256 -cne $State.manifestSha256 -or $DocumentationInput.manifestSha256 -notmatch '^[0-9a-f]{64}$' -or $DocumentationInput.researchSha256 -notmatch '^[0-9a-f]{64}$' -or $DocumentationInput.technicalVerifiedCommit -notmatch '^[a-fA-F0-9]{40}$') { Throw-DocumentationError -Code 'documentation_identity_mismatch' -Message 'Documentation input does not belong to the active run.' }
+    $expectedOutput = Get-DocumentationExpectedOutputDirectory -State $State
+    if ($DocumentationInput.outputDirectory -cne $expectedOutput) { Throw-DocumentationError -Code 'documentation_output_invalid' -Message 'Documentation output directory is controller-owned.' }
+    Assert-DocumentationArray -Value $DocumentationInput.files -Label 'publish input.files'
+    if (@($DocumentationInput.files).Count -ne $script:DocumentationFileOrder.Count) { Throw-DocumentationError -Code 'documentation_file_set_invalid' -Message 'Documentation must contain exactly eight files.' }
+    for ($index = 0; $index -lt $script:DocumentationFileOrder.Count; $index++) {
+        $expectedPath = $expectedOutput + '/' + $script:DocumentationFileOrder[$index]
+        if ([string]$DocumentationInput.files[$index].path -cne $expectedPath) { Throw-DocumentationError -Code 'documentation_file_order_invalid' -Message 'Documentation files must be in ordinal filename order.' }
+        $entry = @($DocumentationInput.files | Where-Object { $_.path -ceq $expectedPath })
+        if ($entry.Count -ne 1) { Throw-DocumentationError -Code 'documentation_file_set_invalid' -Message "Documentation file is missing or out of order: $expectedPath" }
+        Assert-DocumentationObject -Value $entry[0] -Allowed @('path', 'sha256') -Required @('path', 'sha256') -Label 'publish file'
+        if ($entry[0].sha256 -notmatch '^[0-9a-f]{64}$') { Throw-DocumentationError -Code 'documentation_file_hash_invalid' -Message "Invalid documentation file hash: $expectedPath" }
+    }
+    Assert-DocumentationArray -Value $DocumentationInput.claims -Label 'publish claims'
+    $claimIds = @()
+    foreach ($claim in @($DocumentationInput.claims)) {
+        Assert-DocumentationObject -Value $claim -Allowed @('id', 'kind', 'document', 'evidence') -Required @('id', 'kind', 'document', 'evidence') -Label 'claim'
+        Assert-DocumentationString -Value $claim.id -Label 'claim.id'
+        if ($claim.id -notmatch '^D-[0-9]+$') { Throw-DocumentationError -Code 'documentation_claim_invalid' -Message "Invalid documentation claim id: $($claim.id)" }
+        if ($claimIds -ccontains $claim.id) { Throw-DocumentationError -Code 'documentation_claim_duplicate' -Message "Documentation claim is repeated: $($claim.id)" }
+        $claimIds += [string]$claim.id
+        if ($claim.kind -notin @('official-change', 'observed-change', 'inference', 'not-applicable')) { Throw-DocumentationError -Code 'documentation_kind_invalid' -Message "Unknown documentation claim kind: $($claim.kind)" }
+        if ($script:DocumentationRequiredFiles -cnotcontains $claim.document) { Throw-DocumentationError -Code 'documentation_claim_document_invalid' -Message "Claim names an unknown document: $($claim.document)" }
+        Assert-DocumentationArray -Value $claim.evidence -Label 'claim.evidence'
+        if (@($claim.evidence).Count -eq 0) { Throw-DocumentationError -Code 'documentation_evidence_missing' -Message "Claim has no evidence: $($claim.id)" }
+        if (@($claim.evidence | Sort-Object -Unique).Count -ne @($claim.evidence).Count) { Throw-DocumentationError -Code 'documentation_evidence_duplicate' -Message "Claim repeats evidence: $($claim.id)" }
+        foreach ($evidence in @($claim.evidence)) {
+            Assert-DocumentationString -Value $evidence -Label 'claim.evidence'
+            if ($evidence -notmatch '^(event|commit|source|result|repair|check):[^\s]+$') { Throw-DocumentationError -Code 'documentation_evidence_invalid' -Message "Invalid claim evidence: $evidence" }
+        }
+    }
+    Assert-DocumentationArray -Value $DocumentationInput.remainingWarnings -Label 'remainingWarnings'
+    foreach ($warning in @($DocumentationInput.remainingWarnings)) { Assert-DocumentationString -Value $warning -Label 'remainingWarnings.item' }
+}
+
+function Get-DocumentationEventEntries {
+    param([Parameter(Mandatory = $true)][string]$EventsPath)
+    $entries = @()
+    if (-not (Test-Path -LiteralPath $EventsPath -PathType Leaf)) { return @() }
+    foreach ($line in @(Get-Content -LiteralPath $EventsPath -Encoding UTF8)) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        try { $entries += ($line | ConvertFrom-Json) } catch { }
+    }
+    return @($entries)
+}
+
+function Assert-DocumentationEvidence {
+    param(
+        [Parameter(Mandatory = $true)]$DocumentationInput,
+        [Parameter(Mandatory = $true)]$Research,
+        [Parameter(Mandatory = $true)]$Result,
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)]$RunPaths,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][string]$ProjectRoot
+    )
+    $expectedEvidence = [ordered]@{
+        manifest = '.angular-migration/runs/' + $RunId + '/manifest.json'
+        result   = '.angular-migration/runs/' + $RunId + '/result.json'
+        research = '.angular-migration/runs/' + $RunId + '/artifacts/research.json'
+        events   = '.angular-migration/runs/' + $RunId + '/events.jsonl'
+        repairs  = '.angular-migration/runs/' + $RunId + '/repairs'
+    }
+    if ($DocumentationInput.PSObject.Properties['evidence']) {
+        foreach ($name in $expectedEvidence.Keys) {
+            if ($DocumentationInput.evidence.PSObject.Properties[$name] -and $DocumentationInput.evidence.$name -cne $expectedEvidence[$name]) {
+                Throw-DocumentationError -Code 'documentation_evidence_path_invalid' -Message "Documentation evidence path is not controller-owned: $name"
+            }
+        }
+    }
+    $events = @(Get-DocumentationEventEntries -EventsPath $RunPaths.events)
+    $eventIds = @($events | ForEach-Object { [string]$_.eventId })
+    $findingIds = @($Research.findings | ForEach-Object { [string]$_.id })
+    $sourceIds = @($Research.sources | ForEach-Object { [string]$_.id })
+    $repairFingerprints = @($State.repairs | ForEach-Object { [string]$_.fingerprint })
+    $checkIds = @($Result.checks | ForEach-Object { [string]$_.id })
+    foreach ($claim in @($DocumentationInput.claims)) {
+        $kinds = @()
+        foreach ($evidence in @($claim.evidence)) {
+            $separator = $evidence.IndexOf(':')
+            if ($separator -lt 1 -or $separator -eq ($evidence.Length - 1)) { Throw-DocumentationError -Code 'documentation_evidence_invalid' -Message "Invalid evidence token: $evidence" }
+            $kind = $evidence.Substring(0, $separator)
+            $value = $evidence.Substring($separator + 1)
+            $kinds += $kind
+            switch ($kind) {
+                'event' { if ($eventIds -cnotcontains $value) { Throw-DocumentationError -Code 'documentation_event_unknown' -Message "Claim cites an unknown event: $value" } }
+                'commit' { Assert-PipelineCommitExists -ProjectRoot $ProjectRoot -Commit $value }
+                'source' { if ($sourceIds -cnotcontains $value -and $findingIds -cnotcontains $value) { Throw-DocumentationError -Code 'documentation_source_unknown' -Message "Claim cites an unknown source or finding: $value" } }
+                'result' { if ($value -cne [string]$Result.resultSha256 -and $value -cne 'verified') { Throw-DocumentationError -Code 'documentation_result_unknown' -Message "Claim cites an unknown result: $value" } }
+                'repair' { if ($repairFingerprints -cnotcontains $value) { Throw-DocumentationError -Code 'documentation_repair_unknown' -Message "Claim cites an unknown repair: $value" } }
+                'check' { if ($checkIds -cnotcontains $value) { Throw-DocumentationError -Code 'documentation_check_unknown' -Message "Claim cites an unknown check: $value" } }
+                default { Throw-DocumentationError -Code 'documentation_evidence_invalid' -Message "Unknown evidence kind: $kind" }
+            }
+        }
+        if ($claim.kind -eq 'official-change' -and $kinds -notcontains 'source') { Throw-DocumentationError -Code 'documentation_evidence_invalid' -Message "Official claim lacks a source: $($claim.id)" }
+        if ($claim.kind -eq 'observed-change' -and @($kinds | Where-Object { $_ -in @('event', 'commit', 'check', 'repair') }).Count -eq 0) { Throw-DocumentationError -Code 'documentation_evidence_invalid' -Message "Observed claim lacks run evidence: $($claim.id)" }
+        if ($claim.kind -eq 'not-applicable' -and $kinds -notcontains 'source') { Throw-DocumentationError -Code 'documentation_evidence_invalid' -Message "Not-applicable claim lacks a source: $($claim.id)" }
+    }
+}
+
+function Get-DocumentationOutputFiles {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)]$DocumentationInput
+    )
+    $relativeDirectory = Get-DocumentationExpectedOutputDirectory -State $State
+    $directory = Resolve-RepairPath -Root $ProjectRoot -Path $relativeDirectory
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) { Throw-DocumentationError -Code 'documentation_output_missing' -Message 'Documentation output directory is missing.' }
+    $directoryItem = Get-Item -LiteralPath $directory -Force
+    if ($directoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { Throw-DocumentationError -Code 'documentation_link_rejected' -Message 'Documentation output cannot be a linked directory.' }
+    $children = @(Get-ChildItem -LiteralPath $directory -Force)
+    $childNames = @($children | ForEach-Object { $_.Name })
+    $actualNames = (($childNames | Sort-Object) -join '|')
+    $requiredNames = (($script:DocumentationRequiredFiles | Sort-Object) -join '|')
+    if (@($children | Where-Object { $_.PSIsContainer -or ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) }).Count -gt 0 -or $actualNames -cne $requiredNames) {
+        Throw-DocumentationError -Code 'documentation_file_set_invalid' -Message 'Documentation output must contain exactly the eight required files and no links.'
+    }
+    $files = @{}
+    foreach ($name in $script:DocumentationRequiredFiles) {
+        $path = Join-Path $directory $name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { Throw-DocumentationError -Code 'documentation_file_missing' -Message "Documentation file is missing: $name" }
+        $files[$name] = [IO.File]::ReadAllText($path)
+    }
+    return [PSCustomObject]@{ directory = $directory; files = $files }
+}
+
+function Assert-DocumentationMarkdown {
+    param(
+        [Parameter(Mandatory = $true)]$Files,
+        [Parameter(Mandatory = $true)]$DocumentationInput,
+        [Parameter(Mandatory = $true)]$Research,
+        [Parameter(Mandatory = $true)]$Manifest,
+        [Parameter(Mandatory = $true)]$Result,
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)][string]$ProjectRoot
+    )
+    $allowedVersions = Get-DocumentationAllowedVersions -Manifest $Manifest
+    $sourceUrls = @($Research.sources | ForEach-Object { [string]$_.url })
+    foreach ($name in $script:DocumentationRequiredFiles) {
+        if ([string]::IsNullOrWhiteSpace($Files.files[$name])) { Throw-DocumentationError -Code 'documentation_file_empty' -Message "Documentation file is empty: $name" }
+        Assert-DocumentationTextSafe -Text $Files.files[$name] -Label $name -ProjectRoot $ProjectRoot -AllowedVersions $allowedVersions -AllowOperationalText
+        foreach ($match in [regex]::Matches($Files.files[$name], 'https://[^\s\)\]>"`]+')) {
+            $url = $match.Value.TrimEnd([char[]]@('.', ',', ';'))
+            Assert-DocumentationUrl -Url $url
+            if ($name -cne 'sources.md' -and $sourceUrls -cnotcontains $url) { Throw-DocumentationError -Code 'documentation_source_missing' -Message "External URL is not registered in sources.md: $url" }
+        }
+    }
+    $readme = [string]$Files.files['README.md']
+    if ($readme -notmatch '(?im)^#.*' + [regex]::Escape([string]$State.sourceMajor) + '.*' + [regex]::Escape([string]$State.targetMajor)) { Throw-DocumentationError -Code 'documentation_readme_invalid' -Message 'README does not identify the migration majors.' }
+    foreach ($name in $script:DocumentationRequiredFiles | Where-Object { $_ -ne 'README.md' }) {
+        if ($readme -notmatch '\]\(' + [regex]::Escape($name) + '(?:#|\))') { Throw-DocumentationError -Code 'documentation_link_broken' -Message "README does not link to $name" }
+    }
+    foreach ($name in $script:DocumentationRequiredFiles) {
+        if ($Files.files[$name] -notmatch '(?im)^#\s+') { Throw-DocumentationError -Code 'documentation_template_invalid' -Message "Documentation file has no heading: $name" }
+    }
+    $outputDirectory = Get-DocumentationExpectedOutputDirectory -State $State
+    foreach ($name in $script:DocumentationRequiredFiles) {
+        foreach ($match in [regex]::Matches($Files.files[$name], '\[[^\]]*\]\(([^\)]+)\)')) {
+            $target = [string]$match.Groups[1].Value
+            if ($target -match '^(?i:https?://)') { continue }
+            if ($target.StartsWith('#')) { continue }
+            $linkPath = $target.Split('#')[0]
+            if ([string]::IsNullOrWhiteSpace($linkPath) -or [IO.Path]::IsPathRooted($linkPath) -or $linkPath -match '[:\\]' -or $linkPath -match '(^|/)\.\.(?:/|$)') { Throw-DocumentationError -Code 'documentation_link_broken' -Message "Documentation link is not a safe relative link: $target" }
+            $linkFull = Resolve-RepairPath -Root $Files.directory -Path $linkPath
+            if (-not (Test-Path -LiteralPath $linkFull -PathType Leaf)) { Throw-DocumentationError -Code 'documentation_link_broken' -Message "Documentation link does not exist: $target" }
+        }
+    }
+    $sourcesText = [string]$Files.files['sources.md']
+    foreach ($source in @($Research.sources)) {
+        if ($sourcesText.IndexOf([string]$source.id, [StringComparison]::Ordinal) -lt 0 -or $sourcesText.IndexOf([string]$source.url, [StringComparison]::Ordinal) -lt 0) { Throw-DocumentationError -Code 'documentation_source_missing' -Message "Source is not listed in sources.md: $($source.id)" }
+    }
+    foreach ($concept in @($Research.concepts)) {
+        if ($Files.files['new-concepts.md'].IndexOf([string]$concept.name, [StringComparison]::Ordinal) -lt 0) { Throw-DocumentationError -Code 'documentation_concept_missing' -Message "Concept is not documented: $($concept.name)" }
+    }
+    $dependencyText = [string]$Files.files['dependencies.md']
+    foreach ($dependency in @($Manifest.dependencies)) {
+        $before = if ($dependency.currentVersion) { [regex]::Escape([string]$dependency.currentVersion) } else { '(?:-|n/a|none)' }
+        $after = if ($dependency.targetVersion) { [regex]::Escape([string]$dependency.targetVersion) } else { '(?:-|n/a|none)' }
+        $row = '(?im)^\|\s*' + [regex]::Escape([string]$dependency.name) + '\s*\|[^\r\n]*\|\s*' + $before + '\s*\|\s*' + $after + '\s*\|'
+        if ($dependencyText -notmatch $row) { Throw-DocumentationError -Code 'documentation_dependency_mismatch' -Message "Dependency table does not match manifest: $($dependency.name)" }
+    }
+    if (@($Result.repairs).Count -eq 0) {
+        if ($Files.files['errors-and-repairs.md'] -notmatch '(?i)La ejecuci(?:o|\u00f3)n no requiri(?:o|\u00f3) reparaciones manuales') { Throw-DocumentationError -Code 'documentation_repair_text_missing' -Message 'No-repair contractual text is missing.' }
+    }
+    else {
+        foreach ($repair in @($Result.repairs)) { if ($Files.files['errors-and-repairs.md'].IndexOf([string]$repair.fingerprint, [StringComparison]::Ordinal) -lt 0) { Throw-DocumentationError -Code 'documentation_repair_missing' -Message "Repair fingerprint is not documented: $($repair.fingerprint)" } }
+    }
+    if (@($Result.warnings).Count -eq 0) {
+        if ($Files.files['warnings.md'] -notmatch '(?i)No quedaron warnings registrados por la pipeline') { Throw-DocumentationError -Code 'documentation_warning_text_missing' -Message 'No-warning contractual text is missing.' }
+    }
+    else {
+        if ($Files.files['warnings.md'] -notmatch '(?i)\b(resolved|accepted|action-required)\b') { Throw-DocumentationError -Code 'documentation_warning_classification_missing' -Message 'Warnings are not classified.' }
+    }
+    foreach ($unresolved in @($Research.unresolved)) {
+        $unresolvedResolution = if ($unresolved -isnot [string] -and $unresolved.PSObject.Properties['resolution']) { [string]$unresolved.resolution } else { $null }
+        if ($unresolved -isnot [string] -and $unresolved.critical -eq $true -and $unresolvedResolution -notmatch '^(?i:resolved|not-applicable)$') {
+            Throw-DocumentationError -Code 'documentation_critical_unresolved' -Message "Critical unresolved item blocks publication: $($unresolved.id)"
+        }
+    }
+    $hasSuccessClaim = @($Files.files.Values | Where-Object { $_ -match '(?i)\b(?:verified|passed|successful|success)\b' }).Count -gt 0
+    if ($hasSuccessClaim -and @($DocumentationInput.claims | Where-Object { @($_.evidence) -match '^result:' }).Count -eq 0) { Throw-DocumentationError -Code 'documentation_result_evidence_missing' -Message 'Technical success text lacks result evidence.' }
+}
+
+function Assert-DocumentationOutput {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)]$DocumentationInput,
+        [Parameter(Mandatory = $true)]$Research,
+        [Parameter(Mandatory = $true)]$Manifest,
+        [Parameter(Mandatory = $true)]$Result,
+        [Parameter(Mandatory = $true)]$RunPaths
+    )
+    $files = Get-DocumentationOutputFiles -ProjectRoot $ProjectRoot -State $State -DocumentationInput $DocumentationInput
+    foreach ($entry in @($DocumentationInput.files)) {
+        $name = [IO.Path]::GetFileName([string]$entry.path)
+        $path = Join-Path $files.directory $name
+        $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($hash -cne [string]$entry.sha256) { Throw-DocumentationError -Code 'documentation_file_hash_mismatch' -Message "Documentation file hash differs from declaration: $name" }
+    }
+    $statusItems = @(Get-PipelineGitStatus -ProjectRoot $ProjectRoot)
+    $prefix = (Get-DocumentationExpectedOutputDirectory -State $State) + '/'
+    $unexpected = @($statusItems | Where-Object { -not $_.path.StartsWith($prefix, [StringComparison]::Ordinal) })
+    if ($unexpected.Count -gt 0) { Throw-DocumentationError -Code 'documentation_scope_violation' -Message 'Only the target documentation directory may change.' -Details ([PSCustomObject]@{ paths = @($unexpected.path) }) }
+    Assert-DocumentationMarkdown -Files $files -DocumentationInput $DocumentationInput -Research $Research -Manifest $Manifest -Result $Result -State $State -ProjectRoot $ProjectRoot
+    Assert-DocumentationEvidence -DocumentationInput $DocumentationInput -Research $Research -Result $Result -State $State -RunPaths $RunPaths -RunId $State.runId -ProjectRoot $ProjectRoot
+    return $files
+}
+
+function Restore-DocumentationOutput {
+    param([Parameter(Mandatory = $true)][string]$ProjectRoot, [Parameter(Mandatory = $true)]$State, [Parameter(Mandatory = $true)][string]$CheckpointCommit)
+    $prefix = (Get-DocumentationExpectedOutputDirectory -State $State) + '/'
+    foreach ($item in @(Get-PipelineGitStatus -ProjectRoot $ProjectRoot) | Where-Object { $_.path.StartsWith($prefix, [StringComparison]::Ordinal) }) {
+        $full = Resolve-RepairPath -Root $ProjectRoot -Path $item.path
+        if ($item.untracked) {
+            if (Test-Path -LiteralPath $full -PathType Leaf) { Remove-Item -LiteralPath $full -Force }
+            continue
+        }
+        $exists = Invoke-PipelineGit -ProjectRoot $ProjectRoot -Arguments @('cat-file', '-e', "$CheckpointCommit`:$($item.path)")
+        if ($exists.exitCode -eq 0) {
+            $restore = Invoke-PipelineGit -ProjectRoot $ProjectRoot -Arguments @('restore', '--source', $CheckpointCommit, '--staged', '--worktree', '--', $item.path)
+            if ($restore.exitCode -ne 0) { Throw-DocumentationError -Code 'documentation_rollback_failed' -Message 'Documentation rollback failed.' -Status failed }
+        }
+        else {
+            $unstage = Invoke-PipelineGit -ProjectRoot $ProjectRoot -Arguments @('restore', '--staged', '--', $item.path)
+            if ($unstage.exitCode -ne 0) { Throw-DocumentationError -Code 'documentation_rollback_failed' -Message 'Documentation rollback failed.' -Status failed }
+            if (Test-Path -LiteralPath $full -PathType Leaf) { Remove-Item -LiteralPath $full -Force }
+        }
+    }
+}
+
+function Set-DocumentationFailure {
+    param([Parameter(Mandatory = $true)][string]$ProjectRoot, [Parameter(Mandatory = $true)][string]$RunId, [Parameter(Mandatory = $true)][string]$Mode, [Parameter(Mandatory = $true)]$ErrorInfo)
+    try {
+        $state = Read-MigrationRunState -ProjectRoot $ProjectRoot -RunId $RunId
+        if ($state.documentation.status -ne 'completed') {
+            $state.documentation.status = 'failed'
+            $state.documentation.phase = $Mode
+            $state.documentation.lastError = [PSCustomObject]@{ code = [string]$ErrorInfo.code; message = Protect-RepairText -Text ([string]$ErrorInfo.message) -Root $ProjectRoot }
+            $state.documentationStatus = 'failed'
+            Write-MigrationRunState -ProjectRoot $ProjectRoot -RunId $RunId -State $state
+            Add-MigrationEvent -ProjectRoot $ProjectRoot -RunId $RunId -Type 'documentation-failed' -Stage 'document' -Data $state.documentation.lastError
+        }
+    }
+    catch { }
+}
+
+
+function Complete-DocumentationPublish {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][string]$OutputDirectory,
+        [Parameter(Mandatory = $true)][string[]]$ExpectedPaths,
+        [string]$PublishedCommit
+    )
+    if ([string]::IsNullOrWhiteSpace($PublishedCommit)) { $PublishedCommit = Get-PipelineGitHead -ProjectRoot $ProjectRoot }
+    $state = Read-MigrationRunState -ProjectRoot $ProjectRoot -RunId $RunId
+    if ($state.documentation.publishedCommit -and $state.documentation.publishedCommit -cne $PublishedCommit) {
+        Throw-DocumentationError -Code 'documentation_state_conflict' -Message 'Documentation state points to a different published commit.' -Status failed
+    }
+    if ($state.status -eq 'verified' -and $state.stage -eq 'document') {
+        $state.documentation.status = 'completed'
+        $state.documentation.phase = 'publish'
+        $state.documentation.publishedCommit = $PublishedCommit
+        if (-not $state.documentation.completedAt) { $state.documentation.completedAt = Get-MigrationUtcNow }
+        $state.documentation.lastError = $null
+        $state.documentationStatus = 'completed'
+        Write-MigrationRunState -ProjectRoot $ProjectRoot -RunId $RunId -State $state
+    }
+    $events = @(Get-DocumentationEventEntries -EventsPath (Get-MigrationRunPaths -ProjectRoot $ProjectRoot -RunId $RunId).events)
+    $publishedEvent = @($events | Where-Object { $_.type -ceq 'documentation-published' -and $_.data -and $_.data.publishedCommit -ceq $PublishedCommit })
+    if ($publishedEvent.Count -eq 0) {
+        Add-MigrationEvent -ProjectRoot $ProjectRoot -RunId $RunId -Type 'documentation-published' -Stage 'document' -Data ([PSCustomObject]@{ publishedCommit = $PublishedCommit; outputDirectory = $OutputDirectory; files = $ExpectedPaths })
+    }
+    $state = Read-MigrationRunState -ProjectRoot $ProjectRoot -RunId $RunId
+    if ($state.status -eq 'verified' -and $state.stage -eq 'document') {
+        $null = Move-MigrationState -ProjectRoot $ProjectRoot -RunId $RunId -ExpectedStatus 'verified' -ExpectedStage 'document' -ExpectedRevision $state.stageRevision -NewStatus 'completed' -NewStage 'done'
+    }
+    $state = Read-MigrationRunState -ProjectRoot $ProjectRoot -RunId $RunId
+    if ($state.status -ne 'completed' -or $state.stage -ne 'done' -or $state.documentation.status -ne 'completed') {
+        Throw-DocumentationError -Code 'documentation_state_incomplete' -Message 'Documentation publish did not reach the completed state.' -Status failed
+    }
+    Remove-ActiveRunLock -ProjectRoot $ProjectRoot -RunId $RunId
+    return [PSCustomObject]@{ ok = $true; status = 'completed'; data = [PSCustomObject]@{ runId = $RunId; outputDirectory = $OutputDirectory; publishedCommit = $PublishedCommit; files = $ExpectedPaths }; error = $null }
+}
+function New-DocumentationResearchContext {
+    param([Parameter(Mandatory = $true)]$State, [Parameter(Mandatory = $true)]$Manifest, [Parameter(Mandatory = $true)][string]$RunId)
+    $questionStart = [string][char]0x00bf + 'Qu' + [char]0x00e9
+    $dependencies = @($Manifest.dependencies | ForEach-Object {
+            [PSCustomObject]@{
+                name           = $_.name
+                currentVersion = $_.currentVersion
+                targetVersion  = $_.targetVersion
+                change         = $_.change
+                reason         = $_.reason
+            }
+        })
+    return [PSCustomObject][ordered]@{
+        schemaVersion   = 1
+        mode            = 'research'
+        runId           = $RunId
+        sourceMajor     = [int]$State.sourceMajor
+        targetMajor     = [int]$State.targetMajor
+        manifestSha256  = [string]$State.manifestSha256
+        dependencies    = $dependencies
+        questions       = @(
+            "$questionStart breaking changes oficiales aplican de Angular $($State.sourceMajor) a $($State.targetMajor)?"
+            ($questionStart + ' migraciones autom' + [char]0x00e1 + 'ticas declara cada paquete actualizado?')
+            ($questionStart + ' conceptos nuevos afectan al mantenimiento del proyecto?')
+            ($questionStart + ' warnings/deprecations oficiales pueden aparecer?')
+        )
+        allowedWritePath = Get-DocumentationExpectedSubmissionPath -RunId $RunId -Mode research
+    }
+}
+
+function New-DocumentationPublishContext {
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)]$Manifest,
+        [Parameter(Mandatory = $true)]$Result,
+        [Parameter(Mandatory = $true)][string]$RunId
+    )
+    $evidenceRoot = '.angular-migration/runs/' + $RunId
+    return [PSCustomObject][ordered]@{
+        schemaVersion           = 1
+        mode                    = 'publish'
+        runId                   = $RunId
+        sourceMajor             = [int]$State.sourceMajor
+        targetMajor             = [int]$State.targetMajor
+        migrationStatus         = 'verified'
+        manifestSha256          = [string]$State.manifestSha256
+        researchSha256          = [string]$State.documentation.researchSha256
+        technicalVerifiedCommit = [string]$Result.finalTechnicalCommit
+        outputDirectory         = Get-DocumentationExpectedOutputDirectory -State $State
+        requiredFiles           = @($script:DocumentationRequiredFiles)
+        evidence                = [PSCustomObject][ordered]@{
+            manifest = $evidenceRoot + '/manifest.json'
+            result   = $evidenceRoot + '/result.json'
+            research = $evidenceRoot + '/artifacts/research.json'
+            events   = $evidenceRoot + '/events.jsonl'
+            repairs  = $evidenceRoot + '/repairs'
+        }
+        submissionPath          = Get-DocumentationExpectedSubmissionPath -RunId $RunId -Mode publish
+    }
+}
+
+function Invoke-DocumentationContext {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][ValidateSet('research', 'publish')][string]$Mode
+    )
+    if ([string]::IsNullOrWhiteSpace($RunId)) { Throw-DocumentationError -Code 'run_id_required' -Message '-RunId is required for documentation.' }
+    Assert-MigrationRunId -RunId $RunId
+    $root = Resolve-MigrationRoot -Path $ProjectRoot
+    Assert-ActiveRunOwnership -ProjectRoot $root -RunId $RunId
+    $paths = Get-MigrationRunPaths -ProjectRoot $root -RunId $RunId
+    $state = Read-MigrationRunState -ProjectRoot $root -RunId $RunId
+    $manifest = Get-DocumentationManifest -ProjectRoot $root -RunId $RunId -State $state -RunPaths $paths
+    if ($Mode -eq 'research') {
+        if ($state.documentation.status -in @('researched', 'publishing', 'completed') -or ($state.documentation.status -eq 'failed' -and $state.documentation.phase -eq 'publish')) {
+            Throw-DocumentationError -Code 'documentation_research_already_recorded' -Message 'Research is already recorded for this run.'
+        }
+        $context = New-DocumentationResearchContext -State $state -Manifest $manifest -RunId $RunId
+        if ($state.documentation.status -ne 'researching') {
+            $state.documentation.status = 'researching'
+            $state.documentation.phase = 'research'
+            $state.documentation.lastError = $null
+            $state.documentationStatus = 'researching'
+            Write-MigrationRunState -ProjectRoot $root -RunId $RunId -State $state
+            Add-MigrationEvent -ProjectRoot $root -RunId $RunId -Type 'documentation-context-issued' -Stage 'document' -Data ([PSCustomObject]@{ mode = 'research'; manifestSha256 = $state.manifestSha256; allowedWritePath = $context.allowedWritePath })
+        }
+        return [PSCustomObject]@{ ok = $true; status = 'researching'; data = $context; error = $null }
+    }
+    if ($state.migrationStatus -cne 'verified' -or $state.status -cne 'verified' -or $state.stage -cne 'document') { Throw-DocumentationError -Code 'publish_requires_verified' -Message 'Documentation publish requires migrationStatus=verified.' }
+    if ($state.documentation.status -notin @('researched', 'failed', 'publishing') -or ($state.documentation.status -eq 'failed' -and $state.documentation.phase -ne 'publish')) {
+        Throw-DocumentationError -Code 'research_required' -Message 'Research must be recorded before publish.'
+    }
+    $result = Get-DocumentationTechnicalResult -ProjectRoot $root -RunId $RunId -State $state -RunPaths $paths
+    $null = Get-DocumentationResearchArtifact -ProjectRoot $root -RunId $RunId -State $state -Manifest $manifest -RunPaths $paths
+    if ($result.finalTechnicalCommit -cne (Get-PipelineGitHead -ProjectRoot $root)) { Throw-DocumentationError -Code 'git_head_changed' -Message 'Git HEAD differs from the technical verified commit.' }
+    $context = New-DocumentationPublishContext -State $state -Manifest $manifest -Result $result -RunId $RunId
+    if ($state.documentation.status -ne 'publishing') {
+        $state.documentation.status = 'publishing'
+        $state.documentation.phase = 'publish'
+        $state.documentation.publishAttempt = [int]$state.documentation.publishAttempt + 1
+        $state.documentation.lastError = $null
+        $state.documentationStatus = 'publishing'
+        Write-MigrationRunState -ProjectRoot $root -RunId $RunId -State $state
+        Add-MigrationEvent -ProjectRoot $root -RunId $RunId -Type 'documentation-context-issued' -Stage 'document' -Data ([PSCustomObject]@{ mode = 'publish'; attempt = $state.documentation.publishAttempt; technicalVerifiedCommit = $result.finalTechnicalCommit; outputDirectory = $context.outputDirectory })
+    }
+    return [PSCustomObject]@{ ok = $true; status = 'publishing'; data = $context; error = $null }
+}
+
+function Invoke-RecordDocumentation {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][ValidateSet('research', 'publish')][string]$Mode,
+        [Parameter(Mandatory = $true)][string]$InputFile
+    )
+    if ([string]::IsNullOrWhiteSpace($RunId)) { Throw-DocumentationError -Code 'run_id_required' -Message '-RunId is required for documentation.' }
+    if ([string]::IsNullOrWhiteSpace($InputFile)) { Throw-DocumentationError -Code 'documentation_input_required' -Message '-InputFile is required for documentation.' }
+    Assert-MigrationRunId -RunId $RunId
+    $root = Resolve-MigrationRoot -Path $ProjectRoot
+    Assert-ActiveRunOwnership -ProjectRoot $root -RunId $RunId
+    $paths = Get-MigrationRunPaths -ProjectRoot $root -RunId $RunId
+    $leasePath = Join-Path $paths.root 'record-documentation.lock'
+    $lease = $null
+    try { $lease = [IO.File]::Open($leasePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
+    catch { Throw-DocumentationError -Code 'documentation_process_not_owner' -Message 'Another process owns documentation registration.' }
+    $state = $null
+    $committed = $false
+    try {
+        $state = Read-MigrationRunState -ProjectRoot $root -RunId $RunId
+        $expectedRelative = Get-DocumentationExpectedSubmissionPath -RunId $RunId -Mode $Mode
+        $expectedInput = Resolve-RepairPath -Root $root -Path $expectedRelative
+        $inputPath = Resolve-RepairPath -Root $root -Path $InputFile
+        if ($inputPath -cne $expectedInput) { Throw-DocumentationError -Code 'documentation_input_path_invalid' -Message 'Documentation input path is not controller-owned.' }
+        if (-not (Test-Path -LiteralPath $inputPath -PathType Leaf)) { Throw-DocumentationError -Code 'documentation_input_missing' -Message 'Documentation input is missing.' }
+        $manifest = Get-DocumentationManifest -ProjectRoot $root -RunId $RunId -State $state -RunPaths $paths
+        if ($Mode -eq 'research') {
+            if ($state.documentation.status -ne 'researching') { Throw-DocumentationError -Code 'documentation_research_context_required' -Message 'Research registration requires a researching context.' }
+            $research = Read-MigrationJson -Path $inputPath -Required
+            Assert-DocumentationResearch -Research $research -Manifest $manifest -State $state -ProjectRoot $root -RunId $RunId
+            if (Test-Path -LiteralPath $paths.researchArtifact -PathType Leaf) { Remove-Item -LiteralPath $paths.researchArtifact -Force }
+            New-Item -ItemType Directory -Path $paths.artifacts -Force | Out-Null
+            Move-Item -LiteralPath $inputPath -Destination $paths.researchArtifact -Force
+            $researchHash = (Get-FileHash -LiteralPath $paths.researchArtifact -Algorithm SHA256).Hash.ToLowerInvariant()
+            $researchCommit = Get-PipelineGitHead -ProjectRoot $root
+            $state = Read-MigrationRunState -ProjectRoot $root -RunId $RunId
+            $state.documentation.status = 'researched'
+            $state.documentation.phase = 'research'
+            $state.documentation.researchSha256 = $researchHash
+            $state.documentation.researchCommit = $researchCommit
+            $state.documentation.lastError = $null
+            $state.documentationStatus = 'researched'
+            Write-MigrationRunState -ProjectRoot $root -RunId $RunId -State $state
+            Add-MigrationEvent -ProjectRoot $root -RunId $RunId -Type 'documentation-researched' -Stage 'document' -Data ([PSCustomObject]@{ researchSha256 = $researchHash; researchCommit = $researchCommit })
+            return [PSCustomObject]@{ ok = $true; status = 'researched'; data = [PSCustomObject]@{ runId = $RunId; research = '.angular-migration/runs/' + $RunId + '/artifacts/research.json'; researchSha256 = $researchHash }; error = $null }
+        }
+        if ($state.documentation.status -ne 'publishing') { Throw-DocumentationError -Code 'documentation_publish_context_required' -Message 'Publish registration requires a publishing context.' }
+        $result = Get-DocumentationTechnicalResult -ProjectRoot $root -RunId $RunId -State $state -RunPaths $paths
+        $research = Get-DocumentationResearchArtifact -ProjectRoot $root -RunId $RunId -State $state -Manifest $manifest -RunPaths $paths
+        $documentation = Read-MigrationJson -Path $inputPath -Required
+        Assert-DocumentationInput -DocumentationInput $documentation -State $state -RunId $RunId
+        if ($documentation.researchSha256 -cne $state.documentation.researchSha256 -or $documentation.technicalVerifiedCommit -cne $result.finalTechnicalCommit) { Throw-DocumentationError -Code 'documentation_evidence_mismatch' -Message 'Documentation input hashes or technical commit do not match evidence.' }
+        if ((Get-PipelineGitHead -ProjectRoot $root) -cne $result.finalTechnicalCommit) { Throw-DocumentationError -Code 'git_head_changed' -Message 'Git HEAD changed after the technical verification.' }
+        $null = Assert-DocumentationOutput -ProjectRoot $root -State $state -DocumentationInput $documentation -Research $research -Manifest $manifest -Result $result -RunPaths $paths
+        $outputDirectory = Get-DocumentationExpectedOutputDirectory -State $state
+        $add = Invoke-PipelineGit -ProjectRoot $root -Arguments @('add', '--', $outputDirectory)
+        if ($add.exitCode -ne 0) { Throw-DocumentationError -Code 'documentation_commit_failed' -Message 'Could not stage documentation.' -Status failed -Details $add.stderr }
+        $staged = Invoke-PipelineGit -ProjectRoot $root -Arguments @('diff', '--cached', '--name-only', '-z', '--')
+        if ($staged.exitCode -ne 0) { Throw-DocumentationError -Code 'documentation_commit_failed' -Message 'Could not inspect staged documentation.' -Status failed }
+        $stagedPaths = @($staged.stdout -split [char]0 | Where-Object { $_ })
+        $expectedPaths = @($script:DocumentationRequiredFiles | ForEach-Object { $outputDirectory + '/' + $_ })
+        $publishedCommit = $null
+        $stagedNames = (($stagedPaths | Sort-Object) -join '|')
+        $expectedNames = (($expectedPaths | Sort-Object) -join '|')
+        if ($stagedNames -cne $expectedNames) { Throw-DocumentationError -Code 'documentation_scope_violation' -Message 'Staged documentation paths are not exactly the required eight files.' }
+        $message = "docs(angular-migration): document Angular $($state.sourceMajor) to $($state.targetMajor)"
+        $commit = Invoke-PipelineGit -ProjectRoot $root -Arguments @('-c', 'core.hooksPath=NUL', 'commit', '-m', $message)
+        if ($commit.exitCode -ne 0) { Throw-DocumentationError -Code 'documentation_commit_failed' -Message 'Could not create the documentation commit.' -Status failed -Details $commit.stderr }
+        $committed = $true
+        $publishedCommit = Get-PipelineGitHead -ProjectRoot $root
+        return Complete-DocumentationPublish -ProjectRoot $root -RunId $RunId -OutputDirectory $outputDirectory -ExpectedPaths $expectedPaths -PublishedCommit $publishedCommit
+    }
+    catch {
+        $errorRecord = $_
+        $errorInfo = Get-PipelineRunError -ErrorRecord $errorRecord
+        if ($Mode -eq 'publish' -and $committed) {
+            return Complete-DocumentationPublish -ProjectRoot $root -RunId $RunId -OutputDirectory $outputDirectory -ExpectedPaths $expectedPaths -PublishedCommit $publishedCommit
+        }
+        if ($Mode -eq 'publish' -and -not $committed -and $state) {
+            try { Restore-DocumentationOutput -ProjectRoot $root -State $state -CheckpointCommit ([string]$state.checkpointCommit) } catch { }
+        }
+        Set-DocumentationFailure -ProjectRoot $root -RunId $RunId -Mode $Mode -ErrorInfo $errorInfo
+        throw
+    }
+    finally {
+        if ($lease) { $lease.Dispose(); Remove-Item -LiteralPath $leasePath -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 Export-ModuleMember -Function @(
     'Invoke-MigrationBaseline',
     'Invoke-MigrationResolution',
@@ -1827,5 +2620,7 @@ Export-ModuleMember -Function @(
     'Invoke-MigrationStatus',
     'Invoke-MigrationRepairContext',
     'Invoke-MigrationRecordRepair',
-    'Invoke-MigrationRun'
+    'Invoke-MigrationRun',
+    'Invoke-DocumentationContext',
+    'Invoke-RecordDocumentation'
 )

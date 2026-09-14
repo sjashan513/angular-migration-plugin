@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sjashan513.github.io/angular-migration-plugin/schemas/documentation-research.schema.json",
+  "title": "Angular migration documentation research v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "sourceMajor",
+    "targetMajor",
+    "manifestSha256",
+    "researchedAt",
+    "sources",
+    "findings",
+    "concepts",
+    "unresolved"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "runId": { "type": "string", "pattern": "^[a-z0-9TZ]+(?:-[a-z0-9TZ]+)*$" },
+    "sourceMajor": { "type": "integer", "minimum": 0 },
+    "targetMajor": { "type": "integer", "minimum": 1 },
+    "manifestSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "researchedAt": { "type": "string", "minLength": 1 },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "title",
+          "url",
+          "publisher",
+          "primary",
+          "accessedAt"
+        ],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+          "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+          "url": { "type": "string", "pattern": "^https://" },
+          "publisher": { "type": "string", "minLength": 1, "maxLength": 160 },
+          "primary": { "type": "boolean" },
+          "accessedAt": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "kind",
+          "area",
+          "title",
+          "summary",
+          "affectedPackages",
+          "sourceIds",
+          "applicability"
+        ],
+        "properties": {
+          "id": { "type": "string", "pattern": "^F-[0-9]+$" },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "official-change",
+              "observed-change",
+              "inference",
+              "not-applicable"
+            ]
+          },
+          "area": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+          "summary": { "type": "string", "minLength": 1, "maxLength": 2000 },
+          "affectedPackages": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "sourceIds": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "applicability": {
+            "type": "string",
+            "enum": ["unknown-until-verified", "applicable", "not-applicable"]
+          }
+        }
+      }
+    },
+    "concepts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "whyItMatters", "sourceIds"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^C-[0-9]+$" },
+          "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+          "whyItMatters": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "sourceIds": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "unresolved": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "type": "string", "minLength": 1, "maxLength": 2000 },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "question", "critical"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^U-[0-9]+$" },
+              "question": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "critical": { "type": "boolean" },
+              "resolution": { "type": ["string", "null"], "maxLength": 2000 },
+              "sourceIds": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

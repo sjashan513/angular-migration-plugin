@@ -2,9 +2,10 @@
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][string]$Command,
+    [Parameter(Mandatory = $true, Position = 0)][string]$Command,
     [int]$TargetMajor = 0,
     [string]$RunId,
+    [ValidateSet('research', 'publish')][string]$Mode,
     [string]$InputFile
 )
 
@@ -34,7 +35,7 @@ function Write-MigrationEnvelope {
 function Get-MigrationExitCode {
     param([Parameter(Mandatory = $true)][string]$Status)
 
-    if (@('ready', 'running', 'verified', 'completed') -contains $Status) { return 0 }
+    if (@('ready', 'running', 'researching', 'researched', 'publishing', 'verified', 'completed') -contains $Status) { return 0 }
     if (@('blocked', 'needs-repair') -contains $Status) { return 2 }
     return 1
 }
@@ -53,8 +54,10 @@ try {
         'run' { Invoke-MigrationRun -ProjectRoot $projectRoot -RunId $RunId }
         'repair-context' { Invoke-MigrationRepairContext -ProjectRoot $projectRoot -RunId $RunId }
         'record-repair' { Invoke-MigrationRecordRepair -ProjectRoot $projectRoot -RunId $RunId -InputFile $InputFile }
+        'documentation-context' { Invoke-DocumentationContext -ProjectRoot $projectRoot -RunId $RunId -Mode $Mode }
+        'record-documentation' { Invoke-RecordDocumentation -ProjectRoot $projectRoot -RunId $RunId -Mode $Mode -InputFile $InputFile }
         default {
-            Throw-MigrationError -Code 'unsupported_command' -Message "Unsupported v5 command: $Command" -Status blocked -Details ([PSCustomObject]@{ supported = @('inspect', 'start', 'status', 'run', 'repair-context', 'record-repair') })
+            Throw-MigrationError -Code 'unsupported_command' -Message "Unsupported v5 command: $Command" -Status blocked -Details ([PSCustomObject]@{ supported = @('inspect', 'start', 'status', 'run', 'repair-context', 'record-repair', 'documentation-context', 'record-documentation') })
         }
     }
 

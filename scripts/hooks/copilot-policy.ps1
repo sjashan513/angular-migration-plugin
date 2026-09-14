@@ -68,6 +68,86 @@ function Protect-RepairText {
     return $value
 }
 
+function Get-PolicyProperty {
+    param($Object, [string]$Name)
+    if ($null -eq $Object) { return $null }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($property) { return $property.Value }
+    return $null
+}
+
+function Test-PolicyDocumentationUrl {
+    param([string]$Url)
+    $uri = $null
+    if (-not [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$uri)) { return $false }
+    return $uri.Scheme -ceq 'https' -and -not $uri.IsLoopback -and [string]::IsNullOrEmpty($uri.UserInfo) -and
+    [string]::IsNullOrEmpty($uri.Query) -and [string]::IsNullOrEmpty($uri.Fragment) -and
+    $uri.Host -notmatch '^(?i:localhost|127(?:\.\d+){3}|::1)$'
+}
+
+function Test-PolicyDocumentationRead {
+    param([string]$Root, [string]$Tool, $Arguments)
+    $known = @('path', 'paths', 'filePath', 'old_str', 'new_str', 'content', 'file_text', 'view_range', 'pattern', 'glob', 'output_mode', 'head_limit', '-n', 'multiline', 'query')
+    if (@($Arguments.PSObject.Properties.Name | Where-Object { $_ -notin $known }).Count -gt 0) { return $false }
+    $paths = @()
+    foreach ($name in @('path', 'paths', 'filePath')) { if ($Arguments.PSObject.Properties[$name]) { $paths += @($Arguments.$name) } }
+    if ($Tool -eq 'search' -and $paths.Count -eq 0 -and $Arguments.PSObject.Properties['query']) { return $true }
+    if ($paths.Count -eq 0) { return $false }
+    $credentialPattern = '(?i)(^|/)(\.npmrc|\.env[^/]*|\.ssh|id_rsa[^/]*|id_ed25519[^/]*|[^/]*\.(pem|key|pfx|p12))(/|$)'
+    foreach ($path in $paths) {
+        try {
+            if ($path -isnot [string]) { return $false }
+            $full = Resolve-RepairPath $Root $path
+            $relative = $full.Substring($Root.TrimEnd('\', '/').Length + 1).Replace('\', '/')
+            if ($relative -match $credentialPattern) { return $false }
+            if (Test-Path -LiteralPath $full -PathType Container) {
+                $pending = New-Object 'Collections.Generic.Queue[string]'
+                $pending.Enqueue($full)
+                while ($pending.Count -gt 0) {
+                    foreach ($entry in Get-ChildItem -LiteralPath $pending.Dequeue() -Force) {
+                        if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint -or $entry.FullName.Replace('\', '/') -match $credentialPattern) { return $false }
+                        if ($entry.PSIsContainer) { $pending.Enqueue($entry.FullName) }
+                    }
+                }
+            }
+        }
+        catch { return $false }
+    }
+    return $true
+}
+
+function Test-PolicyDocumentationSubmission {
+    param([string]$Root, $State, [string]$Mode)
+    $runId = [string]$State.runId
+    $inputName = if ($Mode -eq 'research') { 'research.json' } else { 'documentation.json' }
+    $inputRelative = '.angular-migration/runs/' + $runId + '/inbox/' + $inputName
+    try {
+        $inputPath = Resolve-RepairPath $Root $inputRelative
+        if (-not (Test-Path -LiteralPath $inputPath -PathType Leaf)) { return $false }
+        $input = [IO.File]::ReadAllText($inputPath) | ConvertFrom-Json
+        if ($input.schemaVersion -ne 1 -or $input.runId -cne $runId) { return $false }
+        if ($Mode -eq 'research') {
+            return $input.manifestSha256 -ceq [string]$State.manifestSha256 -and $input.sources -and $input.findings -and $input.researchedAt
+        }
+        $outputRelative = 'docs/migration/v' + [string]$State.targetMajor
+        if ($input.mode -cne 'publish' -or $input.outputDirectory -cne $outputRelative -or
+            $input.manifestSha256 -cne [string]$State.manifestSha256 -or -not $input.researchSha256 -or -not $input.technicalVerifiedCommit) { return $false }
+        $required = @('README.md', 'changes.md', 'errors-and-repairs.md', 'warnings.md', 'new-concepts.md', 'dependencies.md', 'validation.md', 'sources.md')
+        $directory = Resolve-RepairPath $Root $outputRelative
+        if (-not (Test-Path -LiteralPath $directory -PathType Container)) { return $false }
+        $directoryItem = Get-Item -LiteralPath $directory -Force
+        if ($directoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $false }
+        $children = @(Get-ChildItem -LiteralPath $directory -Force)
+        $childNames = (($children | ForEach-Object { [string]$_.Name } | Sort-Object) -join '|')
+        $requiredNames = (($required | Sort-Object) -join '|')
+        if (@($children | Where-Object { $_.PSIsContainer -or ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) }).Count -gt 0 -or
+            $childNames -cne $requiredNames) { return $false }
+        foreach ($name in $required) { if (-not (Test-Path -LiteralPath (Join-Path $directory $name) -PathType Leaf)) { return $false } }
+        return $true
+    }
+    catch { return $false }
+}
+
 if ($MyInvocation.InvocationName -eq '.') { return }
 $ErrorActionPreference = 'Stop'
 try {
@@ -77,13 +157,73 @@ try {
     $active = [IO.File]::ReadAllText($lockPath) | ConvertFrom-Json
     if ($active.schemaVersion -ne 5) { [Console]::Out.Write('{}'); exit 0 }
     $payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
-    if ($Event -eq 'subagentStop' -and $payload.agentName -cne 'migration-implementer') { [Console]::Out.Write('{}'); exit 0 }
+    $agentName = [string](Get-PolicyProperty -Object $payload -Name 'agentName')
+    if ($Event -eq 'subagentStop' -and $agentName -notin @('migration-implementer', 'migration-documenter')) { [Console]::Out.Write('{}'); exit 0 }
     if ($active.runId -cnotmatch '^[a-z0-9TZ]+(?:-[a-z0-9TZ]+)*$') { throw 'Invalid run.' }
     $statePath = Resolve-RepairPath $root ('.angular-migration/runs/' + $active.runId + '/state.json')
     $state = [IO.File]::ReadAllText($statePath) | ConvertFrom-Json
     if ($state.runId -cne $active.runId -or $state.schemaVersion -ne 5) { throw 'Invalid state.' }
+    if ($agentName -ceq 'migration-documenter') {
+        $documentation = Get-PolicyProperty -Object $state -Name 'documentation'
+        $mode = if ($documentation -and $documentation.status -ceq 'researching') { 'research' } elseif ($documentation -and $documentation.status -ceq 'publishing') { 'publish' } else { $null }
+        if (-not $mode) {
+            if ($Event -eq 'subagentStop') { [Console]::Out.Write('{"decision":"block","reason":"El contexto documental no esta activo."}') }
+            else { [Console]::Out.Write('{"permissionDecision":"deny","permissionDecisionReason":"angular-migration-v5: documentation context is not active"}') }
+            exit 0
+        }
+        if ($Event -eq 'subagentStop') {
+            if (Test-PolicyDocumentationSubmission -Root $root -State $state -Mode $mode) { [Console]::Out.Write('{"decision":"allow"}') }
+            else { [Console]::Out.Write('{"decision":"block","reason":"La entrega documental no contiene los archivos contractuales validables."}') }
+            exit 0
+        }
+        $arguments = Get-PolicyProperty -Object $payload -Name 'toolArgs'
+        if ($arguments -is [string]) { $arguments = $arguments | ConvertFrom-Json }
+        if ($null -eq $arguments) { $arguments = [PSCustomObject]@{} }
+        $tool = [string](Get-PolicyProperty -Object $payload -Name 'toolName')
+        $allowed = $false
+        if ($tool -in @('execute', 'powershell')) {
+            $allowed = $false
+        }
+        elseif ($tool -eq 'web') {
+            $urls = @()
+            foreach ($name in @('url', 'urls')) { if ($arguments.PSObject.Properties[$name]) { $urls += @($arguments.$name) } }
+            $allowed = $urls.Count -gt 0
+            foreach ($url in $urls) { if ($url -isnot [string] -or -not (Test-PolicyDocumentationUrl -Url $url)) { $allowed = $false } }
+        }
+        elseif ($tool -in @('edit', 'create')) {
+            $known = @('path', 'paths', 'filePath', 'old_str', 'new_str', 'content', 'file_text', 'view_range', 'pattern', 'glob', 'output_mode', 'head_limit', '-n', 'multiline')
+            $paths = @()
+            foreach ($name in @('path', 'paths', 'filePath')) { if ($arguments.PSObject.Properties[$name]) { $paths += @($arguments.$name) } }
+            if ($paths.Count -eq 1 -and @($arguments.PSObject.Properties.Name | Where-Object { $_ -notin $known }).Count -eq 0) {
+                try {
+                    $full = Resolve-RepairPath $root ([string]$paths[0])
+                    $relative = $full.Substring($root.TrimEnd('\', '/').Length + 1).Replace('\', '/')
+                    $expectedResearch = '.angular-migration/runs/' + $state.runId + '/inbox/research.json'
+                    $expectedPublish = @(
+                        ('docs/migration/v' + $state.targetMajor + '/README.md')
+                        ('docs/migration/v' + $state.targetMajor + '/changes.md')
+                        ('docs/migration/v' + $state.targetMajor + '/dependencies.md')
+                        ('docs/migration/v' + $state.targetMajor + '/errors-and-repairs.md')
+                        ('docs/migration/v' + $state.targetMajor + '/new-concepts.md')
+                        ('docs/migration/v' + $state.targetMajor + '/sources.md')
+                        ('docs/migration/v' + $state.targetMajor + '/validation.md')
+                        ('docs/migration/v' + $state.targetMajor + '/warnings.md')
+                        ('.angular-migration/runs/' + $state.runId + '/inbox/documentation.json')
+                    )
+                    $allowed = if ($mode -eq 'research') { $relative -ceq $expectedResearch } else { $expectedPublish -ccontains $relative }
+                }
+                catch { $allowed = $false }
+            }
+        }
+        elseif ($tool -in @('read', 'search', 'view', 'grep', 'rg', 'glob')) {
+            $allowed = Test-PolicyDocumentationRead -Root $root -Tool $tool -Arguments $arguments
+        }
+        $decision = if ($allowed) { 'allow' } else { 'deny' }
+        $reason = if ($allowed) { 'angular-migration-v5: operation is inside active documentation contract' } else { 'angular-migration-v5: operation outside active documentation contract' }
+        [Console]::Out.Write((@{ permissionDecision = $decision; permissionDecisionReason = $reason } | ConvertTo-Json -Compress))
+        exit 0
+    }
     if ($Event -eq 'subagentStop') {
-        if ($payload.agentName -cne 'migration-implementer') { [Console]::Out.Write('{}'); exit 0 }
         $accepted = $state.PSObject.Properties['repair'] -and $state.repair -and $state.repair.accepted
         if ($accepted) {
             $accepted = $state.repair.accepted.fingerprint -ceq $state.repair.context.fingerprint -and $state.repair.accepted.attempt -eq $state.repair.context.attempt

@@ -87,6 +87,57 @@ try {
     [IO.File]::WriteAllText($archivePath, '{}')
     $result = Invoke-HookFixture @{ agentName = 'migration-implementer' } subagentStop
     Assert-Hook 'tampered accepted report blocks stopping' ($result.json.decision -eq 'block')
+    $documenterManifestHash = 'a' * 64
+    $documenterState = [PSCustomObject]@{
+        schemaVersion = 5
+        runId = $runId
+        status = 'running'
+        stage = 'validate'
+        migrationStatus = 'running'
+        targetMajor = 8
+        manifestSha256 = $documenterManifestHash
+        documentation = [PSCustomObject]@{ status = 'researching'; phase = 'research' }
+    }
+    Write-MigrationJsonAtomic -Value $documenterState -Path $statePath
+    $researchInputPath = Join-Path $runRoot 'inbox/research.json'
+    Remove-Item -LiteralPath $researchInputPath -Force -ErrorAction SilentlyContinue
+    $result = Invoke-HookFixture @{ agentName = 'migration-documenter' } subagentStop
+    Assert-Hook 'documenter research cannot stop without research input' ($result.json.decision -eq 'block')
+    $result = Invoke-HookFixture @{ agentName = 'migration-documenter'; toolName = 'execute'; toolArgs = @{ command = 'anything' } }
+    Assert-Hook 'documenter execute is always denied' ($result.json.permissionDecision -eq 'deny')
+    $result = Invoke-HookFixture @{ agentName = 'migration-documenter'; toolName = 'web'; toolArgs = @{ url = 'https://angular.dev/update-guide' } }
+    Assert-Hook 'documenter can use a public HTTPS source' ($result.json.permissionDecision -eq 'allow')
+    $result = Invoke-HookFixture @{ agentName = 'migration-documenter'; toolName = 'web'; toolArgs = @{ url = 'https://angular.dev/update-guide?token=secret' } }
+    Assert-Hook 'documenter web query strings are denied' ($result.json.permissionDecision -eq 'deny')
+    $result = Invoke-HookFixture @{ agentName = 'migration-documenter'; toolName = 'edit'; toolArgs = @{ path = ".angular-migration/runs/$runId/inbox/research.json"; file_text = '{}' } }
+    Assert-Hook 'documenter research edit is limited to inbox' ($result.json.permissionDecision -eq 'allow')
+    $result = Invoke-HookFixture @{ agentName = 'migration-documenter'; toolName = 'edit'; toolArgs = @{ path = 'docs/migration/v8/README.md'; file_text = '#' } }
+    Assert-Hook 'documenter research cannot edit final docs' ($result.json.permissionDecision -eq 'deny')
+    Write-MigrationJsonAtomic -Value ([PSCustomObject]@{ schemaVersion = 1; runId = $runId; manifestSha256 = $documenterManifestHash; sources = @(@{ id = 'S-001' }); findings = @(@{ id = 'F-001' }); researchedAt = '2026-09-10T10:30:00.0000000Z' }) -Path $researchInputPath
+    $result = Invoke-HookFixture @{ agentName = 'migration-documenter' } subagentStop
+    Assert-Hook 'valid research input allows documenter to stop' ($result.json.decision -eq 'allow')
+    $documenterState.documentation.status = 'publishing'
+    $documenterState.documentation.phase = 'publish'
+    $documenterState.migrationStatus = 'verified'
+    Write-MigrationJsonAtomic -Value $documenterState -Path $statePath
+    $publishDirectory = Join-Path $temporary 'docs/migration/v8'
+    New-Item -ItemType Directory -Path $publishDirectory -Force | Out-Null
+    foreach ($name in @('README.md', 'changes.md', 'errors-and-repairs.md', 'warnings.md', 'new-concepts.md', 'dependencies.md', 'validation.md', 'sources.md')) {
+        [IO.File]::WriteAllText((Join-Path $publishDirectory $name), '# fixture')
+    }
+    $documentationInputPath = Join-Path $runRoot 'inbox/documentation.json'
+    Remove-Item -LiteralPath $documentationInputPath -Force -ErrorAction SilentlyContinue
+    $result = Invoke-HookFixture @{ agentName = 'migration-documenter' } subagentStop
+    Assert-Hook 'documenter publish cannot stop without documentation input' ($result.json.decision -eq 'block')
+    Write-MigrationJsonAtomic -Value ([PSCustomObject]@{ schemaVersion = 1; runId = $runId; mode = 'publish'; outputDirectory = 'docs/migration/v8'; manifestSha256 = $documenterManifestHash; researchSha256 = ('b' * 64); technicalVerifiedCommit = ('a' * 40) }) -Path $documentationInputPath
+    $result = Invoke-HookFixture @{ agentName = 'migration-documenter'; toolName = 'edit'; toolArgs = @{ path = 'docs/migration/v8/README.md'; file_text = '# updated' } }
+    Assert-Hook 'documenter publish edit is limited to target docs' ($result.json.permissionDecision -eq 'allow')
+    $result = Invoke-HookFixture @{ agentName = 'migration-documenter'; toolName = 'edit'; toolArgs = @{ path = $researchInputPath; file_text = '{}' } }
+    Assert-Hook 'documenter publish cannot edit research artifact' ($result.json.permissionDecision -eq 'deny')
+    $result = Invoke-HookFixture @{ agentName = 'migration-documenter' } subagentStop
+    Assert-Hook 'valid publish input and files allow documenter to stop' ($result.json.decision -eq 'allow')
+    $agentText = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../../agents/migration-documenter.agent.md') -Raw
+    Assert-Hook 'documenter agent has no execute tool' ($agentText -match 'tools: \[read, search, web, edit\]' -and $agentText -notmatch 'tools:.*execute')
     [IO.File]::WriteAllText($statePath, '{')
     $result = Invoke-HookFixture @{ toolName = 'edit'; toolArgs = @{ path = 'src/app.ts' } }
     Assert-Hook 'internal preToolUse error exits 2 and denies' ($result.exitCode -eq 2 -and $result.json.permissionDecision -eq 'deny')

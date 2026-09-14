@@ -2,8 +2,8 @@ Set-StrictMode -Version 2.0
 
 Import-Module (Join-Path $PSScriptRoot 'Migration.Core.psm1') -DisableNameChecking
 
-$script:RunIdPattern = '^[a-z0-9]+(?:-[a-z0-9]+)*$'
-$script:AllowedStages = @('baseline', 'resolve', 'update-angular', 'update-dependencies', 'install', 'validate', 'document')
+$script:RunIdPattern = '^[a-z0-9TZ]+(?:-[a-z0-9TZ]+)*$'
+$script:AllowedStages = @('baseline', 'resolve', 'update-angular', 'update-dependencies', 'install', 'validate', 'document', 'done')
 $script:AllowedTransitions = @{
     'running|baseline'            = @('running|resolve', 'blocked|baseline', 'failed|baseline')
     'running|resolve'             = @('running|update-angular', 'blocked|resolve', 'failed|resolve')
@@ -13,6 +13,7 @@ $script:AllowedTransitions = @{
     'running|validate'            = @('verified|document', 'needs-repair|validate', 'blocked|validate', 'failed|validate')
     'needs-repair|update-angular' = @('running|update-angular', 'blocked|update-angular', 'failed|update-angular')
     'needs-repair|validate'       = @('running|validate', 'blocked|validate', 'failed|validate')
+    'verified|document'           = @('verified|document', 'completed|done')
 }
 $script:CompletedOperationIds = @('baseline', 'resolve-manifest', 'create-branch', 'update-angular', 'update-dependencies', 'install', 'validate', 'technical-result')
 
@@ -46,13 +47,17 @@ function Get-MigrationRunPaths {
     Assert-MigrationRunId -RunId $RunId
     $runDirectory = Join-Path (Join-Path (Get-MigrationDirectory -ProjectRoot $ProjectRoot) 'runs') $RunId
     return [PSCustomObject]@{
-        root     = $runDirectory
-        manifest = Join-Path $runDirectory 'manifest.json'
-        state    = Join-Path $runDirectory 'state.json'
-        events   = Join-Path $runDirectory 'events.jsonl'
-        result   = Join-Path $runDirectory 'result.json'
-        research = Join-Path $runDirectory 'research.json'
-        logs     = Join-Path $runDirectory 'logs'
+        root               = $runDirectory
+        manifest           = Join-Path $runDirectory 'manifest.json'
+        state              = Join-Path $runDirectory 'state.json'
+        events             = Join-Path $runDirectory 'events.jsonl'
+        result             = Join-Path $runDirectory 'result.json'
+        research           = Join-Path $runDirectory 'research.json'
+        inbox              = Join-Path $runDirectory 'inbox'
+        artifacts          = Join-Path $runDirectory 'artifacts'
+        researchArtifact   = Join-Path (Join-Path $runDirectory 'artifacts') 'research.json'
+        documentationInput = Join-Path (Join-Path $runDirectory 'inbox') 'documentation.json'
+        logs               = Join-Path $runDirectory 'logs'
     }
 }
 
@@ -205,6 +210,16 @@ function New-MigrationRunState {
         attempt             = 1
         migrationStatus     = 'running'
         documentationStatus = 'pending'
+        documentation       = [ordered]@{
+            status          = 'not-started'
+            phase           = $null
+            researchSha256  = $null
+            researchCommit  = $null
+            publishAttempt  = 0
+            publishedCommit = $null
+            completedAt     = $null
+            lastError       = $null
+        }
         baselineStatus      = 'pending'
         resolutionStatus    = 'pending'
         initialBranch       = $InitialBranch
@@ -273,7 +288,7 @@ function Assert-MigrationRunState {
     if (-not $schemaProperty.exists -or $schemaProperty.value -ne (Get-MigrationSchemaVersion) -or
         -not $runIdProperty.exists -or $runIdProperty.value -ne $ExpectedRunId -or
         -not $statusProperty.exists -or $validStatuses -notcontains $statusProperty.value -or
-        -not $stageProperty.exists -or @('baseline', 'resolve', 'update-angular', 'update-dependencies', 'install', 'validate', 'document') -notcontains $stageProperty.value -or
+        -not $stageProperty.exists -or $script:AllowedStages -notcontains $stageProperty.value -or
         -not $revisionProperty.exists -or [int]$revisionProperty.value -lt 0 -or
         -not $sourceProperty.exists -or -not $targetProperty.exists -or
         [int]$targetProperty.value -ne ([int]$sourceProperty.value + 1) -or
@@ -282,6 +297,37 @@ function Assert-MigrationRunState {
         -not $manifestHashProperty.exists -or -not $hashValid -or
         -not $activeOperationProperty.exists -or -not $completedValid -or -not $branchesValid) {
         Throw-MigrationError -Code 'invalid_run_state' -Message "Migration state is invalid for run: $ExpectedRunId" -Status failed
+    }
+
+    $documentationProperty = Get-MigrationMember -Object $State -Name 'documentation'
+    $legacyDocumentationProperty = Get-MigrationMember -Object $State -Name 'documentationStatus'
+    $documentationStatuses = @('not-started', 'researching', 'researched', 'publishing', 'completed', 'failed')
+    $documentationPhases = @('research', 'publish')
+    if (-not $documentationProperty.exists -or $null -eq $documentationProperty.value) {
+        Throw-MigrationError -Code 'invalid_run_state' -Message "Documentation state is missing for run: $ExpectedRunId" -Status failed
+    }
+    $documentation = $documentationProperty.value
+    $documentationStatus = Get-MigrationMember -Object $documentation -Name 'status'
+    $documentationPhase = Get-MigrationMember -Object $documentation -Name 'phase'
+    $researchHash = Get-MigrationMember -Object $documentation -Name 'researchSha256'
+    $researchCommit = Get-MigrationMember -Object $documentation -Name 'researchCommit'
+    $publishAttempt = Get-MigrationMember -Object $documentation -Name 'publishAttempt'
+    $publishedCommit = Get-MigrationMember -Object $documentation -Name 'publishedCommit'
+    $completedAt = Get-MigrationMember -Object $documentation -Name 'completedAt'
+    $lastError = Get-MigrationMember -Object $documentation -Name 'lastError'
+    $documentationHashValid = $researchHash.exists -and ($null -eq $researchHash.value -or [string]$researchHash.value -match '^[0-9a-f]{64}$')
+    $documentationCommitValid = $researchCommit.exists -and ($null -eq $researchCommit.value -or [string]$researchCommit.value -match '^[a-fA-F0-9]{40}$')
+    $publishedCommitValid = $publishedCommit.exists -and ($null -eq $publishedCommit.value -or [string]$publishedCommit.value -match '^[a-fA-F0-9]{40}$')
+    $phaseValid = $documentationPhase.exists -and ($null -eq $documentationPhase.value -or $documentationPhases -contains $documentationPhase.value)
+    $expectedLegacyStatus = if ($documentationStatus.value -ceq 'not-started') { 'pending' } else { [string]$documentationStatus.value }
+    $legacyStatusValid = $legacyDocumentationProperty.exists -and $legacyDocumentationProperty.value -in @('pending', 'researching', 'researched', 'publishing', 'completed', 'failed') -and $legacyDocumentationProperty.value -ceq $expectedLegacyStatus
+    if (-not $documentationStatus.exists -or $documentationStatuses -notcontains $documentationStatus.value -or
+        -not $phaseValid -or -not $documentationHashValid -or -not $documentationCommitValid -or
+        -not $publishedCommitValid -or -not $publishAttempt.exists -or [int]$publishAttempt.value -lt 0 -or
+        -not $completedAt.exists -or ($null -ne $completedAt.value -and [string]::IsNullOrWhiteSpace([string]$completedAt.value)) -or
+        -not $lastError.exists -or -not $legacyStatusValid -or
+        ($documentationStatus.value -eq 'failed' -and $null -eq $documentationPhase.value)) {
+        Throw-MigrationError -Code 'invalid_run_state' -Message "Documentation state is invalid for run: $ExpectedRunId" -Status failed
     }
 }
 

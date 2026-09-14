@@ -4,6 +4,7 @@ $ErrorActionPreference = 'Stop'
 $scriptPath = Join-Path $PSScriptRoot '..\scripts\angular-migration.ps1'
 $coreModulePath = Join-Path $PSScriptRoot '..\scripts\modules\Migration.Core.psm1'
 $projectModulePath = Join-Path $PSScriptRoot '..\scripts\modules\Migration.Project.psm1'
+$stateModulePath = Join-Path $PSScriptRoot '..\scripts\modules\Migration.State.psm1'
 $script:failed = 0
 $originalPath = $env:PATH
 
@@ -60,6 +61,22 @@ try {
 
     Import-Module (Resolve-Path $coreModulePath) -DisableNameChecking -Force
     Import-Module (Resolve-Path $projectModulePath) -DisableNameChecking -Force
+    Import-Module (Resolve-Path $stateModulePath) -DisableNameChecking -Force
+    $facadeText = Get-Content -LiteralPath $scriptPath -Raw
+    foreach ($commandName in @('documentation-context', 'record-documentation')) {
+        Assert-Check "facade exposes $commandName" ($facadeText -match [regex]::Escape("'$commandName'"))
+    }
+    $agentText = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../agents/migration-documenter.agent.md') -Raw
+    Assert-Check 'documenter tools are read search web edit only' ($agentText -match 'tools: \[read, search, web, edit\]' -and $agentText -notmatch '(?im)^tools:.*execute')
+    $researchSchema = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../schemas/documentation-research.schema.json') -Raw | ConvertFrom-Json
+    $inputSchema = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../schemas/documentation-input.schema.json') -Raw | ConvertFrom-Json
+    $contextSchema = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../schemas/documentation-context.schema.json') -Raw | ConvertFrom-Json
+    Assert-Check 'documentation schemas are closed' ($researchSchema.additionalProperties -eq $false -and $inputSchema.additionalProperties -eq $false -and @($contextSchema.oneOf).Count -eq 2)
+    Assert-Check 'documentation input requires exactly eight files' ($inputSchema.properties.files.minItems -eq 8 -and $inputSchema.properties.files.maxItems -eq 8)
+    $hookText = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../scripts/hooks/copilot-policy.ps1') -Raw
+    Assert-Check 'documenter hook policy is present' ($hookText -match 'migration-documenter' -and $hookText -match 'documentation')
+    Assert-MigrationRunId -RunId 'angular-7-to-8-20260910T100000Z-a1b2c3d4'
+    Assert-Check 'run ids accept UTC timestamp markers' $true
     $volumeRoot = [IO.Path]::GetPathRoot($tmp)
     Assert-Check 'volume root is preserved' ((Resolve-MigrationRoot -Path $volumeRoot) -eq $volumeRoot)
     Assert-Check 'valid Angular range exposes its major' ((Get-VersionMajor -Spec '^7.2.0') -eq 7)

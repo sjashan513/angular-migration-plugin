@@ -490,6 +490,7 @@ function Invoke-MigrationSkipCheck {
     Assert-PipelineRunGitContext -ProjectRoot $root -State $state
 
     $lockCreated = $false
+    $handoffLock = $false
     try {
         New-ActiveRunLock -ProjectRoot $root -RunId $RunId
         $lockCreated = $true
@@ -522,6 +523,7 @@ function Invoke-MigrationSkipCheck {
         $state = Move-MigrationState -ProjectRoot $root -RunId $RunId -ExpectedStatus 'blocked' -ExpectedStage 'baseline' -ExpectedRevision $state.stageRevision -NewStatus 'running' -NewStage 'baseline'
         $accepted = Get-BaselineSkipRecord -State $state -CheckId $CheckId
         Add-MigrationEvent -ProjectRoot $root -RunId $RunId -Type 'skip-accepted' -Stage 'baseline' -Data ([PSCustomObject]@{ checkId = $CheckId; reason = $accepted.reason; diagnostic = $accepted.diagnostic; confirmed = $accepted.confirmed })
+        $handoffLock = $true
         return [PSCustomObject]@{
             ok     = $true
             status = 'running'
@@ -530,7 +532,7 @@ function Invoke-MigrationSkipCheck {
         }
     }
     finally {
-        if ($lockCreated) { Remove-ActiveRunLock -ProjectRoot $root -RunId $RunId }
+        if ($lockCreated -and -not $handoffLock) { Remove-ActiveRunLock -ProjectRoot $root -RunId $RunId }
     }
 }
 

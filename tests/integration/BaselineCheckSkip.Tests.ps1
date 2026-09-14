@@ -91,15 +91,15 @@ exit 1
     $checks = @(Get-ProjectChecks -Package $package -ProjectRoot $root -HasLockfile $true)
     $manifest = [PSCustomObject]@{
         schemaVersion = 5
-        manifestType = 'migration'
-        runId = $runId
-        sourceMajor = 7
-        targetMajor = 8
-        project = [PSCustomObject]@{
+        manifestType  = 'migration'
+        runId         = $runId
+        sourceMajor   = 7
+        targetMajor   = 8
+        project       = [PSCustomObject]@{
             root = $root
-            git = [PSCustomObject]@{ initialCommit = $initialCommit }
+            git  = [PSCustomObject]@{ initialCommit = $initialCommit }
         }
-        checks = $checks
+        checks        = $checks
     }
     $state = New-MigrationRunState -RunId $runId -ProjectRoot $root -SourceMajor 7 -TargetMajor 8 -InitialCommit $initialCommit -InitialBranch $branch
     New-ActiveRunLock -ProjectRoot $root -RunId $runId
@@ -133,7 +133,7 @@ exit 1
 
     $accepted = Invoke-MigrationSkipCheck -ProjectRoot $root -RunId $runId -CheckId 'lint' -Reason 'The project has no checked-in lint tsconfig yet.' -Confirmed
     if (-not $accepted.ok -or $accepted.status -ne 'running' -or $accepted.data.runId -cne $runId -or $accepted.data.nextAction -cne 'run') { throw 'Skip approval did not resume the same run' }
-    if (Test-Path -LiteralPath (Join-Path $root '.angular-migration/active.lock')) { throw 'Skip approval did not release the active lock' }
+    if (-not (Test-Path -LiteralPath (Join-Path $root '.angular-migration/active.lock') -PathType Leaf)) { throw 'Skip approval did not hand ownership to the resumed run' }
     $approvedState = Read-MigrationRunState -ProjectRoot $root -RunId $runId
     $skip = @($approvedState.skippedChecks | Where-Object checkId -ceq 'lint')[0]
     if ($approvedState.status -ne 'running' -or $approvedState.stage -ne 'baseline' -or
@@ -141,21 +141,21 @@ exit 1
         $skip.confirmed -ne $true -or $skip.diagnostic.details.checkId -ne 'lint') { throw 'Skip approval was not audited in state' }
     Write-Host 'PASS approved skip records reason, confirmation and original diagnostic'
 
-    New-ActiveRunLock -ProjectRoot $root -RunId $runId
-    try {
-        & $pipeline {
-            param($ProjectRoot, $RunId)
-            Invoke-PipelineBaselineStage -ProjectRoot $ProjectRoot -RunId $RunId
-        } $root $runId
+    & $pipeline {
+        function script:Invoke-PipelineResolveStage {
+            param([string]$ProjectRoot, [string]$RunId)
+            Throw-PipelineError -Code 'test_stop_after_baseline' -Message 'Fixture stops after baseline.' -Status blocked
+        }
     }
-    finally { Remove-ActiveRunLock -ProjectRoot $root -RunId $runId }
+    $resumed = Invoke-MigrationRun -ProjectRoot $root -RunId $runId
+    if ($resumed.error.code -ceq 'run_not_owner' -or $resumed.error.code -cne 'test_stop_after_baseline') { throw 'Approved skip could not resume through the run facade' }
 
     $resumedState = Read-MigrationRunState -ProjectRoot $root -RunId $runId
     $trace = @(Get-Content -LiteralPath (Join-Path $root '.fixture-trace'))
     $lintRuns = @($trace | Where-Object { $_ -ceq 'lint' }).Count
     $buildRuns = @($trace | Where-Object { $_ -ceq 'build' }).Count
     $events = @(Get-Content -LiteralPath $paths.events | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json })
-    if ($resumedState.status -ne 'running' -or $resumedState.stage -ne 'resolve' -or
+    if ($resumedState.status -ne 'blocked' -or $resumedState.stage -ne 'resolve' -or
         'baseline' -notin @($resumedState.completedOperations) -or $lintRuns -ne 1 -or $buildRuns -ne 1 -or
         @($events | Where-Object type -ceq 'skip-accepted').Count -ne 1 -or
         @($events | Where-Object type -ceq 'check-skipped').Count -ne 1) { throw 'Approved skip did not resume baseline deterministically' }

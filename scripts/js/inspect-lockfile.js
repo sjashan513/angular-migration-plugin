@@ -10,7 +10,10 @@ if (!inputPath) {
 }
 
 try {
-  const lockfile = JSON.parse(fs.readFileSync(path.resolve(inputPath), "utf8"));
+  const text = fs
+    .readFileSync(path.resolve(inputPath), "utf8")
+    .replace(/^\uFEFF/, "");
+  const lockfile = JSON.parse(text);
   const lockfileVersion = lockfile.lockfileVersion;
   if (![1, 2, 3].includes(lockfileVersion)) {
     throw new Error("Unsupported lockfile version");

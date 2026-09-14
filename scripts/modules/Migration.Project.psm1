@@ -27,8 +27,9 @@ function Get-ProjectPackage {
 function Get-ProjectLockfile {
     param([Parameter(Mandatory = $true)][string]$ProjectRoot)
 
+    $lockPath = Join-Path $ProjectRoot 'package-lock.json'
     try {
-        $lock = Read-MigrationJson -Path (Join-Path $ProjectRoot 'package-lock.json') -Required
+        $lock = Read-MigrationJson -Path $lockPath -Required
         $version = Get-ProjectProperty -Object $lock -Name 'lockfileVersion'
         if ($version -notin @(1, 2, 3)) { throw 'Unsupported lockfile version' }
         $section = if ($version -eq 1) { 'dependencies' } else { 'packages' }
@@ -49,7 +50,27 @@ function Get-ProjectLockfile {
         return [PSCustomObject]@{ lockfileVersion = $version; versions = $versions }
     }
     catch {
-        Throw-MigrationError -Code 'lockfile_invalid' -Message 'package-lock.json cannot be read or has an unsupported layout.' -Status blocked
+        try {
+            $node = Find-MigrationExecutable -Names @('node.exe', 'node')
+            $helper = Join-Path $PSScriptRoot '../js/inspect-lockfile.js'
+            if (-not $node -or -not (Test-Path -LiteralPath $helper -PathType Leaf)) { throw 'Lockfile inspector unavailable' }
+            $process = Invoke-MigrationProcess -FilePath $node -Arguments @($helper, $lockPath) -WorkingDirectory $ProjectRoot -TimeoutSeconds 30
+            if ($process.timedOut -or $process.exitCode -ne 0) { throw 'Lockfile inspector rejected the lockfile' }
+            $normalized = $process.stdout | ConvertFrom-Json
+            $version = [int](Get-ProjectProperty -Object $normalized -Name 'lockfileVersion')
+            if ($version -notin @(1, 2, 3)) { throw 'Unsupported lockfile version' }
+            $entries = Get-ProjectProperty -Object $normalized -Name 'versions'
+            if ($null -eq $entries -or $entries -isnot [PSCustomObject]) { throw 'Invalid lockfile layout' }
+            $versions = @{}
+            foreach ($entry in $entries.PSObject.Properties) { $versions[$entry.Name] = [string]$entry.Value }
+            if ($versions['@angular/core'] -and $versions['@angular/core'] -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+                throw 'Locked Angular core version is not exact'
+            }
+            return [PSCustomObject]@{ lockfileVersion = $version; versions = $versions }
+        }
+        catch {
+            Throw-MigrationError -Code 'lockfile_invalid' -Message 'package-lock.json cannot be read or has an unsupported layout.' -Status blocked
+        }
     }
 }
 
@@ -85,10 +106,10 @@ function Get-DependencyInventory {
     param([Parameter(Mandatory = $true)]$Package)
 
     $sectionRoles = [ordered]@{
-        dependencies = 'runtime'
-        devDependencies = 'dev'
+        dependencies         = 'runtime'
+        devDependencies      = 'dev'
         optionalDependencies = 'optional'
-        peerDependencies = 'peer'
+        peerDependencies     = 'peer'
     }
     $items = @()
     foreach ($section in $sectionRoles.Keys) {
@@ -97,11 +118,11 @@ function Get-DependencyInventory {
         foreach ($name in @($values.PSObject.Properties | Select-Object -ExpandProperty Name | Sort-Object)) {
             $spec = [string]$values.$name
             $items += [PSCustomObject]@{
-                name = $name
+                name    = $name
                 section = $section
-                role = $sectionRoles[$section]
-                spec = $spec
-                kind = Get-DependencyKind -Spec $spec
+                role    = $sectionRoles[$section]
+                spec    = $spec
+                kind    = Get-DependencyKind -Spec $spec
             }
         }
     }
@@ -113,7 +134,7 @@ function Get-DependencyInventory {
     }
 
     return [PSCustomObject]@{
-        items = @($items)
+        items    = @($items)
         policies = $policies
     }
 }
@@ -153,22 +174,22 @@ function Get-ProjectChecks {
     $checks = @()
     $installArguments = @('ci')
     $checks += [PSCustomObject]@{
-        id = 'install'
-        status = if ($HasLockfile) { 'configured' } else { 'blocked' }
-        executable = 'npm'
-        arguments = @($installArguments)
+        id             = 'install'
+        status         = if ($HasLockfile) { 'configured' } else { 'blocked' }
+        executable     = 'npm'
+        arguments      = @($installArguments)
         displayCommand = 'npm ci'
-        cwd = $ProjectRoot
-        reason = if ($HasLockfile) { $null } else { 'package-lock.json is required for the supported npm workflow' }
+        cwd            = $ProjectRoot
+        reason         = if ($HasLockfile) { $null } else { 'package-lock.json is required for the supported npm workflow' }
     }
     $checks += [PSCustomObject]@{
-        id = 'dependency-tree'
-        status = if ($HasLockfile) { 'configured' } else { 'blocked' }
-        executable = 'npm'
-        arguments = @('ls', '--all')
+        id             = 'dependency-tree'
+        status         = if ($HasLockfile) { 'configured' } else { 'blocked' }
+        executable     = 'npm'
+        arguments      = @('ls', '--all')
         displayCommand = 'npm ls --all'
-        cwd = $ProjectRoot
-        reason = if ($HasLockfile) { $null } else { 'package-lock.json is required for the supported npm workflow' }
+        cwd            = $ProjectRoot
+        reason         = if ($HasLockfile) { $null } else { 'package-lock.json is required for the supported npm workflow' }
     }
 
     $definitions = @(
@@ -182,13 +203,13 @@ function Get-ProjectChecks {
         $scriptName = Find-NpmScript -Scripts $scripts -Names $definition.names
         $scriptArguments = if ($scriptName) { @('run', $scriptName) } else { @() }
         $checks += [PSCustomObject]@{
-            id = $definition.id
-            status = if ($scriptName) { 'configured' } else { 'not-configured' }
-            executable = if ($scriptName) { 'npm' } else { $null }
-            arguments = @($scriptArguments)
+            id             = $definition.id
+            status         = if ($scriptName) { 'configured' } else { 'not-configured' }
+            executable     = if ($scriptName) { 'npm' } else { $null }
+            arguments      = @($scriptArguments)
             displayCommand = if ($scriptName) { "npm run $scriptName" } else { $null }
-            cwd = $ProjectRoot
-            reason = if ($scriptName) { $null } else { 'No matching npm script was found' }
+            cwd            = $ProjectRoot
+            reason         = if ($scriptName) { $null } else { 'No matching npm script was found' }
         }
     }
     $angular = $null
@@ -400,8 +421,8 @@ function Get-ProjectNode {
     else { $errors += 'npm is not available' }
 
     return [PSCustomObject]@{
-        node = [PSCustomObject]@{ available = [bool]($node -and $nodeVersion); executable = $node; version = $nodeVersion; stdout = if ($nodeResult -and -not $nodeVersion) { [string]$nodeResult.stdout } else { $null } }
-        npm = [PSCustomObject]@{ available = [bool]($npm -and $npmVersion); executable = $npm; version = $npmVersion; stdout = if ($npmResult -and -not $npmVersion) { [string]$npmResult.stdout } else { $null } }
+        node   = [PSCustomObject]@{ available = [bool]($node -and $nodeVersion); executable = $node; version = $nodeVersion; stdout = if ($nodeResult -and -not $nodeVersion) { [string]$nodeResult.stdout } else { $null } }
+        npm    = [PSCustomObject]@{ available = [bool]($npm -and $npmVersion); executable = $npm; version = $npmVersion; stdout = if ($npmResult -and -not $npmVersion) { [string]$npmResult.stdout } else { $null } }
         errors = @($errors | Where-Object { $_ })
     }
 }
@@ -488,8 +509,8 @@ function Get-ProjectInspection {
     if ($lock -and $null -ne $currentMajor) {
         $frameworkPackages = @('animations', 'common', 'compiler', 'compiler-cli', 'core', 'elements', 'forms', 'language-service', 'localize', 'platform-browser', 'platform-browser-dynamic', 'platform-server', 'platform-webworker', 'platform-webworker-dynamic', 'router', 'service-worker', 'upgrade')
         $frameworkNames = @(@($inventory.items | Select-Object -ExpandProperty name) + @($lock.versions.Keys) | Where-Object {
-            $_ -like '@angular/*' -and $frameworkPackages -contains ($_ -replace '^@angular/', '')
-        } | Sort-Object -Unique)
+                $_ -like '@angular/*' -and $frameworkPackages -contains ($_ -replace '^@angular/', '')
+            } | Sort-Object -Unique)
         foreach ($name in $frameworkNames) {
             $resolved = Get-VersionMajor -Spec $lock.versions[$name]
             $mismatch = $null -ne $resolved -and $resolved -ne $currentMajor
@@ -533,7 +554,7 @@ function Get-ProjectInspection {
     }
     $projectNames = if ($angularProjects) { @($angularProjects.PSObject.Properties | Select-Object -ExpandProperty Name | Sort-Object) } else { @() }
     $projectConfig = [PSCustomObject]@{
-        present = $null -ne $angular
+        present  = $null -ne $angular
         projects = @($projectNames)
     }
     $checks = Get-ProjectChecks -Package $(if ($package) { $package } else { [PSCustomObject]@{} }) -ProjectRoot $root -HasLockfile (Test-Path -LiteralPath $lockPath -PathType Leaf)
@@ -541,8 +562,8 @@ function Get-ProjectInspection {
         $errors += [PSCustomObject]@{ code = 'check_blocked'; checkId = $check.id; message = $check.reason }
     }
     $configurations = @(Get-ChildItem -LiteralPath $root -File | Where-Object {
-        $_.Name -match '^(?:\.eslintrc(?:\..+)?|eslint\.config\..+|tslint\.json|karma\.conf\..+|jest\.config\..+|cypress\.config\..+|cypress\.json)$'
-    } | Select-Object -ExpandProperty Name)
+            $_.Name -match '^(?:\.eslintrc(?:\..+)?|eslint\.config\..+|tslint\.json|karma\.conf\..+|jest\.config\..+|cypress\.config\..+|cypress\.json)$'
+        } | Select-Object -ExpandProperty Name)
     $builders = @()
     if ($angularProjects) {
         foreach ($project in $angularProjects.PSObject.Properties) {
@@ -560,36 +581,36 @@ function Get-ProjectInspection {
     $projectName = if ($package -and (Get-ProjectProperty -Object $package -Name 'name')) { [string](Get-ProjectProperty -Object $package -Name 'name') } else { Split-Path -Leaf $root }
 
     return [PSCustomObject]@{
-        schemaVersion = Get-MigrationSchemaVersion
-        projectRoot = $root
-        projectName = $projectName
-        ready = $errors.Count -eq 0
-        status = if ($errors.Count -eq 0) { 'ready' } else { 'blocked' }
-        blockers = @($errors)
-        files = [PSCustomObject]@{
-            packageJson = Test-Path -LiteralPath $packagePath -PathType Leaf
-            angularJson = Test-Path -LiteralPath $angularPath -PathType Leaf
-            packageLock = Test-Path -LiteralPath $lockPath -PathType Leaf
-            tsconfig = Test-Path -LiteralPath (Join-Path $root 'tsconfig.json') -PathType Leaf
+        schemaVersion   = Get-MigrationSchemaVersion
+        projectRoot     = $root
+        projectName     = $projectName
+        ready           = $errors.Count -eq 0
+        status          = if ($errors.Count -eq 0) { 'ready' } else { 'blocked' }
+        blockers        = @($errors)
+        files           = [PSCustomObject]@{
+            packageJson    = Test-Path -LiteralPath $packagePath -PathType Leaf
+            angularJson    = Test-Path -LiteralPath $angularPath -PathType Leaf
+            packageLock    = Test-Path -LiteralPath $lockPath -PathType Leaf
+            tsconfig       = Test-Path -LiteralPath (Join-Path $root 'tsconfig.json') -PathType Leaf
             configurations = $configurations
         }
-        angular = [PSCustomObject]@{
-            currentMajor = $currentMajor
-            coreSpec = $coreSpec
-            declaredCoreSpec = $coreSpec
+        angular         = [PSCustomObject]@{
+            currentMajor        = $currentMajor
+            coreSpec            = $coreSpec
+            declaredCoreSpec    = $coreSpec
             resolvedCoreVersion = $resolvedCoreVersion
-            packages = Get-AngularPackageVersions -Inventory $inventory
-            projects = @($projectConfig.projects)
+            packages            = Get-AngularPackageVersions -Inventory $inventory
+            projects            = @($projectConfig.projects)
         }
-        packageManager = if ($packageManager) { $packageManager } else { 'npm' }
+        packageManager  = if ($packageManager) { $packageManager } else { 'npm' }
         lockfileVersion = if ($lock) { $lock.lockfileVersion } else { $null }
-        scripts = if ($package) { Get-NpmScripts -Package $package } else { @{} }
-        builders = $builders
-        dependencies = $inventory.items
-        policies = $inventory.policies
-        git = $git
-        node = $node
-        checks = $checks
+        scripts         = if ($package) { Get-NpmScripts -Package $package } else { @{} }
+        builders        = $builders
+        dependencies    = $inventory.items
+        policies        = $inventory.policies
+        git             = $git
+        node            = $node
+        checks          = $checks
     }
 }
 

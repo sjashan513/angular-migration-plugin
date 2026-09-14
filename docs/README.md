@@ -10,7 +10,7 @@ La intención es que un implementador pueda completar cada fase sin decidir arqu
 
 Se considera ya implementado y fuera del trabajo restante:
 
-- fachada PowerShell 5.1 con `inspect`, `start` y `status`;
+- fachada PowerShell 5.1 con `preflight`, `inspect`, `start` y `status`;
 - módulos `Migration.Core.psm1`, `Migration.State.psm1`, `Migration.Project.psm1` y `Migration.Pipeline.psm1`;
 - detección de proyecto Angular CLI npm en la raíz;
 - inventario de dependencias directas;
@@ -32,7 +32,7 @@ El estado actual todavía no migra ningún proyecto. `start` crea el run y conse
 
 Todas las fases deben respetar estas reglas:
 
-1. Cada run migra exactamente una major: `targetMajor == sourceMajor + 1`.
+1. Cada run migra exactamente una major elegida por el usuario: `targetMajor == sourceMajor + 1`.
 2. La fachada `scripts/angular-migration.ps1` es la única API que pueden invocar los agentes.
 3. El controlador decide versiones, ejecutables, argumentos, orden de etapas y transiciones.
 4. Los agentes nunca fabrican comandos `npm`, `npx`, `ng` o `git`.
@@ -69,6 +69,7 @@ La fachada debe terminar con estos comandos:
 
 ```text
 inspect
+preflight
 start
 run
 status
@@ -81,17 +82,18 @@ record-documentation
 
 Contrato de cada comando:
 
-| Comando                                                    | Mutante | Requiere run activo                                    | Finalidad                                                              |
-| ---------------------------------------------------------- | ------- | ------------------------------------------------------ | ---------------------------------------------------------------------- |
-| `inspect`                                                  | No      | No                                                     | Inspeccionar precondiciones sin escribir.                              |
-| `start -TargetMajor N`                                     | Sí      | No                                                     | Crear un run `N-1 -> N`, adquirir lock y persistir el input inicial.   |
-| `run -RunId ID`                                            | Sí      | Sí                                                     | Ejecutar o reanudar etapas deterministas.                              |
-| `status -RunId ID`                                         | No      | No                                                     | Leer estado y último diagnóstico.                                      |
-| `skip-check -RunId ID -CheckId ID -Reason TEXT -Confirmed` | Sí      | No al inicio; adquiere ownership durante la aprobación | Registrar una excepción baseline no crítica y reanudar el mismo run.   |
-| `repair-context -RunId ID`                                 | No      | Sí                                                     | Entregar al Implementer el fallo y las rutas editables.                |
-| `record-repair -RunId ID -InputFile PATH`                  | Sí      | Sí                                                     | Validar el informe del Implementer y autorizar una reanudación.        |
-| `documentation-context -RunId ID`                          | No      | Sí                                                     | Entregar inputs verificables al Documenter.                            |
-| `record-documentation -RunId ID -InputFile PATH`           | Sí      | Sí                                                     | Validar investigación/documentación y actualizar el estado documental. |
+| Comando                                                    | Mutante | Requiere run activo                               | Finalidad                                                              |
+| ---------------------------------------------------------- | ------- | ------------------------------------------------- | ---------------------------------------------------------------------- |
+| `preflight`                                                | No      | No                                                | Analizar archivos, herramientas y checks antes del run.                |
+| `inspect`                                                  | No      | No                                                | Alias compatible de la inspeccion de preflight.                        |
+| `start -TargetMajor N`                                     | Sí      | No                                                | Crear un run `N-1 -> N`, adquirir lock y persistir el input inicial.   |
+| `run -RunId ID`                                            | Sí      | Sí                                                | Ejecutar o reanudar etapas deterministas.                              |
+| `status -RunId ID`                                         | No      | No                                                | Leer estado y último diagnóstico.                                      |
+| `skip-check -RunId ID -CheckId ID -Reason TEXT -Confirmed` | Sí      | Sí en preflight; adquiere ownership tras un fallo | Aprobar una excepción baseline no crítica antes o después del fallo.   |
+| `repair-context -RunId ID`                                 | No      | Sí                                                | Entregar al Implementer el fallo y las rutas editables.                |
+| `record-repair -RunId ID -InputFile PATH`                  | Sí      | Sí                                                | Validar el informe del Implementer y autorizar una reanudación.        |
+| `documentation-context -RunId ID`                          | No      | Sí                                                | Entregar inputs verificables al Documenter.                            |
+| `record-documentation -RunId ID -InputFile PATH`           | Sí      | Sí                                                | Validar investigación/documentación y actualizar el estado documental. |
 
 Ningún comando público acepta versiones de paquetes, nombres de ejecutables, argumentos libres, ramas, mensajes de commit, rutas de log o estados elegidos por un agente.
 

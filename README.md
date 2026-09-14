@@ -13,7 +13,8 @@ con los contextos que el controlador les entrega.
 - PowerShell 7+ para los hooks de Copilot CLI.
 - Proyectos Angular CLI en la raiz de un repositorio Git no monorepo.
 - npm con `package-lock.json` v1, v2 o v3.
-- Un salto `N -> N+1`; la primera ruta soportada es Angular 7 -> Angular 8.
+- Un salto `N -> N+1` seleccionado con `-TargetMajor`; para llegar a una major
+  posterior se ejecutan runs secuenciales.
 
 Quedan fuera de v5 el cambio automatico de Node, Yarn, pnpm, workspaces, Nx,
 dependencias no registry sin politica, agentes cloud y cualquier runtime visual.
@@ -38,15 +39,22 @@ definitivos y los hooks una sola vez.
 Ejecuta la fachada desde la raiz del proyecto o proporciona `-ProjectRoot`:
 
 ```powershell
+./scripts/angular-migration.ps1 preflight -ProjectRoot C:\src\my-angular-app
 ./scripts/angular-migration.ps1 inspect -ProjectRoot C:\src\my-angular-app
 ./scripts/angular-migration.ps1 start -TargetMajor 8 -ProjectRoot C:\src\my-angular-app
+./scripts/angular-migration.ps1 skip-check -ProjectRoot C:\src\my-angular-app -RunId <run-id> -CheckId lint -Reason "El repositorio no tiene lint" -Confirmed
 ./scripts/angular-migration.ps1 run -ProjectRoot C:\src\my-angular-app -RunId <run-id>
 ./scripts/angular-migration.ps1 status -ProjectRoot C:\src\my-angular-app -RunId <run-id>
 ```
 
-`inspect` no escribe. `start` crea rama, runtime y estado despues de la confirmacion
-de la skill. `run` reanuda desde el ultimo checkpoint. `status` solo lee state y
-diagnostico. Cada comando escribe un unico envelope JSON en stdout.
+`preflight` analiza sin escribir y devuelve los archivos detectados o ausentes, los
+checks criticos y los checks opcionales. `inspect` conserva el mismo analisis como
+alias de compatibilidad. `start` recibe la major objetivo, que debe ser exactamente
+la siguiente a la major actual, y crea rama, runtime y estado despues de la
+confirmacion de la skill. Antes de `run`, `skip-check` permite aprobar omisiones de
+`typecheck`, `lint`, `unit-test` o `e2e`; la aprobacion queda auditada en el mismo run.
+`run` reanuda desde el ultimo checkpoint. `status` solo lee state y diagnostico.
+Cada comando escribe un unico envelope JSON en stdout.
 
 Si el baseline detecta peers npm ausentes, la skill ejecuta
 `baseline-dependency-context`, explica las versiones exactas y los paquetes que las
@@ -62,9 +70,9 @@ pedir una aprobacion humana explicita para omitir solo ese check en el run actua
 ./scripts/angular-migration.ps1 skip-check -ProjectRoot C:\src\my-angular-app -RunId <run-id> -CheckId lint -Reason "Falta el tsconfig de lint del proyecto" -Confirmed
 ```
 
-`skip-check` solo acepta el fallo baseline actual, conserva el diagnostico original y
-la razon en `state.json`, `events.jsonl` y el `result.json` tecnico cuando existe, y
-reanuda el mismo `runId`. `install`,
+`skip-check` acepta una aprobacion durante `running/baseline` o el fallo baseline
+actual, conserva la razon y el diagnostico en `state.json`, `events.jsonl` y el
+`result.json` tecnico cuando existe, y mantiene el mismo `runId`. `install`,
 `dependency-tree` y `build` son gates criticos y nunca pueden omitirse. El check
 aprobado aparece como `skipped`; no se ejecutan gates manualmente fuera de la fachada.
 

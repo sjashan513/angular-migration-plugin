@@ -172,11 +172,12 @@ $script:AllowedTransitions = @{
 ```
 
 La transición `blocked|baseline -> running|baseline` solo se alcanza mediante
-`skip-check`. La operación exige confirmación explícita, una razón y que el diagnóstico
-actual corresponda al check solicitado. Solo `typecheck`, `lint`, `unit-test` y `e2e`
-son omisibles; `install`, `dependency-tree` y `build` son gates críticos. La entrada
-persistida contiene etapa, check, razón, diagnóstico original, timestamp y
-confirmación.
+`skip-check`. La misma operación puede ejecutarse antes del baseline mientras el run
+esta en `running|baseline`; en ese caso registra una aprobación preflight y no cambia
+la transición. En ambos casos exige confirmación explícita y una razón. Solo
+`typecheck`, `lint`, `unit-test` y `e2e` son omisibles; `install`, `dependency-tree` y
+`build` son gates críticos. La entrada persistida contiene etapa, check, razón,
+diagnóstico, timestamp y confirmación.
 
 Documentación y `completed` se añaden en fase 7.
 
@@ -356,10 +357,11 @@ Fallo configurado o timeout:
 blocked / baseline_check_failed
 ```
 
-Liberar lock porque el proyecto no fue modificado. Un check baseline no crítico puede
-reanudar el mismo run mediante `skip-check`; el check no se ejecuta y queda registrado
-como `skipped`. Un fallo de `install`, `dependency-tree` o `build` sigue bloqueando
-hasta corregir la causa.
+Liberar lock porque el proyecto no fue modificado. Las omisiones aprobadas durante el
+preflight se consumen sin ejecutar el check y quedan registradas como `skipped`. Un
+check baseline no crítico que falle puede reanudar el mismo run mediante `skip-check`;
+el check no se ejecuta al reanudar y también queda registrado como `skipped`. Un fallo
+de `install`, `dependency-tree` o `build` sigue bloqueando hasta corregir la causa.
 
 ## 11. Etapa resolve
 

@@ -14,7 +14,21 @@ failed       El propio controlador no pudo ejecutar o persistir la baseline.
 
 La baseline nunca produce `needs-repair`, porque todavía no se ha realizado ninguna migración. Un fallo preexistente debe repararse fuera del run y comenzar después un run nuevo.
 
-## 2. Precondiciones
+## 2. Preflight
+
+La fachada expone `preflight` como paso inicial de solo lectura. Debe devolver el
+inventario de archivos base (`package.json`, `angular.json` y `package-lock.json`),
+los archivos de TypeScript y las configuraciones de lint, unit-test y e2e que el
+proyecto tenga o necesite para sus checks configurados. Cada hallazgo conserva
+`present`, `required` y `status` (`present`, `missing` o `not-found`).
+
+El mismo resultado clasifica `install`, `dependency-tree` y `build` como críticos y
+`typecheck`, `lint`, `unit-test` y `e2e` como opcionales. Tras `start`, el usuario
+puede aprobar con `skip-check -Confirmed` cualquier check opcional antes de `run`.
+La aprobación se persiste en el state y en los eventos; no modifica la lista de
+checks ni permite omitir un gate crítico.
+
+## 3. Precondiciones
 
 Antes de empezar, debe existir y pasar el smoke test del incremento anterior. Deben funcionar:
 
@@ -25,9 +39,10 @@ Antes de empezar, debe existir y pasar el smoke test del incremento anterior. De
 - ejecución estructurada de procesos;
 - rechazo de workspaces, Nx, Yarn y pnpm.
 
-No se modifica todavía la lista pública de comandos. `run` se publica en la fase 5, cuando pueda ejecutar la pipeline completa. Los tests de esta fase pueden importar módulos directamente.
+`preflight` e `inspect` son operaciones de lectura. Los tests de esta fase pueden
+importar módulos directamente.
 
-## 3. Archivos permitidos
+## 4. Archivos permitidos
 
 Modificar:
 
@@ -53,7 +68,7 @@ tests/fixtures/tools/
 
 No crear `Migration.Checks.psm1`. La arquitectura acordada limita los módulos: `Project` descubre y ejecuta checks, `Core` ejecuta procesos, `Pipeline` decide el orden y `State` persiste el avance.
 
-## 4. Contrato de inspección
+## 5. Contrato de inspección
 
 ### 4.1 Fuente de Angular actual
 
@@ -76,13 +91,13 @@ El rango declarado y la versión resuelta deben conservarse por separado:
 
 Bloqueos obligatorios:
 
-| Código | Condición |
-| --- | --- |
-| `angular_core_missing` | No existe `@angular/core` en las secciones admitidas. |
-| `angular_core_not_locked` | Existe en `package.json`, pero no en el lockfile. |
-| `angular_core_major_mismatch` | El rango declarado no admite la major resuelta. |
-| `angular_package_major_mismatch` | Un paquete `@angular/*` de framework está en otra major. |
-| `lockfile_invalid` | El lockfile no se puede leer o no tiene un layout admitido. |
+| Código                           | Condición                                                   |
+| -------------------------------- | ----------------------------------------------------------- |
+| `angular_core_missing`           | No existe `@angular/core` en las secciones admitidas.       |
+| `angular_core_not_locked`        | Existe en `package.json`, pero no en el lockfile.           |
+| `angular_core_major_mismatch`    | El rango declarado no admite la major resuelta.             |
+| `angular_package_major_mismatch` | Un paquete `@angular/*` de framework está en otra major.    |
+| `lockfile_invalid`               | El lockfile no se puede leer o no tiene un layout admitido. |
 
 No implementar un parser semver completo. Para determinar si el spec declarado representa la misma major se admiten únicamente specs simples ya soportados (`7`, `7.x`, `~7.2.0`, `^7.2.0`, `>=7.0.0` simple). Un rango compuesto, alias o unión se bloquea.
 
@@ -169,7 +184,7 @@ La inspección debe incluir:
 
 No recorrer `node_modules` ni analizar código fuente para descubrir checks.
 
-## 5. Contrato de check
+## 6. Contrato de check
 
 Cada check descubierto debe tener esta forma:
 
@@ -192,19 +207,19 @@ Cada check descubierto debe tener esta forma:
 
 Timeouts por defecto:
 
-| Check | Timeout |
-| --- | ---: |
-| `install` | 900 s |
-| `dependency-tree` | 300 s |
-| `typecheck` | 600 s |
-| `lint` | 600 s |
-| `unit-test` | 900 s |
-| `build` | 1200 s |
-| `e2e` | 1800 s |
+| Check             | Timeout |
+| ----------------- | ------: |
+| `install`         |   900 s |
+| `dependency-tree` |   300 s |
+| `typecheck`       |   600 s |
+| `lint`            |   600 s |
+| `unit-test`       |   900 s |
+| `build`           |  1200 s |
+| `e2e`             |  1800 s |
 
 No aceptar timeouts desde el agente o la línea de comandos. Las constantes viven en `Migration.Project.psm1` y solo cambian mediante código versionado.
 
-## 6. Descubrimiento exacto de checks
+## 7. Descubrimiento exacto de checks
 
 Orden fijo:
 
@@ -292,7 +307,7 @@ cy:run
 
 Si no existe, `not-configured`. No buscar Playwright ni crear un servidor.
 
-## 7. Runner normalizado
+## 8. Runner normalizado
 
 Añadir a `Migration.Project.psm1`:
 
@@ -353,7 +368,7 @@ not-configured
 
 No usar `skipped` en esta fase. Si un check anterior falla, `Invoke-ProjectCheckSet` deja de ejecutar y devuelve los checks restantes como no iniciados dentro del resultado en memoria, pero no los persiste como si hubieran sido evaluados.
 
-## 8. Baseline
+## 9. Baseline
 
 Añadir a `Migration.Pipeline.psm1`:
 
@@ -380,15 +395,15 @@ Orden:
 
 Clasificación:
 
-| Caso | Resultado de baseline | Estado futuro del run |
-| --- | --- | --- |
-| Check configurado devuelve 0 | Continúa | `running` |
-| Check `not-configured` | Continúa | `running` |
-| Check declarado `blocked` | Se detiene | `blocked` |
-| Check configurado devuelve no cero | Se detiene | `blocked` |
-| Timeout | Se detiene | `blocked` |
-| No se puede iniciar proceso | Se detiene | `failed` |
-| No se puede escribir log/evento | Se detiene | `failed` |
+| Caso                               | Resultado de baseline | Estado futuro del run |
+| ---------------------------------- | --------------------- | --------------------- |
+| Check configurado devuelve 0       | Continúa              | `running`             |
+| Check `not-configured`             | Continúa              | `running`             |
+| Check declarado `blocked`          | Se detiene            | `blocked`             |
+| Check configurado devuelve no cero | Se detiene            | `blocked`             |
+| Timeout                            | Se detiene            | `blocked`             |
+| No se puede iniciar proceso        | Se detiene            | `failed`              |
+| No se puede escribir log/evento    | Se detiene            | `failed`              |
 
 Un fallo de baseline debe incluir este diagnóstico:
 
@@ -404,7 +419,7 @@ Un fallo de baseline debe incluir este diagnóstico:
 }
 ```
 
-## 9. Seguridad y determinismo
+## 10. Seguridad y determinismo
 
 - Rechazar cualquier check cuyo `cwd` no sea exactamente la raíz normalizada.
 - Rechazar ejecutables con rutas procedentes de `package.json`.
@@ -415,7 +430,7 @@ Un fallo de baseline debe incluir este diagnóstico:
 - Limitar los resúmenes de stderr almacenados en state; los logs completos permanecen en disco.
 - No registrar variables de entorno, tokens, `.npmrc` ni argumentos potencialmente secretos.
 
-## 10. Tests obligatorios
+## 11. Tests obligatorios
 
 ### Unitarios de Project
 
@@ -459,7 +474,7 @@ install -> dependency-tree -> typecheck -> lint -> unit-test -> build -> e2e
 
 Los checks `not-configured` deben aparecer en la posición correspondiente sin ejecutar proceso.
 
-## 11. Checklist de salida
+## 12. Checklist de salida
 
 - [ ] Angular actual procede del lockfile y no solo del rango declarado.
 - [ ] Git diferencia raíz incorrecta, detached HEAD, working tree sucio e identidad ausente.

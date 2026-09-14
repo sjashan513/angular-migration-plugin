@@ -36,6 +36,7 @@ exit 1
   "name": "baseline-skip-fixture",
   "version": "1.0.0",
   "scripts": {
+        "test:unit": "unit-test",
     "lint": "lint",
     "build": "build"
   }
@@ -106,6 +107,9 @@ exit 1
     try {
         Write-MigrationRunState -ProjectRoot $root -RunId $runId -State $state
         Write-MigrationRunManifest -ProjectRoot $root -RunId $runId -Manifest $manifest
+        $preflight = Invoke-MigrationSkipCheck -ProjectRoot $root -RunId $runId -CheckId 'unit-test' -Reason 'Unit tests are not part of this repository baseline.' -Confirmed
+        if (-not $preflight.ok -or $preflight.data.source -cne 'preflight' -or $preflight.data.nextAction -cne 'run') { throw 'Preflight skip approval was not accepted' }
+        if (-not (Test-Path -LiteralPath (Join-Path $root '.angular-migration/active.lock') -PathType Leaf)) { throw 'Preflight approval did not retain ownership' }
     }
     finally { Remove-ActiveRunLock -ProjectRoot $root -RunId $runId }
 
@@ -114,7 +118,7 @@ exit 1
     if ($first.status -ne 'blocked' -or $first.error.code -ne 'baseline_check_failed' -or $first.error.details.checkId -ne 'lint') { throw 'Lint baseline did not produce the expected blocked envelope' }
     if (Test-Path -LiteralPath (Join-Path $root '.angular-migration/active.lock')) { throw 'Blocked baseline retained the active lock' }
     $blockedState = Read-MigrationRunState -ProjectRoot $root -RunId $runId
-    if ($blockedState.status -ne 'blocked' -or $blockedState.stage -ne 'baseline' -or @($blockedState.skippedChecks).Count -ne 0) { throw 'Blocked state was not persisted before approval' }
+    if ($blockedState.status -ne 'blocked' -or $blockedState.stage -ne 'baseline' -or @($blockedState.skippedChecks).Count -ne 1 -or $blockedState.skippedChecks[0].checkId -cne 'unit-test' -or $blockedState.skippedChecks[0].diagnostic.code -cne 'preflight_skip_approved') { throw 'Preflight skip was not persisted before the baseline failure' }
 
     $unchangedState = (Get-Content -LiteralPath $paths.state -Raw)
     $rejected = $false
@@ -158,7 +162,8 @@ exit 1
     if ($resumedState.status -ne 'blocked' -or $resumedState.stage -ne 'resolve' -or
         'baseline' -notin @($resumedState.completedOperations) -or $lintRuns -ne 1 -or $buildRuns -ne 1 -or
         @($events | Where-Object type -ceq 'skip-accepted').Count -ne 1 -or
-        @($events | Where-Object type -ceq 'check-skipped').Count -ne 1) { throw 'Approved skip did not resume baseline deterministically' }
+        @($events | Where-Object type -ceq 'skip-preapproved').Count -ne 1 -or
+        @($events | Where-Object type -ceq 'check-skipped').Count -ne 2) { throw 'Approved skip did not resume baseline deterministically' }
     Write-Host 'PASS same run skips lint, executes the next check and records audit events'
 }
 finally {

@@ -91,6 +91,12 @@ function Invoke-InspectMigration {
     }
 }
 
+function Invoke-MigrationPreflight {
+    param([Parameter(Mandatory = $true)][string]$ProjectRoot)
+
+    return Invoke-InspectMigration -ProjectRoot $ProjectRoot
+}
+
 function Invoke-StartMigration {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
@@ -466,14 +472,19 @@ function Invoke-MigrationSkipCheck {
 
     $root = Resolve-MigrationRoot -Path $ProjectRoot
     $state = Read-MigrationRunState -ProjectRoot $root -RunId $RunId
-    if ($state.status -cne 'blocked' -or $state.stage -cne 'baseline' -or
-        -not $state.lastDiagnostic -or $state.lastDiagnostic.code -cne 'baseline_check_failed') {
-        Throw-PipelineError -Code 'skip_context_unavailable' -Message 'skip-check requires the current run to be blocked by a baseline check.' -Status blocked
+    $isPreflight = $state.status -ceq 'running' -and $state.stage -ceq 'baseline'
+    $isRecovery = $state.status -ceq 'blocked' -and $state.stage -ceq 'baseline' -and
+        $state.lastDiagnostic -and $state.lastDiagnostic.code -ceq 'baseline_check_failed'
+    if (-not $isPreflight -and -not $isRecovery) {
+        Throw-PipelineError -Code 'skip_context_unavailable' -Message 'skip-check requires a running baseline preflight or a blocked baseline check.' -Status blocked
     }
-    $details = if ($state.lastDiagnostic.PSObject.Properties['details']) { $state.lastDiagnostic.details } else { $null }
-    $failedCheckId = if ($details -and $details.PSObject.Properties['checkId']) { [string]$details.checkId } else { $null }
-    if ($failedCheckId -cne $CheckId) {
-        Throw-PipelineError -Code 'skip_check_mismatch' -Message 'The requested skip does not match the currently failed baseline check.' -Status blocked -Details ([PSCustomObject]@{ requestedCheckId = $CheckId; failedCheckId = $failedCheckId })
+    if ($isPreflight) { Assert-ActiveRunOwnership -ProjectRoot $root -RunId $RunId }
+    if ($isRecovery) {
+        $details = if ($state.lastDiagnostic.PSObject.Properties['details']) { $state.lastDiagnostic.details } else { $null }
+        $failedCheckId = if ($details -and $details.PSObject.Properties['checkId']) { [string]$details.checkId } else { $null }
+        if ($failedCheckId -cne $CheckId) {
+            Throw-PipelineError -Code 'skip_check_mismatch' -Message 'The requested skip does not match the currently failed baseline check.' -Status blocked -Details ([PSCustomObject]@{ requestedCheckId = $CheckId; failedCheckId = $failedCheckId })
+        }
     }
     $paths = Get-MigrationRunPaths -ProjectRoot $root -RunId $RunId
     $manifest = Read-MigrationJson -Path $paths.manifest -Required
@@ -492,17 +503,26 @@ function Invoke-MigrationSkipCheck {
     $lockCreated = $false
     $handoffLock = $false
     try {
-        New-ActiveRunLock -ProjectRoot $root -RunId $RunId
-        $lockCreated = $true
+        if ($isPreflight) {
+            Assert-ActiveRunOwnership -ProjectRoot $root -RunId $RunId
+        }
+        else {
+            New-ActiveRunLock -ProjectRoot $root -RunId $RunId
+            $lockCreated = $true
+        }
         $state = Read-MigrationRunState -ProjectRoot $root -RunId $RunId
-        if ($state.status -cne 'blocked' -or $state.stage -cne 'baseline' -or
-            -not $state.lastDiagnostic -or $state.lastDiagnostic.code -cne 'baseline_check_failed') {
+        $currentPreflight = $state.status -ceq 'running' -and $state.stage -ceq 'baseline'
+        $currentRecovery = $state.status -ceq 'blocked' -and $state.stage -ceq 'baseline' -and
+            $state.lastDiagnostic -and $state.lastDiagnostic.code -ceq 'baseline_check_failed'
+        if (($isPreflight -and -not $currentPreflight) -or ($isRecovery -and -not $currentRecovery)) {
             Throw-PipelineError -Code 'state_revision_conflict' -Message 'Migration state changed before skip-check was accepted.' -Status blocked
         }
-        $details = if ($state.lastDiagnostic.PSObject.Properties['details']) { $state.lastDiagnostic.details } else { $null }
-        $failedCheckId = if ($details -and $details.PSObject.Properties['checkId']) { [string]$details.checkId } else { $null }
-        if ($failedCheckId -cne $CheckId) {
-            Throw-PipelineError -Code 'skip_check_mismatch' -Message 'The requested skip no longer matches the failed baseline check.' -Status blocked
+        if ($isRecovery) {
+            $details = if ($state.lastDiagnostic.PSObject.Properties['details']) { $state.lastDiagnostic.details } else { $null }
+            $failedCheckId = if ($details -and $details.PSObject.Properties['checkId']) { [string]$details.checkId } else { $null }
+            if ($failedCheckId -cne $CheckId) {
+                Throw-PipelineError -Code 'skip_check_mismatch' -Message 'The requested skip no longer matches the failed baseline check.' -Status blocked
+            }
         }
         $existing = Get-BaselineSkipRecord -State $state -CheckId $CheckId
         if ($existing -and $existing.reason -cne $Reason.Trim()) {
@@ -517,17 +537,26 @@ function Invoke-MigrationSkipCheck {
                 approvedAt = Get-MigrationUtcNow
                 confirmed  = $true
             }
+            if ($isPreflight) {
+                $skip.diagnostic = [PSCustomObject]@{
+                    code    = 'preflight_skip_approved'
+                    message = "Baseline check was explicitly skipped during preflight: $CheckId"
+                    details = [PSCustomObject]@{ checkId = $CheckId; source = 'preflight'; status = $manifestCheck[0].status }
+                }
+            }
             $state.skippedChecks = @($state.skippedChecks) + @($skip)
             Write-MigrationRunState -ProjectRoot $root -RunId $RunId -State $state
         }
-        $state = Move-MigrationState -ProjectRoot $root -RunId $RunId -ExpectedStatus 'blocked' -ExpectedStage 'baseline' -ExpectedRevision $state.stageRevision -NewStatus 'running' -NewStage 'baseline'
+        if ($isRecovery) {
+            $state = Move-MigrationState -ProjectRoot $root -RunId $RunId -ExpectedStatus 'blocked' -ExpectedStage 'baseline' -ExpectedRevision $state.stageRevision -NewStatus 'running' -NewStage 'baseline'
+        }
         $accepted = Get-BaselineSkipRecord -State $state -CheckId $CheckId
-        Add-MigrationEvent -ProjectRoot $root -RunId $RunId -Type 'skip-accepted' -Stage 'baseline' -Data ([PSCustomObject]@{ checkId = $CheckId; reason = $accepted.reason; diagnostic = $accepted.diagnostic; confirmed = $accepted.confirmed })
-        $handoffLock = $true
+        Add-MigrationEvent -ProjectRoot $root -RunId $RunId -Type $(if ($isPreflight) { 'skip-preapproved' } else { 'skip-accepted' }) -Stage 'baseline' -Data ([PSCustomObject]@{ checkId = $CheckId; reason = $accepted.reason; diagnostic = $accepted.diagnostic; confirmed = $accepted.confirmed; source = if ($isPreflight) { 'preflight' } else { 'baseline-failure' } })
+        $handoffLock = $isRecovery
         return [PSCustomObject]@{
             ok     = $true
             status = 'running'
-            data   = [PSCustomObject]@{ runId = $RunId; stage = 'baseline'; checkId = $CheckId; reason = $accepted.reason; criticalChecks = @($policy.critical); nextAction = 'run' }
+            data   = [PSCustomObject]@{ runId = $RunId; stage = 'baseline'; checkId = $CheckId; reason = $accepted.reason; source = if ($isPreflight) { 'preflight' } else { 'baseline-failure' }; criticalChecks = @($policy.critical); nextAction = 'run' }
             error  = $null
         }
     }
@@ -2925,6 +2954,7 @@ Export-ModuleMember -Function @(
     'Invoke-MigrationBaseline',
     'Invoke-MigrationResolution',
     'Invoke-InspectMigration',
+    'Invoke-MigrationPreflight',
     'Invoke-StartMigration',
     'Invoke-MigrationStatus',
     'Invoke-MigrationBaselineDependencyContext',

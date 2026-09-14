@@ -113,7 +113,7 @@ $pipelineText = Get-Content -LiteralPath (Join-Path $repositoryRoot 'scripts/mod
 $moduleNames = @('Migration.Core', 'Migration.State', 'Migration.Project', 'Migration.Dependencies', 'Migration.Pipeline')
 foreach ($moduleName in $moduleNames) { Assert-Check "module exists: $moduleName" (Test-Path -LiteralPath (Join-Path $repositoryRoot ('scripts/modules/' + $moduleName + '.psm1')) -PathType Leaf) }
 Assert-Check 'facade loads the five module graph' (@($moduleNames | Where-Object { ($facadeText + $pipelineText) -match [regex]::Escape($_) }).Count -eq 5)
-$publicCommands = @('inspect', 'start', 'run', 'status', 'baseline-dependency-context', 'approve-baseline-dependencies', 'skip-check', 'repair-context', 'record-repair', 'documentation-context', 'record-documentation')
+$publicCommands = @('inspect', 'preflight', 'start', 'run', 'status', 'baseline-dependency-context', 'approve-baseline-dependencies', 'skip-check', 'repair-context', 'record-repair', 'documentation-context', 'record-documentation')
 foreach ($publicCommand in $publicCommands) { Assert-Check "facade exposes command: $publicCommand" ($facadeText -match ("'" + [regex]::Escape($publicCommand) + "'\s*\{")) }
 Assert-Check 'JavaScript inventory is under scripts/js' ((Test-Path -LiteralPath (Join-Path $repositoryRoot 'scripts/js/inspect-lockfile.js') -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $repositoryRoot 'scripts/js/render-package-json.js') -PathType Leaf) -and -not (Test-Path -LiteralPath (Join-Path $repositoryRoot 'scripts/helpers/render-package-json.js')))
 $legacyVisualFixtureFiles = @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'tests/vision-fixture') -File -Recurse -ErrorAction SilentlyContinue)
@@ -231,6 +231,8 @@ try {
         Write-Host '1. inspect ready fixture' -ForegroundColor Cyan
         $inspection = Invoke-Facade -ProjectRoot $tmp -Arguments @('-Command', 'inspect')
         Assert-Check 'inspect is ready' ($inspection.ok -eq $true -and $inspection.status -eq 'ready')
+        $preflight = Invoke-Facade -ProjectRoot $tmp -Arguments @('-Command', 'preflight')
+        Assert-Check 'preflight is read-only and exposes file/check findings' ($preflight.ok -eq $true -and $preflight.data.preflight.requiredFiles -and ($preflight.data.preflight.optionalChecks | Where-Object id -eq 'lint').canSkip -eq $true)
         Assert-Check 'detects Angular major 7' ($inspection.data.angular.currentMajor -eq 7)
         Assert-Check 'inspect does not create migration state' (-not (Test-Path (Join-Path $tmp '.angular-migration')))
         Assert-Check 'toolchain uses fixtures' ($inspection.data.node.node.executable -eq (Join-Path $toolDirectory 'node.exe') -and $inspection.data.node.npm.executable -eq (Join-Path $toolDirectory 'npm.cmd'))

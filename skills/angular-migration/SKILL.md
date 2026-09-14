@@ -23,19 +23,22 @@ y no ejecuta gates por su cuenta.
 
 ## Secuencia
 
-1. Ejecuta `inspect` y muestra sus bloqueos sin corregirlos automaticamente:
+1. Ejecuta `preflight` y muestra los archivos detectados o ausentes, los checks
+   criticos y los checks opcionales sin corregirlos automaticamente:
 
    ```powershell
-   powershell -NoProfile -File <plugin-root>\scripts\angular-migration.ps1 inspect -ProjectRoot <ProjectRoot>
+   powershell -NoProfile -File <plugin-root>\scripts\angular-migration.ps1 preflight -ProjectRoot <ProjectRoot>
    ```
 
-2. Si `inspect` no devuelve `status=ready`, termina con `blocked` usando los
+   `inspect` conserva el mismo contrato como alias de compatibilidad.
+
+2. Si `preflight` no devuelve `status=ready`, termina con `blocked` usando los
    `blockers` del envelope. No invoques agentes para resolver precondiciones.
 
 3. Pide confirmacion explicita antes de `start`. Explica que el run crea la rama de
    migracion, copia el runtime del hook y crea commits controlados.
 
-4. Tras confirmar, calcula la major objetivo solo desde `inspect.data.angular.currentMajor`
+4. Tras confirmar, calcula la major objetivo solo desde `preflight.data.angular.currentMajor`
    y exige que sea exactamente una major posterior. Ejecuta:
 
    ```powershell
@@ -50,6 +53,17 @@ y no ejecuta gates por su cuenta.
    supervision en cada etapa. Solo me detendre si el controlador detecta un bloqueo,
    un fallo o necesita una reparacion tecnica acotada." No pidas otra confirmacion para
    cada stage.
+
+   Antes de ejecutar `run`, presenta los elementos de `preflight.data.preflight.optionalChecks`.
+   Si el usuario quiere omitir alguno que este configurado, pide confirmacion explicita
+   para cada razon y ejecuta `skip-check` con el mismo `runId`:
+
+   ```powershell
+   powershell -NoProfile -File <plugin-root>\scripts\angular-migration.ps1 skip-check -RunId <run-id> -CheckId <check-id> -Reason <reason> -Confirmed -ProjectRoot <ProjectRoot>
+   ```
+
+   `install`, `dependency-tree` y `build` no son elegibles. Si no se solicita una
+   omision, continua directamente con `run`.
 
 5. Ejecuta `run` con el `runId` conservado como un unico proceso de fachada que pueda
    mantenerse en curso y consulta `status` mientras avanza. No invoques un segundo
@@ -106,10 +120,10 @@ y no ejecuta gates por su cuenta.
    powershell -NoProfile -File <plugin-root>\scripts\angular-migration.ps1 skip-check -RunId <run-id> -CheckId <check-id> -Reason <reason> -Confirmed -ProjectRoot <ProjectRoot>
    ```
 
-   `skip-check` solo acepta el fallo baseline actual, conserva el diagnostico original,
-   registra la razon y la confirmacion en `state.json` y `events.jsonl`, y la conserva
-   en el resultado tecnico cuando existe. Devuelve el mismo `runId` en `status=running`.
-   No edites state ni ejecutes el check manualmente.
+   `skip-check` acepta tanto una aprobacion durante `running/baseline` como el fallo
+   baseline actual. Conserva la razon y el diagnostico en `state.json` y `events.jsonl`,
+   y la conserva en el resultado tecnico cuando existe. Devuelve el mismo `runId` en
+   `status=running`. No edites state ni ejecutes el check manualmente.
    Si la operacion es aceptada, vuelve a emitir el mensaje de trabajo autonomo y
    reanuda `run` con ese mismo `runId`. El check omitido aparece como `status=skipped`;
    los tres gates criticos siguen siendo obligatorios.

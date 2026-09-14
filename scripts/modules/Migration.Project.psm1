@@ -437,6 +437,92 @@ function Get-AngularPackageVersions {
     return $angularPackages
 }
 
+function Test-ProjectRelativeFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$RelativePath
+    )
+
+    $normalized = $RelativePath -replace '\\', '/'
+    if ([string]::IsNullOrWhiteSpace($normalized) -or $normalized -match '^(?:[A-Za-z]:/|/)' -or $normalized -match '(^|/)\.\.(?:/|$)') { return $false }
+    return Test-Path -LiteralPath (Join-Path $ProjectRoot ($normalized -replace '/', [IO.Path]::DirectorySeparatorChar)) -PathType Leaf
+}
+
+function New-ProjectPreflightFileFinding {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$Id,
+        [Parameter(Mandatory = $true)][string]$Purpose,
+        [Parameter(Mandatory = $true)][string[]]$Candidates,
+        [Parameter(Mandatory = $true)][bool]$Required,
+        [string]$CheckId
+    )
+
+    $detected = @($Candidates | Where-Object { Test-ProjectRelativeFile -ProjectRoot $ProjectRoot -RelativePath $_ })
+    return [PSCustomObject][ordered]@{
+        id         = $Id
+        purpose    = $Purpose
+        checkId    = if ($CheckId) { $CheckId } else { $null }
+        candidates = @($Candidates)
+        detected   = @($detected)
+        required   = $Required
+        present    = $detected.Count -gt 0
+        status     = if ($detected.Count -gt 0) { 'present' } elseif ($Required) { 'missing' } else { 'not-found' }
+    }
+}
+
+function Get-ProjectPreflightFiles {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)]$AngularProjects,
+        [Parameter(Mandatory = $true)]$Checks,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$Configurations
+    )
+
+    $checkById = @{}
+    foreach ($check in @($Checks)) { $checkById[[string]$check.id] = $check }
+    $findings = @()
+    $findings += New-ProjectPreflightFileFinding -ProjectRoot $ProjectRoot -Id 'package-json' -Purpose 'Project manifest' -Candidates @('package.json') -Required $true
+    $findings += New-ProjectPreflightFileFinding -ProjectRoot $ProjectRoot -Id 'angular-json' -Purpose 'Angular workspace configuration' -Candidates @('angular.json') -Required $true
+    $findings += New-ProjectPreflightFileFinding -ProjectRoot $ProjectRoot -Id 'package-lock' -Purpose 'npm lockfile' -Candidates @('package-lock.json') -Required $true
+
+    $typecheckConfigured = $checkById.ContainsKey('typecheck') -and $checkById['typecheck'].status -eq 'configured'
+    $findings += New-ProjectPreflightFileFinding -ProjectRoot $ProjectRoot -Id 'typescript-config' -Purpose 'TypeScript checking' -Candidates @('tsconfig.json') -Required $typecheckConfigured -CheckId 'typecheck'
+
+    $hasApplication = $false
+    foreach ($project in @($AngularProjects.PSObject.Properties)) {
+        if ((Get-ProjectProperty -Object $project.Value -Name 'projectType') -eq 'application') { $hasApplication = $true }
+    }
+    $buildConfigured = $checkById.ContainsKey('build') -and $checkById['build'].status -eq 'configured'
+    if ($hasApplication) {
+        $findings += New-ProjectPreflightFileFinding -ProjectRoot $ProjectRoot -Id 'application-typescript-config' -Purpose 'Angular application build configuration' -Candidates @('src/tsconfig.app.json', 'tsconfig.app.json') -Required $buildConfigured -CheckId 'build'
+    }
+
+    $unitConfigured = $checkById.ContainsKey('unit-test') -and $checkById['unit-test'].status -eq 'configured'
+    $findings += New-ProjectPreflightFileFinding -ProjectRoot $ProjectRoot -Id 'unit-test-typescript-config' -Purpose 'Unit-test TypeScript configuration' -Candidates @('src/tsconfig.spec.json', 'tsconfig.spec.json') -Required $unitConfigured -CheckId 'unit-test'
+
+    $configurationGroups = @(
+        @{ id = 'lint-configuration'; purpose = 'Lint configuration'; checkId = 'lint'; candidates = @('.eslintrc', '.eslintrc.json', '.eslintrc.js', '.eslintrc.yml', '.eslintrc.yaml', 'eslint.config.js', 'eslint.config.mjs', 'eslint.config.cjs', 'tslint.json') },
+        @{ id = 'unit-test-runner'; purpose = 'Unit-test runner configuration'; checkId = 'unit-test'; candidates = @('karma.conf.js', 'karma.conf.ts', 'jest.config.js', 'jest.config.ts', 'jest.config.json') },
+        @{ id = 'e2e-runner'; purpose = 'End-to-end test runner configuration'; checkId = 'e2e'; candidates = @('cypress.config.js', 'cypress.config.ts', 'cypress.json') }
+    )
+    foreach ($group in $configurationGroups) {
+        $configured = $checkById.ContainsKey($group.checkId) -and $checkById[$group.checkId].status -eq 'configured'
+        $detected = @($Configurations | Where-Object { $_ -in $group.candidates })
+        $findings += [PSCustomObject][ordered]@{
+            id         = $group.id
+            purpose    = $group.purpose
+            checkId    = $group.checkId
+            candidates = @($group.candidates)
+            detected   = @($detected)
+            required   = $configured
+            present    = $detected.Count -gt 0
+            status     = if ($detected.Count -gt 0) { 'present' } elseif ($configured) { 'missing' } else { 'not-found' }
+        }
+    }
+    return @($findings)
+}
+
 function Get-ProjectInspection {
     param([Parameter(Mandatory = $true)][string]$ProjectRoot)
 
@@ -579,6 +665,12 @@ function Get-ProjectInspection {
         }
     }
     $projectName = if ($package -and (Get-ProjectProperty -Object $package -Name 'name')) { [string](Get-ProjectProperty -Object $package -Name 'name') } else { Split-Path -Leaf $root }
+    $preflightFiles = Get-ProjectPreflightFiles -ProjectRoot $root -AngularProjects $(if ($angularProjects) { $angularProjects } else { [PSCustomObject]@{} }) -Checks $checks -Configurations $configurations
+    $preflight = [PSCustomObject]@{
+        requiredFiles = @($preflightFiles)
+        criticalChecks = @($checks | Where-Object { $_.id -in @('install', 'dependency-tree', 'build') } | ForEach-Object { [PSCustomObject]@{ id = $_.id; status = $_.status; blocking = $true; canSkip = $false } })
+        optionalChecks = @($checks | Where-Object { $_.id -in @('typecheck', 'lint', 'unit-test', 'e2e') } | ForEach-Object { [PSCustomObject]@{ id = $_.id; status = $_.status; blocking = $true; canSkip = $true; reason = $_.reason } })
+    }
 
     return [PSCustomObject]@{
         schemaVersion   = Get-MigrationSchemaVersion
@@ -611,6 +703,7 @@ function Get-ProjectInspection {
         git             = $git
         node            = $node
         checks          = $checks
+        preflight       = $preflight
     }
 }
 

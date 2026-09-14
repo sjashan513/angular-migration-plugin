@@ -30,6 +30,13 @@ try {
     if (($checks.timeoutSeconds -join ',') -ne '900,300,600,600,900,1200,1800') { throw 'Invalid check timeouts' }
     if ($checks[2].arguments[1] -ne 'typecheck' -or $checks[4].arguments[1] -ne 'test:unit' -or $checks[6].arguments[1] -ne 'test:e2e') { throw 'Script priority mismatch' }
     if ($checks[3].status -ne 'not-configured' -or $checks[5].displayCommand -ne 'npm run build' -or $checks[5].phase -ne 'baseline' -or -not $checks[5].blocking) { throw 'Invalid structured check contract' }
+    $preflightFiles = $inspection.preflight.requiredFiles
+    if (($preflightFiles | Where-Object id -eq 'typescript-config').status -ne 'missing' -or
+        ($preflightFiles | Where-Object id -eq 'application-typescript-config').status -ne 'missing' -or
+        ($preflightFiles | Where-Object id -eq 'unit-test-typescript-config').status -ne 'missing' -or
+        ($preflightFiles | Where-Object id -eq 'lint-configuration').status -ne 'not-found') { throw 'Preflight did not detect missing check files' }
+    if (($inspection.preflight.optionalChecks | Where-Object id -eq 'unit-test').canSkip -ne $true -or
+        ($inspection.preflight.criticalChecks | Where-Object id -eq 'build').canSkip -ne $false) { throw 'Preflight check policy is incomplete' }
     '{"dependencies":{"@angular/core":"^8.0.0"}}' | Set-Content (Join-Path $root 'package.json')
     $inspection = Get-ProjectInspection -ProjectRoot $root
     if ($inspection.blockers.code -notcontains 'angular_core_major_mismatch') { throw 'Major mismatch was not blocked' }

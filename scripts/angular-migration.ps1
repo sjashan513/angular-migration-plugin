@@ -55,6 +55,7 @@ try {
 
     $result = switch ($commandName) {
         'inspect' { Invoke-InspectMigration -ProjectRoot $projectRoot }
+        'preflight' { Invoke-MigrationPreflight -ProjectRoot $projectRoot }
         'start' { Invoke-StartMigration -ProjectRoot $projectRoot -TargetMajor $TargetMajor }
         'status' { Invoke-MigrationStatus -ProjectRoot $projectRoot -RunId $RunId }
         'run' { Invoke-MigrationRun -ProjectRoot $projectRoot -RunId $RunId }
@@ -66,7 +67,7 @@ try {
         'documentation-context' { Invoke-DocumentationContext -ProjectRoot $projectRoot -RunId $RunId -Mode $Mode }
         'record-documentation' { Invoke-RecordDocumentation -ProjectRoot $projectRoot -RunId $RunId -Mode $Mode -InputFile $InputFile }
         default {
-            Throw-MigrationError -Code 'unsupported_command' -Message "Unsupported v5 command: $Command" -Status blocked -Details ([PSCustomObject]@{ supported = @('inspect', 'start', 'status', 'run', 'baseline-dependency-context', 'approve-baseline-dependencies', 'skip-check', 'repair-context', 'record-repair', 'documentation-context', 'record-documentation') })
+            Throw-MigrationError -Code 'unsupported_command' -Message "Unsupported v5 command: $Command" -Status blocked -Details ([PSCustomObject]@{ supported = @('inspect', 'preflight', 'start', 'status', 'baseline-dependency-context', 'approve-baseline-dependencies', 'skip-check', 'run', 'repair-context', 'record-repair', 'documentation-context', 'record-documentation') })
         }
     }
 

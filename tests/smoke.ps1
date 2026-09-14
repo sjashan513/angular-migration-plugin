@@ -70,20 +70,22 @@ Assert-Check 'plugin and marketplace metadata parse' ($plugin.name -and $marketp
 Assert-Check 'plugin and marketplace identity matches' ($marketplacePlugin[0].name -ceq $plugin.name -and $marketplacePlugin[0].version -ceq $plugin.version -and $marketplace.metadata.version -ceq $plugin.version -and $marketplacePlugin[0].description -ceq $plugin.description)
 Assert-Check 'marketplace author and license match plugin' ($marketplacePlugin[0].author.name -ceq $plugin.author.name -and $marketplacePlugin[0].author.url -ceq $plugin.author.url -and $marketplacePlugin[0].license -ceq $plugin.license -and $marketplacePlugin[0].source -ceq '.')
 
-$declaredPaths = @($plugin.agents) + @($plugin.skills) + @($plugin.hooks)
-foreach ($declaredPath in $declaredPaths) {
-    Assert-Check "declared path exists: $declaredPath" (Test-Path -LiteralPath (Join-Path $repositoryRoot $declaredPath) -PathType Leaf)
+$declaredDirectories = @($plugin.agents) + @($plugin.skills)
+foreach ($declaredPath in $declaredDirectories) {
+    Assert-Check "declared directory exists: $declaredPath" (Test-Path -LiteralPath (Join-Path $repositoryRoot $declaredPath) -PathType Container)
 }
-$agentPaths = @($plugin.agents)
-Assert-Check 'plugin declares exactly two agents' ($agentPaths.Count -eq 2 -and (@($agentPaths | Sort-Object) -join '|') -ceq 'agents/migration-documenter.agent.md|agents/migration-implementer.agent.md')
+Assert-Check "declared path exists: $($plugin.hooks)" (Test-Path -LiteralPath (Join-Path $repositoryRoot $plugin.hooks) -PathType Leaf)
+$agentFiles = @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot $plugin.agents) -Filter '*.agent.md' -File | Sort-Object Name)
+Assert-Check 'plugin declares exactly two agents' ($agentFiles.Count -eq 2 -and (@($agentFiles.Name | Sort-Object) -join '|') -ceq 'migration-documenter.agent.md|migration-implementer.agent.md')
 $agentTexts = @{}
-foreach ($agentPath in $agentPaths) { $agentTexts[$agentPath] = Get-Content -LiteralPath (Join-Path $repositoryRoot $agentPath) -Raw }
-$implementerText = $agentTexts['agents/migration-implementer.agent.md']
-$documenterText = $agentTexts['agents/migration-documenter.agent.md']
-foreach ($frontMatterPath in @($agentPaths + @($plugin.skills))) {
-    $frontMatterText = Get-Content -LiteralPath (Join-Path $repositoryRoot $frontMatterPath) -Raw
+foreach ($agentFile in $agentFiles) { $agentTexts[$agentFile.Name] = Get-Content -LiteralPath $agentFile.FullName -Raw }
+$implementerText = $agentTexts['migration-implementer.agent.md']
+$documenterText = $agentTexts['migration-documenter.agent.md']
+$skillFiles = @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot $plugin.skills) -Filter 'SKILL.md' -File -Recurse)
+foreach ($frontMatterFile in @($agentFiles + $skillFiles)) {
+    $frontMatterText = Get-Content -LiteralPath $frontMatterFile.FullName -Raw
     $frontMatter = [regex]::Match($frontMatterText, '(?s)^---\r?\n(.*?)\r?\n---(?:\r?\n|$)')
-    Assert-Check "valid frontmatter: $frontMatterPath" ($frontMatter.Success -and $frontMatter.Groups[1].Value -match '(?im)^name:\s*\S' -and $frontMatter.Groups[1].Value -match '(?im)^description:\s*\S')
+    Assert-Check "valid frontmatter: $($frontMatterFile.FullName.Substring($repositoryRoot.Length + 1))" ($frontMatter.Success -and $frontMatter.Groups[1].Value -match '(?im)^name:\s*\S' -and $frontMatter.Groups[1].Value -match '(?im)^description:\s*\S')
 }
 Assert-Check 'implementer has only the four permitted tools' ($implementerText -match '(?im)^tools:\s*\[read, search, edit, execute\]\s*$')
 Assert-Check 'documenter has no execute tool' ($documenterText -match '(?im)^tools:\s*\[read, search, web, edit\]\s*$' -and $documenterText -notmatch '(?im)^tools:.*execute')

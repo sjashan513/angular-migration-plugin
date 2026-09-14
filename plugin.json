@@ -1,6 +1,6 @@
 {
   "name": "angular-migration",
-  "version": "5.0.0",
+  "version": "5.0.1",
   "description": "Auditable Angular migration controller for sequential major upgrades on clean npm projects.",
   "author": {
     "name": "sjashan513",
@@ -8,11 +8,8 @@
   },
   "repository": "https://github.com/sjashan513/angular-migration-plugin",
   "license": "MIT",
-  "agents": [
-    "agents/migration-implementer.agent.md",
-    "agents/migration-documenter.agent.md"
-  ],
-  "skills": ["skills/angular-migration/SKILL.md"],
+  "agents": "agents/",
+  "skills": "skills/",
   "hooks": "hooks.json",
   "keywords": [
     "angular",

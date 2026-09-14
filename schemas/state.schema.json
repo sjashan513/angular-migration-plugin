@@ -25,6 +25,7 @@
     "manifestSha256",
     "activeOperation",
     "completedOperations",
+    "skippedChecks",
     "lastDiagnostic",
     "repair",
     "repairTotal",
@@ -204,6 +205,29 @@
           "validate",
           "technical-result"
         ]
+      }
+    },
+    "skippedChecks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "stage",
+          "checkId",
+          "reason",
+          "diagnostic",
+          "approvedAt",
+          "confirmed"
+        ],
+        "properties": {
+          "stage": { "const": "baseline" },
+          "checkId": { "enum": ["typecheck", "lint", "unit-test", "e2e"] },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 2000 },
+          "diagnostic": { "$ref": "#/properties/lastDiagnostic" },
+          "approvedAt": { "type": "string", "format": "date-time" },
+          "confirmed": { "const": true }
+        },
+        "additionalProperties": false
       }
     },
     "lastDiagnostic": {

@@ -54,6 +54,38 @@
       "type": "array",
       "items": { "$ref": "check-result.schema.json" }
     },
+    "skippedChecks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "stage",
+          "checkId",
+          "reason",
+          "diagnostic",
+          "approvedAt",
+          "confirmed"
+        ],
+        "properties": {
+          "stage": { "const": "baseline" },
+          "checkId": { "enum": ["typecheck", "lint", "unit-test", "e2e"] },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 2000 },
+          "diagnostic": {
+            "type": "object",
+            "required": ["code", "message", "details"],
+            "properties": {
+              "code": { "type": "string", "minLength": 1 },
+              "message": { "type": "string", "minLength": 1 },
+              "details": {}
+            },
+            "additionalProperties": false
+          },
+          "approvedAt": { "type": "string", "format": "date-time" },
+          "confirmed": { "const": true }
+        },
+        "additionalProperties": false
+      }
+    },
     "repairs": {
       "type": "array",
       "items": {

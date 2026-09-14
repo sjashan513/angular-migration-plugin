@@ -22,6 +22,7 @@ scripts/helpers/render-package-json.js
 tests/unit/StateMachine.Tests.ps1
 tests/unit/PackageManifestWriter.Tests.ps1
 tests/integration/PipelineExecution.Tests.ps1
+tests/integration/BaselineCheckSkip.Tests.ps1
 tests/fixtures/migrations/
 schemas/state.schema.json
 schemas/check-result.schema.json
@@ -96,6 +97,7 @@ function Invoke-MigrationRun {
   "manifestSha256": null,
   "activeOperation": null,
   "completedOperations": [],
+  "skippedChecks": [],
   "lastDiagnostic": null,
   "createdAt": "<utc>",
   "updatedAt": "<utc>"
@@ -158,6 +160,7 @@ Tabla de transiciones técnicas:
 ```powershell
 $script:AllowedTransitions = @{
     'running|baseline'            = @('running|resolve', 'blocked|baseline', 'failed|baseline')
+  'blocked|baseline'            = @('running|baseline')
     'running|resolve'             = @('running|update-angular', 'blocked|resolve', 'failed|resolve')
     'running|update-angular'      = @('running|update-dependencies', 'needs-repair|update-angular', 'blocked|update-angular', 'failed|update-angular')
     'running|update-dependencies' = @('running|install', 'blocked|update-dependencies', 'failed|update-dependencies')
@@ -167,6 +170,13 @@ $script:AllowedTransitions = @{
     'needs-repair|validate'       = @('running|validate', 'blocked|validate', 'failed|validate')
 }
 ```
+
+La transición `blocked|baseline -> running|baseline` solo se alcanza mediante
+`skip-check`. La operación exige confirmación explícita, una razón y que el diagnóstico
+actual corresponda al check solicitado. Solo `typecheck`, `lint`, `unit-test` y `e2e`
+son omisibles; `install`, `dependency-tree` y `build` son gates críticos. La entrada
+persistida contiene etapa, check, razón, diagnóstico original, timestamp y
+confirmación.
 
 Documentación y `completed` se añaden en fase 7.
 
@@ -346,7 +356,10 @@ Fallo configurado o timeout:
 blocked / baseline_check_failed
 ```
 
-Liberar lock porque el proyecto no fue modificado y este run no puede continuar. Para reintentar, el usuario corrige la baseline y crea un run nuevo.
+Liberar lock porque el proyecto no fue modificado. Un check baseline no crítico puede
+reanudar el mismo run mediante `skip-check`; el check no se ejecuta y queda registrado
+como `skipped`. Un fallo de `install`, `dependency-tree` o `build` sigue bloqueando
+hasta corregir la causa.
 
 ## 11. Etapa resolve
 
@@ -544,14 +557,14 @@ Si falla uno:
 
 El failure context no se basa únicamente en texto del modelo. Se construye desde check y configuración del proyecto:
 
-| Check | Rutas editables |
-| --- | --- |
-| `typecheck` | `sourceRoot/**`, tsconfig del proyecto y ficheros referenciados por el diagnóstico dentro de la raíz. |
-| `lint` | `sourceRoot/**` y configuración lint detectada. |
-| `unit-test` | `sourceRoot/**`, tests dentro del proyecto y configuración del runner detectado. |
-| `build` | `sourceRoot/**`, `angular.json`, tsconfig, polyfills, browserslist y ficheros referenciados dentro de la raíz. |
-| `e2e` | Directorio e2e detectado y su configuración; nunca inventar ruta. |
-| `update-angular` | Solo rutas fuente/config referenciadas por el error; package.json y lockfile siempre excluidos. |
+| Check            | Rutas editables                                                                                                |
+| ---------------- | -------------------------------------------------------------------------------------------------------------- |
+| `typecheck`      | `sourceRoot/**`, tsconfig del proyecto y ficheros referenciados por el diagnóstico dentro de la raíz.          |
+| `lint`           | `sourceRoot/**` y configuración lint detectada.                                                                |
+| `unit-test`      | `sourceRoot/**`, tests dentro del proyecto y configuración del runner detectado.                               |
+| `build`          | `sourceRoot/**`, `angular.json`, tsconfig, polyfills, browserslist y ficheros referenciados dentro de la raíz. |
+| `e2e`            | Directorio e2e detectado y su configuración; nunca inventar ruta.                                              |
+| `update-angular` | Solo rutas fuente/config referenciadas por el error; package.json y lockfile siempre excluidos.                |
 
 Exclusiones absolutas para Implementer:
 
@@ -602,15 +615,15 @@ Al entrar en `run`:
 5. comparar eventos y completedOperations;
 6. decidir con esta tabla:
 
-| Situación | Acción |
-| --- | --- |
-| Operación no mutante iniciada sin finish | Repetirla. |
-| Operación mutante tiene checkpoint confirmado | No repetir; limpiar activeOperation y avanzar. |
+| Situación                                             | Acción                                                                                                                        |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Operación no mutante iniciada sin finish              | Repetirla.                                                                                                                    |
+| Operación mutante tiene checkpoint confirmado         | No repetir; limpiar activeOperation y avanzar.                                                                                |
 | Operación mutante interrumpida con working tree sucio | Restaurar checkpoint y borrar solo nuevos untracked inventariados; luego dejar `blocked / interrupted_operation_rolled_back`. |
-| State dice completada pero checkpoint falta | `failed / checkpoint_missing`. |
-| HEAD no coincide con checkpoint | `blocked / git_head_changed`. |
-| Manifest hash no coincide | `failed / manifest_integrity_failed`. |
-| Lock pertenece a otro run | `blocked / run_not_owner`. |
+| State dice completada pero checkpoint falta           | `failed / checkpoint_missing`.                                                                                                |
+| HEAD no coincide con checkpoint                       | `blocked / git_head_changed`.                                                                                                 |
+| Manifest hash no coincide                             | `failed / manifest_integrity_failed`.                                                                                         |
+| Lock pertenece a otro run                             | `blocked / run_not_owner`.                                                                                                    |
 
 No reanudar automáticamente después de un rollback de operación mutante. Una nueva llamada explícita a `run` puede continuar cuando status haya sido revisado y autorizado por el contrato correspondiente.
 
@@ -646,14 +659,14 @@ Después de guardar `resultSha256`, el resultado técnico es inmutable. Fase 7 g
 
 ## 20. Liberación de lock
 
-| Estado | Lock |
-| --- | --- |
-| `running` | Mantener |
-| `needs-repair` | Mantener |
-| `verified` con docs pendientes | Mantener |
-| `completed` | Liberar después de verificar escritura final |
-| `blocked` definitivo | Liberar después de persistir diagnóstico |
-| `failed` definitivo | Liberar después de persistir diagnóstico |
+| Estado                         | Lock                                         |
+| ------------------------------ | -------------------------------------------- |
+| `running`                      | Mantener                                     |
+| `needs-repair`                 | Mantener                                     |
+| `verified` con docs pendientes | Mantener                                     |
+| `completed`                    | Liberar después de verificar escritura final |
+| `blocked` definitivo           | Liberar después de persistir diagnóstico     |
+| `failed` definitivo            | Liberar después de persistir diagnóstico     |
 
 La eliminación comprueba que `active.lock.runId` coincide. Nunca eliminar un lock ajeno.
 
@@ -700,6 +713,8 @@ Cubrir todas las transiciones permitidas y al menos estas denegadas:
 
 - happy path simulado hasta verified;
 - baseline fallida no crea rama;
+- skip baseline requiere confirmación, conserva el diagnóstico y no ejecuta el check;
+- install, dependency-tree y build rechazan skip;
 - resolver bloqueado no modifica proyecto;
 - ng update recibe versiones exactas;
 - no se usa CLI global ni npx;

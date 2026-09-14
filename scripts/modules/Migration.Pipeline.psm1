@@ -58,7 +58,8 @@ function New-StartManifest {
             'lint',
             'unit-test',
             'build',
-            'e2e'
+            'e2e',
+            'skip-check'
         )
         policy               = [ordered]@{
             sequentialMajor       = $true
@@ -198,6 +199,21 @@ function Invoke-MigrationBaseline {
             Throw-MigrationError -Code 'invalid_check_contract' -Message 'Manifest checks differ from current discovery.' -Status blocked
         }
         foreach ($check in $checks) {
+            $skip = if ($check.status -eq 'configured') { Get-BaselineSkipRecord -State $state -CheckId $check.id } else { $null }
+            if ($skip) {
+                $skipDetails = if ($skip.diagnostic.PSObject.Properties['details']) { $skip.diagnostic.details } else { $null }
+                $skippedResult = [PSCustomObject]@{
+                    id = $check.id; status = 'skipped'; exitCode = $null; timedOut = $false
+                    startedAt = $null; finishedAt = $skip.approvedAt; durationMs = 0
+                    stdoutLog = if ($skipDetails -and $skipDetails.PSObject.Properties['stdoutLog']) { $skipDetails.stdoutLog } else { $null }
+                    stderrLog = if ($skipDetails -and $skipDetails.PSObject.Properties['stderrLog']) { $skipDetails.stderrLog } else { $null }
+                    diagnosticSummary = "Explicitly skipped after user confirmation: $($skip.reason)"
+                    executable = $null
+                }
+                $results += $skippedResult
+                Add-MigrationEvent -ProjectRoot $root -RunId $RunId -Type 'check-skipped' -Stage 'baseline' -Data ([PSCustomObject]@{ checkId = $check.id; reason = $skip.reason; diagnostic = $skip.diagnostic; confirmed = $skip.confirmed })
+                continue
+            }
             if ($check.status -eq 'configured') {
                 Add-MigrationEvent -ProjectRoot $root -RunId $RunId -Type 'check-started' -Stage 'baseline' -Data ([PSCustomObject]@{ checkId = $check.id })
             }
@@ -206,7 +222,7 @@ function Invoke-MigrationBaseline {
             if ($check.status -eq 'configured') {
                 Add-MigrationEvent -ProjectRoot $root -RunId $RunId -Type 'check-finished' -Stage 'baseline' -Data $result
             }
-            if ($result.status -notin @('passed', 'not-configured')) {
+            if ($result.status -notin @('passed', 'not-configured', 'skipped')) {
                 return [PSCustomObject]@{
                     status = 'blocked'; checks = @($results); notStarted = @($checks | Select-Object -Skip @($results).Count)
                     diagnostic = [PSCustomObject]@{
@@ -415,6 +431,109 @@ function Invoke-ApproveMigrationBaselineDependencies {
     }
 }
 
+function Get-BaselineSkipRecord {
+    param(
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)][string]$CheckId
+    )
+
+    foreach ($skip in @($State.skippedChecks)) {
+        if ($skip.stage -ceq 'baseline' -and $skip.checkId -ceq $CheckId -and $skip.confirmed -eq $true) {
+            return $skip
+        }
+    }
+    return $null
+}
+
+function Invoke-MigrationSkipCheck {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$RunId,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$CheckId,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Reason,
+        [switch]$Confirmed
+    )
+
+    $policy = Get-MigrationCheckSkipPolicy
+    if ([string]::IsNullOrWhiteSpace($RunId)) { Throw-PipelineError -Code 'run_id_required' -Message '-RunId is required for skip-check.' -Status blocked }
+    if ([string]::IsNullOrWhiteSpace($CheckId)) { Throw-PipelineError -Code 'check_id_required' -Message '-CheckId is required for skip-check.' -Status blocked }
+    if ($CheckId -in $policy.critical) { Throw-PipelineError -Code 'critical_check_cannot_be_skipped' -Message "Critical check cannot be skipped: $CheckId" -Status blocked -Details ([PSCustomObject]@{ checkId = $CheckId; criticalChecks = @($policy.critical) }) }
+    if ($CheckId -notin $policy.skippable) { Throw-PipelineError -Code 'check_not_skippable' -Message "Check is not eligible for skip: $CheckId" -Status blocked -Details ([PSCustomObject]@{ checkId = $CheckId; skippableChecks = @($policy.skippable) }) }
+    if ([string]::IsNullOrWhiteSpace($Reason)) { Throw-PipelineError -Code 'skip_reason_required' -Message 'A non-empty reason is required for skip-check.' -Status blocked }
+    if ($Reason.Length -gt 2000) { Throw-PipelineError -Code 'skip_reason_too_long' -Message 'The skip reason must be 2000 characters or fewer.' -Status blocked }
+    if (-not $Confirmed) { Throw-PipelineError -Code 'confirmation_required' -Message 'Skipping a baseline check requires explicit confirmation.' -Status blocked }
+    Assert-MigrationRunId -RunId $RunId
+
+    $root = Resolve-MigrationRoot -Path $ProjectRoot
+    $state = Read-MigrationRunState -ProjectRoot $root -RunId $RunId
+    if ($state.status -cne 'blocked' -or $state.stage -cne 'baseline' -or
+        -not $state.lastDiagnostic -or $state.lastDiagnostic.code -cne 'baseline_check_failed') {
+        Throw-PipelineError -Code 'skip_context_unavailable' -Message 'skip-check requires the current run to be blocked by a baseline check.' -Status blocked
+    }
+    $details = if ($state.lastDiagnostic.PSObject.Properties['details']) { $state.lastDiagnostic.details } else { $null }
+    $failedCheckId = if ($details -and $details.PSObject.Properties['checkId']) { [string]$details.checkId } else { $null }
+    if ($failedCheckId -cne $CheckId) {
+        Throw-PipelineError -Code 'skip_check_mismatch' -Message 'The requested skip does not match the currently failed baseline check.' -Status blocked -Details ([PSCustomObject]@{ requestedCheckId = $CheckId; failedCheckId = $failedCheckId })
+    }
+    $paths = Get-MigrationRunPaths -ProjectRoot $root -RunId $RunId
+    $manifest = Read-MigrationJson -Path $paths.manifest -Required
+    if ($manifest.schemaVersion -ne (Get-MigrationSchemaVersion) -or $manifest.manifestType -cne 'migration' -or
+        $manifest.runId -cne $RunId -or $manifest.project.root -cne $root -or
+        $manifest.sourceMajor -ne $state.sourceMajor -or $manifest.targetMajor -ne $state.targetMajor -or
+        $manifest.project.git.initialCommit -cne $state.initialCommit) {
+        Throw-PipelineError -Code 'invalid_run_manifest' -Message 'Manifest and state must describe the same run and project before skip-check.' -Status failed
+    }
+    $manifestCheck = @($manifest.checks | Where-Object { $_.id -ceq $CheckId })
+    if ($manifestCheck.Count -ne 1 -or $manifestCheck[0].phase -cne 'baseline' -or $manifestCheck[0].status -cne 'configured') {
+        Throw-PipelineError -Code 'skip_check_mismatch' -Message 'The failed check is not a configured baseline check in the immutable manifest.' -Status blocked
+    }
+    Assert-PipelineRunGitContext -ProjectRoot $root -State $state
+
+    $lockCreated = $false
+    try {
+        New-ActiveRunLock -ProjectRoot $root -RunId $RunId
+        $lockCreated = $true
+        $state = Read-MigrationRunState -ProjectRoot $root -RunId $RunId
+        if ($state.status -cne 'blocked' -or $state.stage -cne 'baseline' -or
+            -not $state.lastDiagnostic -or $state.lastDiagnostic.code -cne 'baseline_check_failed') {
+            Throw-PipelineError -Code 'state_revision_conflict' -Message 'Migration state changed before skip-check was accepted.' -Status blocked
+        }
+        $details = if ($state.lastDiagnostic.PSObject.Properties['details']) { $state.lastDiagnostic.details } else { $null }
+        $failedCheckId = if ($details -and $details.PSObject.Properties['checkId']) { [string]$details.checkId } else { $null }
+        if ($failedCheckId -cne $CheckId) {
+            Throw-PipelineError -Code 'skip_check_mismatch' -Message 'The requested skip no longer matches the failed baseline check.' -Status blocked
+        }
+        $existing = Get-BaselineSkipRecord -State $state -CheckId $CheckId
+        if ($existing -and $existing.reason -cne $Reason.Trim()) {
+            Throw-PipelineError -Code 'skip_already_recorded' -Message 'A different skip approval is already recorded for this check.' -Status blocked
+        }
+        if (-not $existing) {
+            $skip = [PSCustomObject][ordered]@{
+                stage      = 'baseline'
+                checkId    = $CheckId
+                reason     = $Reason.Trim()
+                diagnostic = $state.lastDiagnostic
+                approvedAt = Get-MigrationUtcNow
+                confirmed  = $true
+            }
+            $state.skippedChecks = @($state.skippedChecks) + @($skip)
+            Write-MigrationRunState -ProjectRoot $root -RunId $RunId -State $state
+        }
+        $state = Move-MigrationState -ProjectRoot $root -RunId $RunId -ExpectedStatus 'blocked' -ExpectedStage 'baseline' -ExpectedRevision $state.stageRevision -NewStatus 'running' -NewStage 'baseline'
+        $accepted = Get-BaselineSkipRecord -State $state -CheckId $CheckId
+        Add-MigrationEvent -ProjectRoot $root -RunId $RunId -Type 'skip-accepted' -Stage 'baseline' -Data ([PSCustomObject]@{ checkId = $CheckId; reason = $accepted.reason; diagnostic = $accepted.diagnostic; confirmed = $accepted.confirmed })
+        return [PSCustomObject]@{
+            ok     = $true
+            status = 'running'
+            data   = [PSCustomObject]@{ runId = $RunId; stage = 'baseline'; checkId = $CheckId; reason = $accepted.reason; criticalChecks = @($policy.critical); nextAction = 'run' }
+            error  = $null
+        }
+    }
+    finally {
+        if ($lockCreated) { Remove-ActiveRunLock -ProjectRoot $root -RunId $RunId }
+    }
+}
+
 function Invoke-MigrationResolution {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
@@ -519,6 +638,7 @@ function Invoke-MigrationStatus {
             manifestSha256      = $state.manifestSha256
             documentationStatus = $state.documentationStatus
             documentation       = $state.documentation
+            skippedChecks       = @($state.skippedChecks)
             lastDiagnostic      = $state.lastDiagnostic
             manifest            = '.angular-migration/runs/' + $RunId + '/manifest.json'
             state               = '.angular-migration/runs/' + $RunId + '/state.json'
@@ -1608,6 +1728,7 @@ function Write-PipelineTechnicalResult {
         changedFiles         = @(Get-PipelineChangedFiles -ProjectRoot $ProjectRoot -InitialCommit ((Read-MigrationRunState -ProjectRoot $ProjectRoot -RunId $RunId).initialCommit))
         dependencyChanges    = $dependencyChanges
         checks               = @($CheckResults)
+        skippedChecks        = @((Read-MigrationRunState -ProjectRoot $ProjectRoot -RunId $RunId).skippedChecks)
         repairs              = @((Read-MigrationRunState -ProjectRoot $ProjectRoot -RunId $RunId).repairs)
         warnings             = @($Manifest.warnings)
         verifiedAt           = Get-MigrationUtcNow
@@ -1632,12 +1753,12 @@ function Invoke-PipelineBaselineStage {
     $null = Start-PipelineOperation -ProjectRoot $ProjectRoot -RunId $RunId -Id 'baseline' -Stage 'baseline'
     $baseline = Invoke-MigrationBaseline -ProjectRoot $ProjectRoot -RunId $RunId
     if ($baseline.status -ne 'passed') {
-        Finish-PipelineOperation -ProjectRoot $ProjectRoot -RunId $RunId -Stage 'baseline' -Data ([PSCustomObject]@{ status = $baseline.status; diagnostic = $baseline.diagnostic; logs = @($baseline.checks | ForEach-Object { $_.stdoutLog; $_.stderrLog }) })
+        Finish-PipelineOperation -ProjectRoot $ProjectRoot -RunId $RunId -Stage 'baseline' -Data ([PSCustomObject]@{ status = $baseline.status; diagnostic = $baseline.diagnostic; checks = @($baseline.checks); logs = @($baseline.checks | ForEach-Object { $_.stdoutLog; $_.stderrLog }) })
         Clear-PipelineOperation -ProjectRoot $ProjectRoot -RunId $RunId | Out-Null
         $status = if ($baseline.status -eq 'failed') { 'failed' } else { 'blocked' }
         Throw-PipelineError -Code ([string]$baseline.diagnostic.code) -Message 'Baseline checks did not pass.' -Status $status -Details $baseline.diagnostic
     }
-    Finish-PipelineOperation -ProjectRoot $ProjectRoot -RunId $RunId -Stage 'baseline' -Data ([PSCustomObject]@{ status = 'passed'; logs = @($baseline.checks | ForEach-Object { $_.stdoutLog; $_.stderrLog }) })
+    Finish-PipelineOperation -ProjectRoot $ProjectRoot -RunId $RunId -Stage 'baseline' -Data ([PSCustomObject]@{ status = 'passed'; checks = @($baseline.checks); logs = @($baseline.checks | ForEach-Object { $_.stdoutLog; $_.stderrLog }) })
     $state = Complete-PipelineOperation -ProjectRoot $ProjectRoot -RunId $RunId -Id 'baseline' -Stage 'baseline'
     Move-MigrationState -ProjectRoot $ProjectRoot -RunId $RunId -ExpectedStatus 'running' -ExpectedStage 'baseline' -NewStatus 'running' -NewStage 'resolve' -ExpectedRevision $state.stageRevision | Out-Null
 }
@@ -1911,6 +2032,7 @@ function ConvertTo-PipelineRunEnvelope {
         documentationStatus         = $state.documentationStatus
         documentation               = $state.documentation
         completedOperations         = @($state.completedOperations)
+        skippedChecks               = @($state.skippedChecks)
         documentationReady          = $state.status -eq 'verified' -and $state.documentation.status -ne 'completed'
         documentationContextCommand = if ($state.status -eq 'verified' -and $state.documentation.status -ne 'completed') { 'documentation-context' } else { $null }
         manifest                    = '.angular-migration/runs/' + $RunId + '/manifest.json'
@@ -2805,6 +2927,7 @@ Export-ModuleMember -Function @(
     'Invoke-MigrationStatus',
     'Invoke-MigrationBaselineDependencyContext',
     'Invoke-ApproveMigrationBaselineDependencies',
+    'Invoke-MigrationSkipCheck',
     'Invoke-MigrationRepairContext',
     'Invoke-MigrationRecordRepair',
     'Invoke-MigrationRun',

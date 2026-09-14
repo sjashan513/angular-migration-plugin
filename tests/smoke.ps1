@@ -102,7 +102,7 @@ Assert-Check 'schema inventory is complete' ((($actualSchemas -join '|') -ceq ((
 foreach ($schemaName in $expectedSchemas) {
     $schema = Get-Content -LiteralPath (Join-Path $schemaDirectory $schemaName) -Raw | ConvertFrom-Json
     $closedSchema = $schema.type -eq 'object' -and $schema.additionalProperties -eq $false
-    if (@($schema.oneOf).Count -gt 0) {
+    if ($null -ne $schema.oneOf -and @($schema.oneOf).Count -gt 0) {
         $closedSchema = @($schema.oneOf | Where-Object { $_.type -eq 'object' -and $_.additionalProperties -eq $false }).Count -eq @($schema.oneOf).Count
     }
     Assert-Check "schema parses and closes: $schemaName" $closedSchema
@@ -113,16 +113,18 @@ $pipelineText = Get-Content -LiteralPath (Join-Path $repositoryRoot 'scripts/mod
 $moduleNames = @('Migration.Core', 'Migration.State', 'Migration.Project', 'Migration.Dependencies', 'Migration.Pipeline')
 foreach ($moduleName in $moduleNames) { Assert-Check "module exists: $moduleName" (Test-Path -LiteralPath (Join-Path $repositoryRoot ('scripts/modules/' + $moduleName + '.psm1')) -PathType Leaf) }
 Assert-Check 'facade loads the five module graph' (@($moduleNames | Where-Object { ($facadeText + $pipelineText) -match [regex]::Escape($_) }).Count -eq 5)
-$publicCommands = @('inspect', 'start', 'run', 'status', 'baseline-dependency-context', 'approve-baseline-dependencies', 'repair-context', 'record-repair', 'documentation-context', 'record-documentation')
-foreach ($publicCommand in $publicCommands) { Assert-Check "facade exposes command: $publicCommand" ($facadeText -match ("'{0}'\s*\{" -f [regex]::Escape($publicCommand))) }
-Assert-Check 'JavaScript inventory is under scripts/js' (Test-Path -LiteralPath (Join-Path $repositoryRoot 'scripts/js/inspect-lockfile.js') -PathType Leaf -and Test-Path -LiteralPath (Join-Path $repositoryRoot 'scripts/js/render-package-json.js') -PathType Leaf -and -not (Test-Path -LiteralPath (Join-Path $repositoryRoot 'scripts/helpers/render-package-json.js')))
-Assert-Check 'legacy visual and marketplace files are absent' (-not (Test-Path -LiteralPath (Join-Path $repositoryRoot 'scripts/playwright-runtime-check.js')) -and -not (Test-Path -LiteralPath (Join-Path $repositoryRoot 'scripts/playwright-vision.js')) -and -not (Test-Path -LiteralPath (Join-Path $repositoryRoot 'tests/vision-fixture')) -and -not (Test-Path -LiteralPath (Join-Path $repositoryRoot '.github/plugin/marketplace.json')) -and -not (Test-Path -LiteralPath (Join-Path $repositoryRoot 'skills/update-angular/SKILL.md')))
+$publicCommands = @('inspect', 'start', 'run', 'status', 'baseline-dependency-context', 'approve-baseline-dependencies', 'skip-check', 'repair-context', 'record-repair', 'documentation-context', 'record-documentation')
+foreach ($publicCommand in $publicCommands) { Assert-Check "facade exposes command: $publicCommand" ($facadeText -match ("'" + [regex]::Escape($publicCommand) + "'\s*\{")) }
+Assert-Check 'JavaScript inventory is under scripts/js' ((Test-Path -LiteralPath (Join-Path $repositoryRoot 'scripts/js/inspect-lockfile.js') -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $repositoryRoot 'scripts/js/render-package-json.js') -PathType Leaf) -and -not (Test-Path -LiteralPath (Join-Path $repositoryRoot 'scripts/helpers/render-package-json.js')))
+$legacyVisualFixtureFiles = @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'tests/vision-fixture') -File -Recurse -ErrorAction SilentlyContinue)
+Assert-Check 'legacy visual and marketplace files are absent' (-not (Test-Path -LiteralPath (Join-Path $repositoryRoot 'scripts/playwright-runtime-check.js')) -and -not (Test-Path -LiteralPath (Join-Path $repositoryRoot 'scripts/playwright-vision.js')) -and $legacyVisualFixtureFiles.Count -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $repositoryRoot '.github/plugin/marketplace.json')) -and -not (Test-Path -LiteralPath (Join-Path $repositoryRoot 'skills/update-angular/SKILL.md')))
 
 $functionalFiles = @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'scripts') -File -Recurse) + @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'agents') -File -Recurse) + @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'skills') -File -Recurse)
 $functionalText = (($functionalFiles | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }) -join "`n")
 Assert-Check 'functional files contain no visual runtime references' ($functionalText -notmatch '(?i)\bplaywright\b|\bscreenshot\b|\bvision\b|(?<![\w-])browser(?![\w-])')
 Assert-Check 'functional files contain no bypass flags' ($functionalText -notmatch '(?i)npx\s+--force|npm\s+(?:install|ci)\s+--force|npm\s+install\s+--legacy-peer-deps|ng\s+update\s+--force|--allow-dirty|--ignore-scripts')
 Assert-Check 'skill requires confirmation for baseline dependencies' ($functionalText -match 'baseline-dependency-context' -and $functionalText -match 'approve-baseline-dependencies' -and $functionalText -match 'proposalHash' -and $functionalText -match 'confirmacion')
+Assert-Check 'skill documents audited skips and critical gates' ($functionalText -match 'skip-check' -and $functionalText -match 'dependency-tree' -and $functionalText -match 'build' -and $functionalText -match 'status=skipped')
 Assert-Check 'skill announces autonomous execution' ($functionalText -match 'trabajare\s+autonomamente')
 Assert-MarkdownLinks -Path (Join-Path $repositoryRoot 'README.md')
 Assert-MarkdownLinks -Path (Join-Path $repositoryRoot 'docs/README.md')

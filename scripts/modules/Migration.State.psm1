@@ -4,8 +4,11 @@ Import-Module (Join-Path $PSScriptRoot 'Migration.Core.psm1') -DisableNameChecki
 
 $script:RunIdPattern = '^[a-z0-9TZ]+(?:-[a-z0-9TZ]+)*$'
 $script:AllowedStages = @('baseline', 'resolve', 'update-angular', 'update-dependencies', 'install', 'validate', 'document', 'done')
+$script:CriticalCheckIds = @('install', 'dependency-tree', 'build')
+$script:SkippableCheckIds = @('typecheck', 'lint', 'unit-test', 'e2e')
 $script:AllowedTransitions = @{
     'running|baseline'            = @('running|resolve', 'blocked|baseline', 'failed|baseline')
+    'blocked|baseline'            = @('running|baseline')
     'running|resolve'             = @('running|update-angular', 'blocked|resolve', 'failed|resolve')
     'running|update-angular'      = @('running|update-dependencies', 'needs-repair|update-angular', 'blocked|update-angular', 'failed|update-angular')
     'running|update-dependencies' = @('running|install', 'blocked|update-dependencies', 'failed|update-dependencies')
@@ -66,6 +69,13 @@ function Assert-MigrationRunId {
 
     if ($RunId -notmatch $script:RunIdPattern) {
         Throw-MigrationError -Code 'invalid_run_id' -Message "Invalid run id: $RunId" -Status blocked
+    }
+}
+
+function Get-MigrationCheckSkipPolicy {
+    return [PSCustomObject]@{
+        critical  = @($script:CriticalCheckIds)
+        skippable = @($script:SkippableCheckIds)
     }
 }
 
@@ -229,6 +239,7 @@ function New-MigrationRunState {
         checkpointCommit    = $InitialCommit
         activeOperation     = $null
         completedOperations = @()
+        skippedChecks       = @()
         lastDiagnostic      = $null
         repair              = $null
         repairTotal         = 0
@@ -250,6 +261,9 @@ function Read-MigrationRunState {
 
     $paths = Get-MigrationRunPaths -ProjectRoot $ProjectRoot -RunId $RunId
     $state = Read-MigrationJson -Path $paths.state -Required
+    if (-not $state.PSObject.Properties['skippedChecks']) {
+        $state | Add-Member -NotePropertyName skippedChecks -NotePropertyValue @()
+    }
     Assert-MigrationRunState -State $state -ExpectedRunId $RunId
     return $state
 }
@@ -275,6 +289,7 @@ function Assert-MigrationRunState {
     $checkpointProperty = Get-MigrationMember -Object $State -Name 'checkpointCommit'
     $activeOperationProperty = Get-MigrationMember -Object $State -Name 'activeOperation'
     $completedOperationsProperty = Get-MigrationMember -Object $State -Name 'completedOperations'
+    $skippedChecksProperty = Get-MigrationMember -Object $State -Name 'skippedChecks'
     $validStatuses = @('running', 'needs-repair', 'verified', 'completed', 'blocked', 'failed')
     $validBaselineStatuses = @('pending', 'passed')
     $validResolutionStatuses = @('pending', 'resolved')
@@ -282,6 +297,35 @@ function Assert-MigrationRunState {
     $completedValid = $completedOperationsProperty.exists -and $null -ne $completedOperationsProperty.value -and
     @($completedOperationsProperty.value | Where-Object { $_ -notin $script:CompletedOperationIds }).Count -eq 0 -and
     @($completedOperationsProperty.value | Sort-Object -Unique).Count -eq @($completedOperationsProperty.value).Count
+    $skippedValid = $skippedChecksProperty.exists -and $null -ne $skippedChecksProperty.value -and $skippedChecksProperty.value -is [array]
+    $skipKeys = @{}
+    foreach ($skip in @($skippedChecksProperty.value)) {
+        if ($null -eq $skip -or $skip -isnot [PSCustomObject]) { $skippedValid = $false; continue }
+        $skipNames = @($skip.PSObject.Properties.Name)
+        $skipStage = Get-MigrationMember -Object $skip -Name 'stage'
+        $skipCheckId = Get-MigrationMember -Object $skip -Name 'checkId'
+        $skipReason = Get-MigrationMember -Object $skip -Name 'reason'
+        $skipDiagnostic = Get-MigrationMember -Object $skip -Name 'diagnostic'
+        $skipApprovedAt = Get-MigrationMember -Object $skip -Name 'approvedAt'
+        $skipConfirmed = Get-MigrationMember -Object $skip -Name 'confirmed'
+        $skipTimestampValid = $false
+        if ($skipApprovedAt.exists -and $skipApprovedAt.value) {
+            try { $skipTimestampValid = ([DateTimeOffset]::Parse([string]$skipApprovedAt.value)).Offset -eq [TimeSpan]::Zero } catch { $skipTimestampValid = $false }
+        }
+        $skipKey = if ($skipStage.exists -and $skipCheckId.exists) { [string]$skipStage.value + '|' + [string]$skipCheckId.value } else { '' }
+        $skipShapeValid = @('stage', 'checkId', 'reason', 'diagnostic', 'approvedAt', 'confirmed') | ForEach-Object { $_ -in $skipNames } | Where-Object { -not $_ } | Measure-Object | Select-Object -ExpandProperty Count
+        if ($skipNames | Where-Object { $_ -notin @('stage', 'checkId', 'reason', 'diagnostic', 'approvedAt', 'confirmed') }) { $skipShapeValid = 1 }
+        if (-not $skipStage.exists -or $skipStage.value -cne 'baseline' -or
+            -not $skipCheckId.exists -or $skipCheckId.value -notin $script:SkippableCheckIds -or
+            -not $skipReason.exists -or $skipReason.value -isnot [string] -or [string]::IsNullOrWhiteSpace($skipReason.value) -or $skipReason.value.Length -gt 2000 -or
+            -not $skipDiagnostic.exists -or $null -eq $skipDiagnostic.value -or
+            -not $skipApprovedAt.exists -or -not $skipTimestampValid -or
+            -not $skipConfirmed.exists -or $skipConfirmed.value -isnot [bool] -or -not $skipConfirmed.value -or
+            $skipShapeValid -ne 0 -or $skipKeys.ContainsKey($skipKey)) {
+            $skippedValid = $false
+        }
+        else { $skipKeys[$skipKey] = $true }
+    }
     $branchesValid = $initialBranchProperty.exists -and ($null -eq $initialBranchProperty.value -or [string]$initialBranchProperty.value -match '^[^\s]+$') -and
     $checkpointProperty.exists -and ($null -eq $checkpointProperty.value -or [string]$checkpointProperty.value -match '^[a-fA-F0-9]{40}$') -and
     $initialCommitProperty.exists -and [string]$initialCommitProperty.value -match '^[a-fA-F0-9]{40}$'
@@ -295,7 +339,7 @@ function Assert-MigrationRunState {
         -not $baselineProperty.exists -or $validBaselineStatuses -notcontains $baselineProperty.value -or
         -not $resolutionProperty.exists -or $validResolutionStatuses -notcontains $resolutionProperty.value -or
         -not $manifestHashProperty.exists -or -not $hashValid -or
-        -not $activeOperationProperty.exists -or -not $completedValid -or -not $branchesValid) {
+        -not $activeOperationProperty.exists -or -not $completedValid -or -not $skippedValid -or -not $branchesValid) {
         Throw-MigrationError -Code 'invalid_run_state' -Message "Migration state is invalid for run: $ExpectedRunId" -Status failed
     }
 
@@ -446,6 +490,7 @@ Export-ModuleMember -Function @(
     'Get-MigrationDirectory',
     'Get-MigrationRunPaths',
     'Assert-MigrationRunId',
+    'Get-MigrationCheckSkipPolicy',
     'New-MigrationRunId',
     'Get-ActiveLockPath',
     'Read-ActiveRunLock',

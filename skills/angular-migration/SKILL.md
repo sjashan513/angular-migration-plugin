@@ -92,6 +92,28 @@ y no ejecuta gates por su cuenta.
    que continuaras autonomamente. La confirmacion de dependencias y la confirmacion
    inicial de `start` son las unicas confirmaciones humanas de este flujo.
 
+   Si `run` termina en `blocked` con `error.code=baseline_check_failed` y el
+   `checkId` actual es `typecheck`, `lint`, `unit-test` o `e2e`, presenta el diagnostico
+   al usuario y explica que la omision es una excepcion auditada para este run. Indica
+   siempre que `install`, `dependency-tree` y `build` son gates criticos y nunca pueden
+   omitirse. Describe la razon concreta del fallo y pide confirmacion explicita para
+   omitir unicamente el check identificado; una respuesta ambigua o negativa detiene
+   el flujo.
+
+   Tras la confirmacion, invoca exclusivamente la operacion del controlador:
+
+   ```powershell
+   powershell -NoProfile -File <plugin-root>\scripts\angular-migration.ps1 skip-check -RunId <run-id> -CheckId <check-id> -Reason <reason> -Confirmed -ProjectRoot <ProjectRoot>
+   ```
+
+   `skip-check` solo acepta el fallo baseline actual, conserva el diagnostico original,
+   registra la razon y la confirmacion en `state.json` y `events.jsonl`, y la conserva
+   en el resultado tecnico cuando existe. Devuelve el mismo `runId` en `status=running`.
+   No edites state ni ejecutes el check manualmente.
+   Si la operacion es aceptada, vuelve a emitir el mensaje de trabajo autonomo y
+   reanuda `run` con ese mismo `runId`. El check omitido aparece como `status=skipped`;
+   los tres gates criticos siguen siendo obligatorios.
+
 6. Para research, solo despues de observar `status.data.resolutionStatus=resolved`,
    ejecuta `documentation-context -Mode research`, entrega ese JSON al documenter y
    deja que escriba exclusivamente `allowedWritePath`. Lanza el documenter mientras
@@ -137,15 +159,17 @@ y no ejecuta gates por su cuenta.
   manifest, resultado o logs.
 - Si cualquiera de los agentes pide una ruta, herramienta o alcance no incluido en su
   contexto, no lo autorices: registra el bloqueo desde el envelope del controlador.
-- Ningun agente instala dependencias baseline. Esa accion pertenece exclusivamente a
-  `approve-baseline-dependencies` despues de la confirmacion del usuario.
+- Ningun agente instala dependencias baseline ni decide un skip. Esas acciones
+  pertenecen exclusivamente a `approve-baseline-dependencies` y `skip-check`, despues
+  de la confirmacion del usuario.
 - Un agente no puede liberar el lock ni cambiar el estado final.
 
 ## Recuperacion
 
 Ante una interrupcion, consulta `status` con el mismo `runId` y reanuda `run` solo si
 el lock pertenece a un proceso que ya termino. Un run en `needs-repair` requiere una
-entrega aceptada antes de reanudar. Un run bloqueado por `dependency-tree` requiere
-`baseline-dependency-context`, confirmacion y `approve-baseline-dependencies`; despues
-se crea un run nuevo. Un run `verified` espera publish; un run `completed` es terminal.
+entrega aceptada antes de reanudar. Un run bloqueado por un check baseline no critico
+puede usar `skip-check` una vez con confirmacion explicita; un bloqueo por `install`,
+`dependency-tree` o `build` no puede saltarse. Un run `verified` espera publish; un
+run `completed` es terminal.
 No crees un segundo run salvo para sustituir explicitamente ese baseline bloqueado.

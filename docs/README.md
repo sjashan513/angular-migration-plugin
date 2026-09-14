@@ -52,26 +52,27 @@ Todas las fases deben respetar estas reglas:
 
 Las fases se implementan en este orden:
 
-| Orden | Documento | Resultado exigido |
-| --- | --- | --- |
-| 3 | [03-inspeccion-y-baseline.md](phases/03-inspeccion-y-baseline.md) | Los checks del proyecto pueden ejecutarse de forma normalizada y la baseline impide migrar un proyecto ya roto. |
-| 4 | [04-resolucion-de-dependencias.md](phases/04-resolucion-de-dependencias.md) | Existe un manifest exacto, completo, auditable e inmutable. |
-| 5 | [05-ejecucion-determinista.md](phases/05-ejecucion-determinista.md) | `run` lleva el proyecto hasta `verified`, `needs-repair`, `blocked` o `failed` y puede reanudarse. |
-| 6 | [06-migration-implementer.md](phases/06-migration-implementer.md) | El Implementer solo repara archivos autorizados y no controla la pipeline. |
-| 7 | [07-migration-documenter.md](phases/07-migration-documenter.md) | El Documenter investiga en paralelo y publica únicamente después de `verified`. |
-| 8 | [08-integracion-y-release.md](phases/08-integracion-y-release.md) | Un piloto Angular 7 -> 8 completa el flujo y el plugin queda preparado para uso interno. |
+| Orden | Documento                                                                   | Resultado exigido                                                                                               |
+| ----- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| 3     | [03-inspeccion-y-baseline.md](phases/03-inspeccion-y-baseline.md)           | Los checks del proyecto pueden ejecutarse de forma normalizada y la baseline impide migrar un proyecto ya roto. |
+| 4     | [04-resolucion-de-dependencias.md](phases/04-resolucion-de-dependencias.md) | Existe un manifest exacto, completo, auditable e inmutable.                                                     |
+| 5     | [05-ejecucion-determinista.md](phases/05-ejecucion-determinista.md)         | `run` lleva el proyecto hasta `verified`, `needs-repair`, `blocked` o `failed` y puede reanudarse.              |
+| 6     | [06-migration-implementer.md](phases/06-migration-implementer.md)           | El Implementer solo repara archivos autorizados y no controla la pipeline.                                      |
+| 7     | [07-migration-documenter.md](phases/07-migration-documenter.md)             | El Documenter investiga en paralelo y publica únicamente después de `verified`.                                 |
+| 8     | [08-integracion-y-release.md](phases/08-integracion-y-release.md)           | Un piloto Angular 7 -> 8 completa el flujo y el plugin queda preparado para uso interno.                        |
 
 No se empieza una fase si la anterior no cumple su checklist de salida. No se mezclan en un mismo cambio tareas de dos fases salvo que una prueba de la fase anterior necesite un fixture que pertenezca a la siguiente; en ese caso, el fixture debe ser mínimo y no contener lógica futura.
 
 ## 5. API pública final
 
-La fachada debe terminar con exactamente estos comandos:
+La fachada debe terminar con estos comandos:
 
 ```text
 inspect
 start
 run
 status
+skip-check
 repair-context
 record-repair
 documentation-context
@@ -80,16 +81,17 @@ record-documentation
 
 Contrato de cada comando:
 
-| Comando | Mutante | Requiere run activo | Finalidad |
-| --- | --- | --- | --- |
-| `inspect` | No | No | Inspeccionar precondiciones sin escribir. |
-| `start -TargetMajor N` | Sí | No | Crear un run `N-1 -> N`, adquirir lock y persistir el input inicial. |
-| `run -RunId ID` | Sí | Sí | Ejecutar o reanudar etapas deterministas. |
-| `status -RunId ID` | No | No | Leer estado y último diagnóstico. |
-| `repair-context -RunId ID` | No | Sí | Entregar al Implementer el fallo y las rutas editables. |
-| `record-repair -RunId ID -InputFile PATH` | Sí | Sí | Validar el informe del Implementer y autorizar una reanudación. |
-| `documentation-context -RunId ID` | No | Sí | Entregar inputs verificables al Documenter. |
-| `record-documentation -RunId ID -InputFile PATH` | Sí | Sí | Validar investigación/documentación y actualizar el estado documental. |
+| Comando                                                    | Mutante | Requiere run activo                                    | Finalidad                                                              |
+| ---------------------------------------------------------- | ------- | ------------------------------------------------------ | ---------------------------------------------------------------------- |
+| `inspect`                                                  | No      | No                                                     | Inspeccionar precondiciones sin escribir.                              |
+| `start -TargetMajor N`                                     | Sí      | No                                                     | Crear un run `N-1 -> N`, adquirir lock y persistir el input inicial.   |
+| `run -RunId ID`                                            | Sí      | Sí                                                     | Ejecutar o reanudar etapas deterministas.                              |
+| `status -RunId ID`                                         | No      | No                                                     | Leer estado y último diagnóstico.                                      |
+| `skip-check -RunId ID -CheckId ID -Reason TEXT -Confirmed` | Sí      | No al inicio; adquiere ownership durante la aprobación | Registrar una excepción baseline no crítica y reanudar el mismo run.   |
+| `repair-context -RunId ID`                                 | No      | Sí                                                     | Entregar al Implementer el fallo y las rutas editables.                |
+| `record-repair -RunId ID -InputFile PATH`                  | Sí      | Sí                                                     | Validar el informe del Implementer y autorizar una reanudación.        |
+| `documentation-context -RunId ID`                          | No      | Sí                                                     | Entregar inputs verificables al Documenter.                            |
+| `record-documentation -RunId ID -InputFile PATH`           | Sí      | Sí                                                     | Validar investigación/documentación y actualizar el estado documental. |
 
 Ningún comando público acepta versiones de paquetes, nombres de ejecutables, argumentos libres, ramas, mensajes de commit, rutas de log o estados elegidos por un agente.
 
@@ -110,11 +112,11 @@ Todo comando escribe exactamente un JSON comprimido en stdout:
 
 Códigos de salida:
 
-| Código | Significado |
-| --- | --- |
-| `0` | Operación correcta; estados `ready`, `running`, `verified` o `completed`. |
-| `1` | Error interno o estado `failed`. |
-| `2` | Acción humana necesaria; estados `blocked` o `needs-repair`. |
+| Código | Significado                                                               |
+| ------ | ------------------------------------------------------------------------- |
+| `0`    | Operación correcta; estados `ready`, `running`, `verified` o `completed`. |
+| `1`    | Error interno o estado `failed`.                                          |
+| `2`    | Acción humana necesaria; estados `blocked` o `needs-repair`.              |
 
 Stdout no contiene progreso, warnings ni logs. Todo mensaje humano va a stderr. Los outputs completos de herramientas externas se guardan en `logs/` y el envelope solo devuelve rutas relativas y resúmenes.
 
@@ -160,6 +162,13 @@ needs-repair/*              -> running/misma etapa, solo tras record-repair vál
 verified/document           -> completed/done, solo tras record-documentation válido
 verified/document           -> verified/document si falla la documentación
 ```
+
+Un bloqueo `blocked/baseline` causado por `typecheck`, `lint`, `unit-test` o `e2e`
+puede volver a `running/baseline` únicamente mediante `skip-check`, con confirmación
+explícita, razón no vacía y el diagnóstico del check actual. `install`,
+`dependency-tree` y `build` son críticos y no tienen transición de skip. La aprobación
+se conserva en `state.json` y `events.jsonl`; el check omitido produce `status:
+skipped` sin ejecutar su comando.
 
 No se permite:
 

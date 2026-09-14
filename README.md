@@ -55,6 +55,19 @@ requieren, y solicita confirmacion. Solo despues ejecuta
 crea un commit controlado y obliga a comenzar un run nuevo. La skill anuncia entonces
 que la migracion esta lista para continuar autonomamente.
 
+Si la baseline se bloquea por `lint`, `typecheck`, `unit-test` o `e2e`, la skill puede
+pedir una aprobacion humana explicita para omitir solo ese check en el run actual:
+
+```powershell
+./scripts/angular-migration.ps1 skip-check -ProjectRoot C:\src\my-angular-app -RunId <run-id> -CheckId lint -Reason "Falta el tsconfig de lint del proyecto" -Confirmed
+```
+
+`skip-check` solo acepta el fallo baseline actual, conserva el diagnostico original y
+la razon en `state.json`, `events.jsonl` y el `result.json` tecnico cuando existe, y
+reanuda el mismo `runId`. `install`,
+`dependency-tree` y `build` son gates criticos y nunca pueden omitirse. El check
+aprobado aparece como `skipped`; no se ejecutan gates manualmente fuera de la fachada.
+
 ## 6. Agentes
 
 `migration-implementer` interviene solo cuando el state esta en `needs-repair`. Recibe
@@ -70,7 +83,9 @@ proceso principal registra las entregas mediante la fachada.
 
 Los hooks y la fachada aplican allowlists de rutas y herramientas. El manifest
 resuelto, el runtime, el resultado y las entregas se protegen con SHA-256. Los
-eventos son append-only y cada etapa mutante deja un commit controlado. No se
+eventos son append-only y cada etapa mutante deja un commit controlado. Las
+aprobaciones de `skip-check` guardan check, razon, confirmacion, timestamp y
+diagnostico original. No se
 aceptan `--force`, `--legacy-peer-deps`, cambios sucios, comandos libres, push ni
 decisiones de versionado provenientes de un agente. La reparacion baseline de peers es
 una operacion del controlador y exige aprobacion humana con hash de propuesta.
@@ -88,7 +103,9 @@ segun la politica local. Nunca se archiva `.npmrc`, el entorno ni tokens.
 Tras una interrupcion, usa `status` con el mismo `runId` y vuelve a ejecutar `run` una
 vez confirmado que el proceso propietario del lock termino. Un run `needs-repair`
 requiere `repair-context`, una entrega valida y `record-repair` antes de continuar.
-No retires un lock de un proceso vivo ni crees otro run para reemplazar el primero.
+Un bloqueo baseline no critico puede continuar mediante `skip-check` con confirmacion;
+los gates `install`, `dependency-tree` y `build` requieren resolver la causa. No
+retires un lock de un proceso vivo ni crees otro run para reemplazar el primero.
 
 ## 10. Codigos de salida y errores
 

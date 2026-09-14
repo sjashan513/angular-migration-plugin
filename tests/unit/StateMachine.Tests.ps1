@@ -39,6 +39,7 @@ try {
 
     $allTransitions = @(
         @{ fromStatus = 'running'; fromStage = 'baseline'; toStatus = 'running'; toStage = 'resolve' },
+        @{ fromStatus = 'blocked'; fromStage = 'baseline'; toStatus = 'running'; toStage = 'baseline' },
         @{ fromStatus = 'running'; fromStage = 'resolve'; toStatus = 'running'; toStage = 'update-angular' },
         @{ fromStatus = 'running'; fromStage = 'update-angular'; toStatus = 'needs-repair'; toStage = 'update-angular' },
         @{ fromStatus = 'needs-repair'; fromStage = 'update-angular'; toStatus = 'running'; toStage = 'update-angular' },

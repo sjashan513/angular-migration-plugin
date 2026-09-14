@@ -30,7 +30,14 @@
     },
     "status": {
       "type": "string",
-      "enum": ["passed", "failed", "timed-out", "blocked", "not-configured"]
+      "enum": [
+        "passed",
+        "failed",
+        "timed-out",
+        "blocked",
+        "skipped",
+        "not-configured"
+      ]
     },
     "exitCode": { "type": ["integer", "null"] },
     "timedOut": { "type": "boolean" },

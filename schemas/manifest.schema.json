@@ -258,7 +258,8 @@
           "lint",
           "unit-test",
           "build",
-          "e2e"
+          "e2e",
+          "skip-check"
         ]
       }
     },

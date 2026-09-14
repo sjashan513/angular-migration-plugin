@@ -1,309 +1,113 @@
-# angular-migration
+# angular-migration v5
 
-Plugin interno para migraciones Angular auditables en Copilot CLI sobre Windows.
-El facade es compatible con Windows PowerShell 5.1; los hooks de Copilot CLI
-requieren PowerShell 7 o superior. Copilot cloud agent no esta soportado.
+## 1. Proposito
 
-## Estado
+Plugin para migrar exactamente una major de Angular por run. El controlador decide
+versiones, orden, comandos, commits y transiciones; los agentes trabajan unicamente
+con los contextos que el controlador les entrega.
 
-La fase 6 incorpora reparaciones controladas sobre el salto autorizado por el
-manifest. Crea una rama dedicada, ejecuta Angular CLI local con versiones
-exactas, alinea el lockfile, instala con `npm ci`, valida el proyecto y publica
-un resultado tecnico inmutable. `migration-implementer` recibe un contexto
-cerrado; no decide versiones ni transiciones. La documentacion final sigue
-reservada para la fase documental.
+## 2. Alcance soportado
 
-## Uso
+- Windows.
+- Windows PowerShell 5.1 o PowerShell 7+ para la fachada.
+- PowerShell 7+ para los hooks de Copilot CLI.
+- Proyectos Angular CLI en la raiz de un repositorio Git no monorepo.
+- npm con `package-lock.json` v1, v2 o v3.
+- Un salto `N -> N+1`; la primera ruta soportada es Angular 7 -> Angular 8.
 
-Ejecuta la fachada desde la raiz de un proyecto Angular CLI:
+Quedan fuera de v5 el cambio automatico de Node, Yarn, pnpm, workspaces, Nx,
+dependencias no registry sin politica, agentes cloud y cualquier runtime visual.
 
-```powershell
-powershell -NoProfile -File <plugin>\scripts\angular-migration.ps1 -Command inspect
-powershell -NoProfile -File <plugin>\scripts\angular-migration.ps1 -Command start -TargetMajor 8
-powershell -NoProfile -File <plugin>\scripts\angular-migration.ps1 -Command status -RunId <run-id>
-powershell -NoProfile -File <plugin>\scripts\angular-migration.ps1 -Command run -RunId <run-id>
-powershell -NoProfile -File <plugin>\scripts\angular-migration.ps1 -Command documentation-context -RunId <run-id> -Mode research
-powershell -NoProfile -File <plugin>\scripts\angular-migration.ps1 -Command record-documentation -RunId <run-id> -Mode research -InputFile '.angular-migration/runs/<run-id>/inbox/research.json'
-powershell -NoProfile -File <plugin>\scripts\angular-migration.ps1 -Command documentation-context -RunId <run-id> -Mode publish
-powershell -NoProfile -File <plugin>\scripts\angular-migration.ps1 -Command record-documentation -RunId <run-id> -Mode publish -InputFile '.angular-migration/runs/<run-id>/inbox/documentation.json'
-```
+## 3. Requisitos
 
-La salida estandar contiene exactamente un JSON v5. Los errores humanos y el progreso se reservan para stderr.
+Se necesita Windows, Git con identidad local, Node compatible con los dos majors,
+npm compatible con el lockfile y GitHub Copilot CLI instalado y autenticado. El
+working tree debe estar limpio y `.angular-migration/` debe estar ignorado por Git.
+El plugin no instala ni cambia Node.
 
-## Precondiciones
+## 4. Instalacion
 
-- Proyecto Angular CLI con `package.json`, `angular.json` y `package-lock.json` en la raiz.
-- npm como gestor de paquetes.
-- Raiz Git igual a la del proyecto, HEAD valido, rama no detached y working tree limpio.
-- Identidad Git (`user.name` y `user.email`) configurada.
-- `.angular-migration/` ignorado por Git.
-- Node y npm disponibles.
-- El destino debe ser exactamente el major actual mas uno.
-- Las aplicaciones necesitan un script npm `build`.
+Desde el marketplace, instala el plugin `angular-migration` desde la entrada que
+apunta al source del marketplace. Para una instalacion local, registra la carpeta
+raiz de este repositorio como source de plugin en Copilot CLI y reinicia la sesion.
+La comprobacion minima es que aparezcan la skill `angular-migration`, los dos agentes
+definitivos y los hooks una sola vez.
 
-Cada run se guarda bajo `.angular-migration/runs/<run-id>/`. El lock de ownership impide dos runs mutantes sobre el mismo proyecto.
+## 5. Flujo
 
-## Ejecucion tecnica
-
-`run` obtiene todas sus decisiones de `state.json` y `manifest.json`; no acepta
-paquetes, flags, rama ni etapa. Tras la baseline y la resolucion crea
-`migration/angular-<origen>-to-<destino>-<sufijo>`, usa exclusivamente
-`node_modules/.bin/ng.cmd` y aplica este orden:
-
-```text
-ng update con targets exactos
-npm install --package-lock-only
-npm ci
-npm ls --all
-typecheck, lint, unit-test, build, e2e
-```
-
-El resultado estable es `verified/document`, con el lock mantenido para la fase
-documental. Los fallos de codigo con scope seguro producen `needs-repair`; las
-precondiciones o incompatibilidades producen `blocked`; los errores internos,
-`failed`. Una segunda llamada sobre un resultado verificado no repite procesos.
-
-## Reparacion controlada
-
-Un fallo tecnico con perimetro seguro deja el run en `needs-repair`. `run` no
-reanuda ese estado por si solo. El controlador entrega al implementador el
-contexto y las invocaciones exactas, usando la ruta absoluta instalada del facade:
+Ejecuta la fachada desde la raiz del proyecto o proporciona `-ProjectRoot`:
 
 ```powershell
-& '<plugin>\scripts\angular-migration.ps1' repair-context -RunId <run-id>
-& '<plugin>\scripts\angular-migration.ps1' record-repair -RunId <run-id> -InputFile '.angular-migration/runs/<run-id>/inbox/repair.json'
+./scripts/angular-migration.ps1 inspect -ProjectRoot C:\src\my-angular-app
+./scripts/angular-migration.ps1 start -TargetMajor 8 -ProjectRoot C:\src\my-angular-app
+./scripts/angular-migration.ps1 run -ProjectRoot C:\src\my-angular-app -RunId <run-id>
+./scripts/angular-migration.ps1 status -ProjectRoot C:\src\my-angular-app -RunId <run-id>
 ```
 
-`repair-context` no escribe estado. Su envelope usa `status: needs-repair` y
-exit code 2 aunque el contexto se haya obtenido correctamente. El agente solo
-puede editar `allowedPaths`, salvo el archivo contractual `submissionPath`.
-No puede ejecutar herramientas de build ni comandos arbitrarios. Los nombres
-de herramienta desconocidos se deniegan; `edit`/`create` usan rutas explicitas,
-y las lecturas/busquedas rechazan credenciales y enlaces. El hook deniega
-busquedas recursivas cuyo directorio contenga credenciales o enlaces.
+`inspect` no escribe. `start` crea rama, runtime y estado despues de la confirmacion
+de la skill. `run` reanuda desde el ultimo checkpoint. `status` solo lee state y
+diagnostico. Cada comando escribe un unico envelope JSON en stdout.
 
-`record-repair` exige ownership exclusivo de proceso, schema cerrado, identidad
-del intento, manifest y HEAD intactos, diff real coincidente con el informe,
-rutas canonicas sin enlaces, modos validos y hashes protegidos. Rechaza informes
-con datos sensibles detectables. Aceptar crea un commit de rutas exactas y
-devuelve `running / rerun-failed-check`, nunca `verified`.
+## 6. Agentes
 
-El controlador, fuera del subagente, ejecuta `run` para repetir el check fallido
-y continuar con los restantes. Los checks y comandos Angular anteriores ya
-confirmados no se repiten. El runtime del hook se copia durante `start` y su
-SHA-256 se guarda en state; el plugin registra `preToolUse` y `subagentStop`.
-No se guardan argumentos ni resultados completos de herramientas.
+`migration-implementer` interviene solo cuando el state esta en `needs-repair`. Recibe
+un fingerprint, un attempt y un perimetro cerrado; no puede tocar `package.json`, el
+lockfile, Git ni los artefactos del run.
 
-Tres rechazos o fallos equivalentes bloquean el run con
-`repair_attempts_exhausted`; se permiten como maximo cinco intervenciones
-totales. El quinto cambio aceptado aun debe pasar su gate y no habilita un sexto.
-Un diagnostico nuevo empieza en intento uno. Como el checkpoint cambia tras
-cada commit aceptado, el fingerprint contractual tambien cambia: el presupuesto
-de fallos equivalentes se conserva mediante la identidad del diagnostico sin
-checkpoint. Reconsultar el mismo contexto no altera fingerprint ni intento.
+`migration-documenter` tiene dos modos. Research empieza cuando el manifest esta
+resuelto y puede ejecutarse en paralelo con la continuacion tecnica. Publish solo
+empieza cuando `migrationStatus=verified` y produce exactamente ocho documentos. El
+proceso principal registra las entregas mediante la fachada.
 
-Los informes se archivan como `repairs/<digest>-attempt-<n>.json`, donde
-`digest` es el hexadecimal del fingerprint sin `sha256:` (el colon no es un
-nombre de archivo valido en Windows). El rollback restaura solo tracked del
-intento y elimina solo untracked inventariados por el hook antes de crearlos.
-Los untracked no inventariados y cambios previos del usuario se conservan;
-pueden requerir revision manual antes de continuar. Un lock de registro dejado
-por un proceso interrumpido requiere confirmar que ese proceso termino antes
-de retirarlo manualmente.
+## 7. Controles
 
-### Limite de seguridad
+Los hooks y la fachada aplican allowlists de rutas y herramientas. El manifest
+resuelto, el runtime, el resultado y las entregas se protegen con SHA-256. Los
+eventos son append-only y cada etapa mutante deja un commit controlado. No se
+aceptan `--force`, `--legacy-peer-deps`, cambios sucios, comandos libres, push ni
+decisiones de versionado provenientes de un agente.
 
-La garantia es detectar y rechazar entregas indebidas, con rollback selectivo;
-no es impedir absolutamente toda escritura previa. Los timeouts de hooks son
-fail-open y estos archivos pertenecen al mismo usuario del sistema operativo.
-El estado del controlador y su instalacion son la base de confianza. Un proceso
-con acceso arbitrario a esos archivos no queda aislado por este plugin. Para
-esa garantia se necesita una sandbox o separacion de permisos externa.
+## 8. Artefactos y retencion
 
-La configuracion es exclusivamente para Copilot CLI en Windows: no hay
-implementacion Bash ni soporte parcial para cloud agent. Las pruebas del hook
-usan fixtures JSON por stdin, sin arrancar Copilot. Contrato, hook, ciclo de
-reparacion y pipeline verificados en Windows PowerShell 5.1 y PowerShell 7.6.6.
-La lectura JSON conserva timestamps como texto cuando el runtime lo permite,
-para mantener estables los hashes del manifest y del resultado entre runtimes.
+Cada run vive en `.angular-migration/runs/<run-id>/` y contiene `manifest.json`,
+`state.json`, `events.jsonl`, `result.json`, research, reparaciones, entregas y logs.
+El lock activo esta en `.angular-migration/active.lock`. El plugin no purga artefactos
+automaticamente: conserva el run para auditoria hasta que el responsable lo archive
+segun la politica local. Nunca se archiva `.npmrc`, el entorno ni tokens.
 
-## Documentacion controlada
+## 9. Recuperacion
 
-La documentacion tiene dos pasos independientes. `documentation-context -Mode research`
-solo puede emitirse con el manifest resuelto y deja al Documenter escribir
-`.angular-migration/runs/<run-id>/inbox/research.json`; puede ejecutarse mientras la
-migracion tecnica sigue en `running`. `record-documentation -Mode research` valida
-fuentes HTTPS publicas, hashes, paquetes, IDs, evidencia y versiones, y mueve el
-resultado a `artifacts/research.json`. Research nunca escribe `docs/` ni crea un
-commit.
+Tras una interrupcion, usa `status` con el mismo `runId` y vuelve a ejecutar `run` una
+vez confirmado que el proceso propietario del lock termino. Un run `needs-repair`
+requiere `repair-context`, una entrega valida y `record-repair` antes de continuar.
+No retires un lock de un proceso vivo ni crees otro run para reemplazar el primero.
 
-`documentation-context -Mode publish` exige `migrationStatus=verified`, un research
-intacto, `result.json` valido y que `HEAD` siga siendo el commit tecnico. El Documenter
-solo puede escribir exactamente estos ocho archivos bajo
-`docs/migration/v<target>/` y su `documentation.json`:
+## 10. Codigos de salida y errores
 
-```text
-README.md
-changes.md
-errors-and-repairs.md
-warnings.md
-new-concepts.md
-dependencies.md
-validation.md
-sources.md
-```
+- `0`: operacion valida en `ready`, `running`, `verified` o `completed`.
+- `2`: bloqueo reproducible o accion humana en `blocked` o `needs-repair`.
+- `1`: fallo interno o estado `failed`.
 
-La entrega se valida contra manifest, result, research, eventos, checks, commits,
-reparaciones, enlaces y hashes de disco. Un fallo documental conserva la migracion
-tecnica en `verified`, marca `documentation.status=failed` y mantiene el lock para
-permitir un reintento. Una entrega valida crea exactamente el commit:
+Resuelve primero el `error.code` y el diagnostico de `status`; no relajes un gate con
+opciones de bypass. Un bloqueo por Node, Git, lockfile, registry o scope requiere
+corregir la precondicion y comenzar un run nuevo si el estado ya es terminal.
 
-```text
-docs(angular-migration): document Angular <source> to <target>
-```
+## 11. Desinstalacion
 
-Despues pasa el run a `completed/done` y libera el ownership lock. El agente
-`migration-documenter` solo tiene `read`, `search`, `web` y `edit`; no tiene `execute`
-ni puede modificar codigo, configuracion, manifest, resultado o logs.
+Desinstala el plugin desde Copilot CLI y reinicia la sesion. La desinstalacion elimina
+la skill, agentes y hooks del host del plugin, pero no modifica repositorios, ramas,
+commits ni artefactos `.angular-migration` ya creados.
 
-## Baseline interna
+## 12. Limitaciones conocidas
 
-`Invoke-MigrationBaseline -ProjectRoot <raiz> -RunId <id>` se importa desde
-`Migration.Pipeline.psm1` para las pruebas; no es un comando publico para agentes.
-Comprueba ownership, manifest, state y HEAD antes de ejecutar checks.
-El orden es `install`, `dependency-tree`, `typecheck`, `lint`, `unit-test`, `build`, `e2e`.
-Los dos primeros ejecutan `npm ci` y `npm ls --all`; los restantes usan scripts permitidos.
-Un check ausente queda `not-configured`. El primer fallo detiene la secuencia.
+No se cambian versiones de Node, no se hace push, merge o pull request, no se reparan
+dependencias ni lockfiles desde un agente y no se soportan proyectos fuera del
+perimetro npm/Git indicado. Un piloto real necesita una aplicacion Angular 7
+descartable, un Node compatible y un entorno de Copilot CLI disponible.
 
-Devuelve `passed`, `blocked` o `failed`, los resultados evaluados, `notStarted`
-solo en memoria y un diagnostico sin el contenido de logs. Nunca devuelve
-`needs-repair`. No cambia la etapa ni libera el lock: la integracion de esas
-transiciones pertenece a la fase 5. Los eventos son append-only y los logs
-UTF-8 sin BOM quedan en `logs/baseline/` dentro del run.
+## 13. Documentacion tecnica
 
-## Resolucion de dependencias
-
-Tras una baseline `passed`, `Invoke-MigrationResolution` resuelve el manifest
-pendiente en memoria y lo publica atomicamente bajo
-`.angular-migration/runs/<run-id>/manifest.json`. La publicación se relee,
-verifica y registra en `state.json`; cualquier sustitucion posterior produce
-`manifest_integrity_failed` y un manifest resuelto no puede escribirse de nuevo.
-La resolucion utiliza el registry configurado de npm a traves de `npm view`,
-sin consultar la red directamente ni publicar credenciales.
-
-## Estructura
-
-```text
-agents/
-  migration-implementer.agent.md
-  migration-documenter.agent.md
-scripts/
-  angular-migration.ps1
-  modules/
-    Migration.Core.psm1
-    Migration.Dependencies.psm1
-    Migration.State.psm1
-    Migration.Project.psm1
-    Migration.Pipeline.psm1
-schemas/
-  manifest.schema.json
-  state.schema.json
-  check-result.schema.json
-  change-set.schema.json
-  result.schema.json
-  documentation-context.schema.json
-  documentation-research.schema.json
-  documentation-input.schema.json
-tests/
-  smoke.ps1
-  unit/
-    Project.Tests.ps1
-    Baseline.Tests.ps1
-    Dependencies.Tests.ps1
-    StateMachine.Tests.ps1
-    PackageManifestWriter.Tests.ps1
-    DocumentationContract.Tests.ps1
-  integration/
-    DependencyResolution.Tests.ps1
-    PipelineExecution.Tests.ps1
-    DocumentationCycle.Tests.ps1
-  fixtures/
-docs/
-  phases/
-```
-
-La instalacion del plugin no escribe artefactos en el propio plugin: la fachada usa el directorio actual como raiz del proyecto.
-
-## Prueba local
-
-```powershell
-powershell -NoProfile -File tests\unit\Project.Tests.ps1
-powershell -NoProfile -File tests\unit\Baseline.Tests.ps1
-powershell -NoProfile -File tests\unit\Dependencies.Tests.ps1
-powershell -NoProfile -File tests\unit\StateMachine.Tests.ps1
-powershell -NoProfile -File tests\unit\PackageManifestWriter.Tests.ps1
-powershell -NoProfile -File tests\integration\DependencyResolution.Tests.ps1
-powershell -NoProfile -File tests\integration\PipelineExecution.Tests.ps1
-powershell -NoProfile -File tests\unit\RepairContract.Tests.ps1
-powershell -NoProfile -File tests\unit\CopilotPolicyHook.Tests.ps1
-powershell -NoProfile -File tests\integration\RepairCycle.Tests.ps1
-powershell -NoProfile -File tests\unit\DocumentationContract.Tests.ps1
-powershell -NoProfile -File tests\integration\DocumentationCycle.Tests.ps1
-powershell -NoProfile -File tests\smoke.ps1
-```
-
-Las pruebas usan herramientas controladas y repositorios Git temporales.
-No necesitan npm, acceso a internet ni un framework de tests instalado. La
-prueba del renderer requiere Node; el resto usa ejecutables fixture y el smoke
-compila uno con `Add-Type` de PowerShell 5.1.
-
-## Checklist de salida de fase 3
-
-| Invariante                                       | Evidencia automatizada                                                                                          |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
-| Angular procede del lockfile v1/v2/v3            | `Project.Tests.ps1`: versiones declarada/resuelta, ausencia y mismatch                                          |
-| Git diferencia raiz, detached, dirty e identidad | `Project.Tests.ps1`: siete codigos de bloqueo                                                                   |
-| Checks con executable, arguments, cwd y timeout  | `Project.Tests.ps1`: contrato y prioridad; `Baseline.Tests.ps1`: rechazo de alteraciones                        |
-| Aplicacion sin build bloqueada                   | `Project.Tests.ps1`: aplicacion frente a libreria                                                               |
-| e2e ausente es not-configured                    | Ambas suites unitarias                                                                                          |
-| Baseline en orden fijo                           | `Baseline.Tests.ps1`: traza de procesos fixture                                                                 |
-| Baseline rota bloquea, nunca needs-repair        | `Baseline.Tests.ps1`: build y timeout; errores internos failed                                                  |
-| Sin shell libre ni interpolacion ejecutable      | Runner usa solo `Invoke-MigrationProcess`; `Baseline.Tests.ps1` rechaza ejecutables, argumentos y cwd alterados |
-| Logs fuera de state y stdout                     | `Baseline.Tests.ps1`: dos logs por ejecucion, contenido ausente del resultado y state                           |
-| Sin Node/npm/red reales                          | Fixtures de ambas suites; smoke verifica rutas de ejecutables ficticios                                         |
-| run exige identidad explicita                    | `smoke.ps1`: `run_id_required`                                                                                  |
-
-## Checklist de salida de fase 4
-
-- `Dependencies.Tests.ps1` cubre alineacion Angular, toolchain, peers, Node, specs, metadata y hash canonico.
-- `DependencyResolution.Tests.ps1` verifica dos runs independientes, publicacion atomica, inmutabilidad y deteccion de manipulacion.
-- El resolver usa solo `npm view` mediante argumentos estructurados y cache por run.
-- Todas las dependencias directas conservan seccion y `writeSpec`; los targets publicados son versiones exactas estables.
-- La resolucion no modifica archivos de dependencias, codigo fuente ni Git.
-
-## Checklist de salida de fase 5
-
-- `run -RunId` recorre la maquina de estados cerrada hasta `verified/document`.
-- Cada operacion persiste inicio, fin correlacionado, logs y postcondiciones.
-- Git usa una rama dedicada, checkpoints de rutas exactas y rollback selectivo.
-- Angular usa solo la CLI local; no se usa `npx`, CLI global, `git clean` ni push.
-- `package.json` pasa por versiones exactas antes de recuperar los rangos declarados.
-- El lockfile y todas las dependencias directas se verifican contra el manifest.
-- `npm ci`, `npm ls --all` y los checks finales se ejecutan en orden fijo.
-- El resultado tecnico tiene hash, es inmutable y mantiene el lock para documentacion.
-- La integracion simulada cubre reanudacion, rollback, rutas protegidas y rerun idempotente.
-
-## Checklist de salida de fase 7
-
-- `documentation-context` separa research y publish; research puede ejecutarse mientras el run sigue `running`.
-- `research.json` exige manifest resuelto, fuentes HTTPS publicas, paquetes conocidos, IDs unicos y timestamps UTC.
-- Research solo se mueve a `artifacts/research.json`; no modifica `docs/` ni crea commits.
-- Publish exige migracion `verified`, research y result integros, y `HEAD` igual al commit tecnico.
-- El Documenter solo dispone de `read`, `search`, `web` y `edit`; los hooks bloquean ejecucion y scope no autorizado.
-- La entrega contiene exactamente ocho documentos, todos con hashes, enlaces internos, versiones y evidencia validables.
-- Se documentan reparaciones y warnings, incluyendo el texto contractual cuando no existen.
-- El commit documental usa el mensaje fijo y solo contiene los ocho archivos.
-- Un fallo documental conserva `migrationStatus=verified`, mantiene el lock y permite reintentar.
-- Una publicacion valida termina en `completed/done` y libera el lock.
+El contrato de fases, estados, schemas, seguridad y fixtures esta en
+[docs/README.md](docs/README.md).
 
 MIT

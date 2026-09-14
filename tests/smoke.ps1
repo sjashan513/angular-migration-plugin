@@ -48,6 +48,81 @@ function Invoke-Facade {
     }
 }
 
+function Assert-MarkdownLinks {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $base = Split-Path -Parent $Path
+    $text = Get-Content -LiteralPath $Path -Raw
+    foreach ($match in [regex]::Matches($text, '\[[^\]]+\]\(([^)#]+)(?:#[^)]+)?\)')) {
+        $target = $match.Groups[1].Value
+        if ($target -match '^(?i:https?://|mailto:)') { continue }
+        Assert-Check ("markdown link exists: {0} -> {1}" -f (Split-Path -Leaf $Path), $target) (Test-Path -LiteralPath (Join-Path $base $target))
+    }
+}
+
+$repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$pluginPath = Join-Path $repositoryRoot 'plugin.json'
+$marketplacePath = Join-Path $repositoryRoot 'marketplace.json'
+$plugin = Get-Content -LiteralPath $pluginPath -Raw | ConvertFrom-Json
+$marketplace = Get-Content -LiteralPath $marketplacePath -Raw | ConvertFrom-Json
+$marketplacePlugin = @($marketplace.plugins | Where-Object name -ceq $plugin.name | Select-Object -First 1)
+Assert-Check 'plugin and marketplace metadata parse' ($plugin.name -and $marketplace.name -and $marketplacePlugin.Count -eq 1)
+Assert-Check 'plugin and marketplace identity matches' ($marketplacePlugin[0].name -ceq $plugin.name -and $marketplacePlugin[0].version -ceq $plugin.version -and $marketplace.metadata.version -ceq $plugin.version -and $marketplacePlugin[0].description -ceq $plugin.description)
+Assert-Check 'marketplace author and license match plugin' ($marketplacePlugin[0].author.name -ceq $plugin.author.name -and $marketplacePlugin[0].author.url -ceq $plugin.author.url -and $marketplacePlugin[0].license -ceq $plugin.license -and $marketplacePlugin[0].source -ceq '.')
+
+$declaredPaths = @($plugin.agents) + @($plugin.skills) + @($plugin.hooks)
+foreach ($declaredPath in $declaredPaths) {
+    Assert-Check "declared path exists: $declaredPath" (Test-Path -LiteralPath (Join-Path $repositoryRoot $declaredPath) -PathType Leaf)
+}
+$agentPaths = @($plugin.agents)
+Assert-Check 'plugin declares exactly two agents' ($agentPaths.Count -eq 2 -and (@($agentPaths | Sort-Object) -join '|') -ceq 'agents/migration-documenter.agent.md|agents/migration-implementer.agent.md')
+$agentTexts = @{}
+foreach ($agentPath in $agentPaths) { $agentTexts[$agentPath] = Get-Content -LiteralPath (Join-Path $repositoryRoot $agentPath) -Raw }
+$implementerText = $agentTexts['agents/migration-implementer.agent.md']
+$documenterText = $agentTexts['agents/migration-documenter.agent.md']
+foreach ($frontMatterPath in @($agentPaths + @($plugin.skills))) {
+    $frontMatterText = Get-Content -LiteralPath (Join-Path $repositoryRoot $frontMatterPath) -Raw
+    $frontMatter = [regex]::Match($frontMatterText, '(?s)^---\r?\n(.*?)\r?\n---(?:\r?\n|$)')
+    Assert-Check "valid frontmatter: $frontMatterPath" ($frontMatter.Success -and $frontMatter.Groups[1].Value -match '(?im)^name:\s*\S' -and $frontMatter.Groups[1].Value -match '(?im)^description:\s*\S')
+}
+Assert-Check 'implementer has only the four permitted tools' ($implementerText -match '(?im)^tools:\s*\[read, search, edit, execute\]\s*$')
+Assert-Check 'documenter has no execute tool' ($documenterText -match '(?im)^tools:\s*\[read, search, web, edit\]\s*$' -and $documenterText -notmatch '(?im)^tools:.*execute')
+
+$hooks = Get-Content -LiteralPath (Join-Path $repositoryRoot 'hooks.json') -Raw | ConvertFrom-Json
+$hookNames = @($hooks.hooks.PSObject.Properties.Name | Sort-Object)
+Assert-Check 'hooks use version one and expected events' ($hooks.version -eq 1 -and ($hookNames -join '|') -ceq 'preToolUse|subagentStop')
+foreach ($hookName in $hookNames) { Assert-Check "hook has one PowerShell command: $hookName" (@($hooks.hooks.$hookName).Count -eq 1 -and $hooks.hooks.$hookName[0].type -ceq 'command' -and $hooks.hooks.$hookName[0].powershell) }
+
+$expectedSchemas = @('state.schema.json', 'manifest.schema.json', 'result.schema.json', 'change-set.schema.json', 'check-result.schema.json', 'repair-context.schema.json', 'repair-input.schema.json', 'documentation-context.schema.json', 'documentation-research.schema.json', 'documentation-input.schema.json')
+$schemaDirectory = Join-Path $repositoryRoot 'schemas'
+$actualSchemas = @(Get-ChildItem -LiteralPath $schemaDirectory -File -Filter '*.json' | Select-Object -ExpandProperty Name | Sort-Object)
+Assert-Check 'schema inventory is complete' ((($actualSchemas -join '|') -ceq (($expectedSchemas | Sort-Object) -join '|')))
+foreach ($schemaName in $expectedSchemas) {
+    $schema = Get-Content -LiteralPath (Join-Path $schemaDirectory $schemaName) -Raw | ConvertFrom-Json
+    $closedSchema = $schema.type -eq 'object' -and $schema.additionalProperties -eq $false
+    if (@($schema.oneOf).Count -gt 0) {
+        $closedSchema = @($schema.oneOf | Where-Object { $_.type -eq 'object' -and $_.additionalProperties -eq $false }).Count -eq @($schema.oneOf).Count
+    }
+    Assert-Check "schema parses and closes: $schemaName" $closedSchema
+}
+
+$facadeText = Get-Content -LiteralPath $scriptPath -Raw
+$pipelineText = Get-Content -LiteralPath (Join-Path $repositoryRoot 'scripts/modules/Migration.Pipeline.psm1') -Raw
+$moduleNames = @('Migration.Core', 'Migration.State', 'Migration.Project', 'Migration.Dependencies', 'Migration.Pipeline')
+foreach ($moduleName in $moduleNames) { Assert-Check "module exists: $moduleName" (Test-Path -LiteralPath (Join-Path $repositoryRoot ('scripts/modules/' + $moduleName + '.psm1')) -PathType Leaf) }
+Assert-Check 'facade loads the five module graph' (@($moduleNames | Where-Object { ($facadeText + $pipelineText) -match [regex]::Escape($_) }).Count -eq 5)
+$publicCommands = @('inspect', 'start', 'run', 'status', 'repair-context', 'record-repair', 'documentation-context', 'record-documentation')
+foreach ($publicCommand in $publicCommands) { Assert-Check "facade exposes command: $publicCommand" ($facadeText -match ("'{0}'\s*\{" -f [regex]::Escape($publicCommand))) }
+Assert-Check 'JavaScript inventory is under scripts/js' (Test-Path -LiteralPath (Join-Path $repositoryRoot 'scripts/js/inspect-lockfile.js') -PathType Leaf -and Test-Path -LiteralPath (Join-Path $repositoryRoot 'scripts/js/render-package-json.js') -PathType Leaf -and -not (Test-Path -LiteralPath (Join-Path $repositoryRoot 'scripts/helpers/render-package-json.js')))
+Assert-Check 'legacy visual and marketplace files are absent' (-not (Test-Path -LiteralPath (Join-Path $repositoryRoot 'scripts/playwright-runtime-check.js')) -and -not (Test-Path -LiteralPath (Join-Path $repositoryRoot 'scripts/playwright-vision.js')) -and -not (Test-Path -LiteralPath (Join-Path $repositoryRoot 'tests/vision-fixture')) -and -not (Test-Path -LiteralPath (Join-Path $repositoryRoot '.github/plugin/marketplace.json')) -and -not (Test-Path -LiteralPath (Join-Path $repositoryRoot 'skills/update-angular/SKILL.md')))
+
+$functionalFiles = @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'scripts') -File -Recurse) + @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'agents') -File -Recurse) + @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'skills') -File -Recurse)
+$functionalText = (($functionalFiles | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }) -join "`n")
+Assert-Check 'functional files contain no visual runtime references' ($functionalText -notmatch '(?i)\bplaywright\b|\bscreenshot\b|\bvision\b|(?<![\w-])browser(?![\w-])')
+Assert-Check 'functional files contain no bypass flags' ($functionalText -notmatch '(?i)npx\s+--force|npm\s+(?:install|ci)\s+--force|npm\s+install\s+--legacy-peer-deps|ng\s+update\s+--force|--allow-dirty|--ignore-scripts')
+Assert-MarkdownLinks -Path (Join-Path $repositoryRoot 'README.md')
+Assert-MarkdownLinks -Path (Join-Path $repositoryRoot 'docs/README.md')
+
 $temporaryRoot = [IO.Path]::GetTempPath()
 $tmp = Join-Path $temporaryRoot ("angular-migration-v5-smoke-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 $toolDirectory = Join-Path $temporaryRoot ("angular-migration-v5-tools-" + [guid]::NewGuid().ToString('N').Substring(0, 8))

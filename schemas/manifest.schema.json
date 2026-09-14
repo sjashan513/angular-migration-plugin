@@ -7,6 +7,7 @@
     "schemaVersion",
     "manifestType",
     "runId",
+    "createdAt",
     "sourceMajor",
     "targetMajor",
     "resolutionStatus",
@@ -29,7 +30,84 @@
     "resolverVersion": { "type": "integer", "const": 1 },
     "resolvedAt": { "type": "string", "format": "date-time" },
     "manifestSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "project": { "type": "object" },
+    "project": {
+      "type": "object",
+      "required": [
+        "name",
+        "root",
+        "packageManager",
+        "files",
+        "lockfileVersion",
+        "scripts",
+        "builders",
+        "toolchain",
+        "git"
+      ],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "root": { "type": "string", "minLength": 1 },
+        "packageManager": { "type": "string", "const": "npm" },
+        "files": {
+          "type": "object",
+          "required": [
+            "packageJson",
+            "angularJson",
+            "packageLock",
+            "tsconfig",
+            "configurations"
+          ],
+          "properties": {
+            "packageJson": { "type": "boolean" },
+            "angularJson": { "type": "boolean" },
+            "packageLock": { "type": "boolean" },
+            "tsconfig": { "type": "boolean" },
+            "configurations": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": false
+        },
+        "lockfileVersion": { "type": "integer", "enum": [1, 2, 3] },
+        "scripts": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "builders": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["project", "target", "builder"],
+            "properties": {
+              "project": { "type": "string", "minLength": 1 },
+              "target": { "type": "string", "minLength": 1 },
+              "builder": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "toolchain": {
+          "type": "object",
+          "required": ["node", "npm", "errors"],
+          "properties": {
+            "node": { "$ref": "#/definitions/tool" },
+            "npm": { "$ref": "#/definitions/tool" },
+            "errors": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": false
+        },
+        "git": {
+          "type": "object",
+          "required": ["branch", "initialCommit"],
+          "properties": {
+            "branch": { "type": "string", "minLength": 1 },
+            "initialCommit": {
+              "type": "string",
+              "pattern": "^[a-fA-F0-9]{40}$"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "angular": {
       "type": "object",
       "required": [
@@ -44,37 +122,108 @@
           "type": "string",
           "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
         },
-        "current": { "type": "object" },
-        "target": { "type": "object" }
-      }
+        "current": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "target": {
+          "type": "object",
+          "required": ["major", "resolved", "resolutionStatus"],
+          "properties": {
+            "major": { "type": "integer", "minimum": 1 },
+            "resolved": { "type": "boolean" },
+            "resolutionStatus": { "enum": ["pending", "resolved"] },
+            "coreVersion": {
+              "type": "string",
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     },
     "dependencies": {
       "type": "array",
+      "minItems": 1,
       "items": {
-        "type": "object",
-        "properties": {
-          "name": { "type": "string", "minLength": 1 },
-          "section": {
-            "enum": [
-              "dependencies",
-              "devDependencies",
-              "optionalDependencies",
-              "peerDependencies"
-            ]
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["name", "section", "role", "spec", "kind"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "section": {
+                "enum": [
+                  "dependencies",
+                  "devDependencies",
+                  "optionalDependencies",
+                  "peerDependencies"
+                ]
+              },
+              "role": { "enum": ["runtime", "dev", "optional", "peer"] },
+              "spec": { "type": "string", "minLength": 1 },
+              "kind": { "type": "string", "enum": ["registry"] }
+            },
+            "additionalProperties": false
           },
-          "role": { "type": "string", "minLength": 1 },
-          "kind": { "type": "string", "enum": ["registry"] },
-          "declaredSpec": { "type": ["string", "null"] },
-          "currentVersion": { "type": ["string", "null"] },
-          "targetVersion": {
-            "type": "string",
-            "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
-          },
-          "writeSpec": { "type": ["string", "null"] },
-          "change": { "type": "string", "minLength": 1 },
-          "reason": { "type": "string", "minLength": 1 },
-          "metadata": { "type": "object" }
-        }
+          {
+            "type": "object",
+            "required": [
+              "name",
+              "section",
+              "role",
+              "kind",
+              "declaredSpec",
+              "currentVersion",
+              "targetVersion",
+              "writeSpec",
+              "change",
+              "reason",
+              "metadata"
+            ],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "section": {
+                "enum": [
+                  "dependencies",
+                  "devDependencies",
+                  "optionalDependencies",
+                  "peerDependencies"
+                ]
+              },
+              "role": {
+                "enum": [
+                  "angular-framework",
+                  "angular-tooling",
+                  "toolchain-related",
+                  "registry-ordinary",
+                  "angular-aware-external"
+                ]
+              },
+              "kind": { "type": "string", "enum": ["registry"] },
+              "declaredSpec": { "type": ["string", "null"] },
+              "currentVersion": { "type": ["string", "null"] },
+              "targetVersion": {
+                "type": "string",
+                "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+              },
+              "writeSpec": { "type": ["string", "null"] },
+              "change": {
+                "type": "string",
+                "enum": [
+                  "unchanged",
+                  "minor-or-patch",
+                  "major-required",
+                  "added-required-tooling"
+                ]
+              },
+              "reason": { "type": "string", "minLength": 1 },
+              "metadata": { "$ref": "#/definitions/metadata" }
+            },
+            "additionalProperties": false
+          }
+        ]
       }
     },
     "node": {
@@ -84,10 +233,35 @@
         "activeVersion": { "type": "string", "minLength": 1 },
         "requiredRange": { "type": "string", "minLength": 1 },
         "compatible": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "policies": {
+      "type": "object",
+      "properties": {
+        "peerDependenciesMeta": { "type": "object" },
+        "overrides": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "authorizedOperations": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "resolve-manifest",
+          "update-angular",
+          "update-dependencies",
+          "install",
+          "dependency-tree",
+          "typecheck",
+          "lint",
+          "unit-test",
+          "build",
+          "e2e"
+        ]
       }
     },
-    "policies": { "type": "object" },
-    "authorizedOperations": { "type": "array", "items": { "type": "string" } },
     "policy": {
       "type": "object",
       "required": [
@@ -152,7 +326,86 @@
         "additionalProperties": false
       }
     },
-    "warnings": { "type": "array" }
+    "warnings": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["code", "package", "peer", "range"],
+            "properties": {
+              "code": { "const": "optional_peer_missing" },
+              "package": { "type": "string", "minLength": 1 },
+              "peer": { "type": "string", "minLength": 1 },
+              "range": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["code", "package", "fromMajor", "toMajor"],
+            "properties": {
+              "code": { "const": "package_major_changed_for_angular" },
+              "package": { "type": "string", "minLength": 1 },
+              "fromMajor": { "type": "integer", "minimum": 0 },
+              "toMajor": { "type": "integer", "minimum": 0 }
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "tool": {
+      "type": "object",
+      "required": ["available", "executable", "version", "stdout"],
+      "properties": {
+        "available": { "type": "boolean" },
+        "executable": { "type": ["string", "null"], "minLength": 1 },
+        "version": { "type": ["string", "null"], "minLength": 1 },
+        "stdout": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "metadata": {
+      "type": "object",
+      "required": [
+        "source",
+        "selector",
+        "retrievedAt",
+        "deprecated",
+        "peerDependencies",
+        "peerDependenciesMeta",
+        "engines",
+        "ngUpdate",
+        "distTags"
+      ],
+      "properties": {
+        "source": { "type": "string", "const": "npm-view" },
+        "selector": { "type": "string", "minLength": 1 },
+        "retrievedAt": { "type": "string", "format": "date-time" },
+        "deprecated": { "type": "boolean" },
+        "peerDependencies": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "peerDependenciesMeta": {
+          "type": "object",
+          "additionalProperties": { "type": "object" }
+        },
+        "engines": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "ngUpdate": { "type": ["object", "array", "string", "null"] },
+        "distTags": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    }
   },
   "allOf": [
     {
@@ -181,5 +434,5 @@
       }
     }
   ],
-  "additionalProperties": true
+  "additionalProperties": false
 }

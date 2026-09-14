@@ -4,3 +4,4 @@ node_modules/
 .fixture-fail-*
 .fixture-source-fail
 .fixture-build-count
+.fixture-fail-second-build

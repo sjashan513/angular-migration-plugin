@@ -8,6 +8,11 @@
   },
   "repository": "https://github.com/sjashan513/angular-migration-plugin",
   "license": "MIT",
+  "agents": [
+    "agents/migration-implementer.agent.md",
+    "agents/migration-documenter.agent.md"
+  ],
+  "skills": ["skills/angular-migration/SKILL.md"],
   "hooks": "hooks.json",
   "keywords": [
     "angular",

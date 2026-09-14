@@ -26,6 +26,13 @@
     "activeOperation",
     "completedOperations",
     "lastDiagnostic",
+    "repair",
+    "repairTotal",
+    "repairs",
+    "validationResults",
+    "angularCommandIndex",
+    "runtimeSha256",
+    "configRepairAllowed",
     "createdAt",
     "updatedAt"
   ],
@@ -36,6 +43,7 @@
     "sourceMajor": { "type": "integer", "minimum": 0 },
     "targetMajor": { "type": "integer", "minimum": 1 },
     "status": {
+      "type": "string",
       "enum": [
         "running",
         "needs-repair",
@@ -46,6 +54,7 @@
       ]
     },
     "stage": {
+      "type": "string",
       "enum": [
         "baseline",
         "resolve",
@@ -59,8 +68,12 @@
     },
     "stageRevision": { "type": "integer", "minimum": 0 },
     "attempt": { "type": "integer", "minimum": 1 },
-    "migrationStatus": { "enum": ["running", "verified", "blocked", "failed"] },
+    "migrationStatus": {
+      "type": "string",
+      "enum": ["running", "verified", "blocked", "failed"]
+    },
     "documentationStatus": {
+      "type": "string",
       "enum": [
         "pending",
         "researching",
@@ -111,12 +124,20 @@
           "pattern": "^[a-fA-F0-9]{40}$"
         },
         "completedAt": { "type": ["string", "null"], "format": "date-time" },
-        "lastError": {}
+        "lastError": {
+          "type": ["object", "null"],
+          "required": ["code", "message"],
+          "properties": {
+            "code": { "type": "string", "minLength": 1 },
+            "message": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     },
-    "baselineStatus": { "enum": ["pending", "passed"] },
-    "resolutionStatus": { "enum": ["pending", "resolved"] },
+    "baselineStatus": { "type": "string", "enum": ["pending", "passed"] },
+    "resolutionStatus": { "type": "string", "enum": ["pending", "resolved"] },
     "initialBranch": { "type": ["string", "null"], "minLength": 1 },
     "initialCommit": { "type": "string", "pattern": "^[a-fA-F0-9]{40}$" },
     "migrationBranch": {
@@ -167,7 +188,7 @@
           }
         }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     },
     "completedOperations": {
       "type": "array",
@@ -185,9 +206,116 @@
         ]
       }
     },
-    "lastDiagnostic": {},
+    "lastDiagnostic": {
+      "type": ["object", "null"],
+      "required": ["code", "message", "details"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 },
+        "details": {}
+      },
+      "additionalProperties": false
+    },
+    "repair": {
+      "type": ["object", "null"],
+      "properties": {
+        "context": { "$ref": "repair-context.schema.json" },
+        "diagnosticHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "before": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["status", "path", "untracked"],
+            "properties": {
+              "status": { "type": "string" },
+              "path": { "type": "string", "minLength": 1 },
+              "untracked": { "type": "boolean" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "protected": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "hash"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "hash": { "type": ["string", "null"] }
+            },
+            "additionalProperties": false
+          }
+        },
+        "accepted": {
+          "type": ["object", "null"],
+          "required": [
+            "fingerprint",
+            "attempt",
+            "commit",
+            "report",
+            "reportSha256"
+          ],
+          "properties": {
+            "fingerprint": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "attempt": { "type": "integer", "minimum": 1 },
+            "commit": { "type": "string", "pattern": "^[a-fA-F0-9]{40}$" },
+            "report": { "type": "string", "minLength": 1 },
+            "reportSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          },
+          "additionalProperties": false
+        },
+        "facadePath": { "type": "string", "minLength": 1 }
+      },
+      "required": [
+        "context",
+        "diagnosticHash",
+        "before",
+        "protected",
+        "accepted",
+        "facadePath"
+      ],
+      "additionalProperties": false
+    },
+    "repairTotal": { "type": "integer", "minimum": 0 },
+    "repairs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "fingerprint",
+          "attempt",
+          "commit",
+          "report",
+          "reportSha256"
+        ],
+        "properties": {
+          "fingerprint": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "attempt": { "type": "integer", "minimum": 1 },
+          "commit": { "type": "string", "pattern": "^[a-fA-F0-9]{40}$" },
+          "report": { "type": "string", "minLength": 1 },
+          "reportSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "validationResults": {
+      "type": "array",
+      "items": { "$ref": "check-result.schema.json" }
+    },
+    "angularCommandIndex": { "type": "integer", "minimum": 0 },
+    "runtimeSha256": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "configRepairAllowed": { "type": "boolean" },
     "createdAt": { "type": "string", "format": "date-time" },
     "updatedAt": { "type": "string", "format": "date-time" }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }

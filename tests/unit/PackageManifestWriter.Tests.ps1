@@ -2,7 +2,7 @@
 $ErrorActionPreference = 'Stop'
 $modulePath = Join-Path $PSScriptRoot '../../scripts/modules/Migration.Core.psm1'
 Import-Module $modulePath -Force -DisableNameChecking
-$renderer = (Resolve-Path (Join-Path $PSScriptRoot '../../scripts/helpers/render-package-json.js')).Path
+$renderer = (Resolve-Path (Join-Path $PSScriptRoot '../../scripts/js/render-package-json.js')).Path
 $node = Find-MigrationExecutable -Names @('node.exe', 'node')
 if (-not $node) { throw 'node is required for the package renderer test' }
 

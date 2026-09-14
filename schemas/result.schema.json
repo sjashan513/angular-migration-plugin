@@ -54,8 +54,59 @@
       "type": "array",
       "items": { "$ref": "check-result.schema.json" }
     },
-    "repairs": { "type": "array" },
-    "warnings": { "type": "array" },
+    "repairs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "fingerprint",
+          "attempt",
+          "commit",
+          "report",
+          "reportSha256"
+        ],
+        "properties": {
+          "fingerprint": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "attempt": { "type": "integer", "minimum": 1 },
+          "commit": { "type": "string", "pattern": "^[a-fA-F0-9]{40}$" },
+          "report": { "type": "string", "minLength": 1 },
+          "reportSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["code", "package", "peer", "range"],
+            "properties": {
+              "code": { "const": "optional_peer_missing" },
+              "package": { "type": "string", "minLength": 1 },
+              "peer": { "type": "string", "minLength": 1 },
+              "range": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["code", "package", "fromMajor", "toMajor"],
+            "properties": {
+              "code": { "const": "package_major_changed_for_angular" },
+              "package": { "type": "string", "minLength": 1 },
+              "fromMajor": { "type": "integer", "minimum": 0 },
+              "toMajor": { "type": "integer", "minimum": 0 }
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
     "verifiedAt": { "type": "string", "format": "date-time" },
     "resultSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
   },

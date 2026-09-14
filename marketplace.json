@@ -11,8 +11,13 @@
   "plugins": [
     {
       "name": "angular-migration",
-      "description": "Migracion Angular auditable con dos agentes: Migration Implementer y Migration Documenter.",
+      "description": "Auditable Angular migration controller for sequential major upgrades on clean npm projects.",
       "version": "5.0.0",
+      "author": {
+        "name": "sjashan513",
+        "url": "https://github.com/sjashan513"
+      },
+      "license": "MIT",
       "source": "."
     }
   ]

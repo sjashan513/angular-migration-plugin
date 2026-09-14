@@ -6,7 +6,8 @@ param(
     [int]$TargetMajor = 0,
     [string]$RunId,
     [ValidateSet('research', 'publish')][string]$Mode,
-    [string]$InputFile
+    [string]$InputFile,
+    [string]$ProjectRoot
 )
 
 Set-StrictMode -Version 2.0
@@ -23,11 +24,11 @@ function Write-MigrationEnvelope {
 
     $envelope = [ordered]@{
         schemaVersion = 5
-        command = $CommandName
-        ok = $Ok
-        status = $Status
-        data = $Data
-        error = $ErrorInfo
+        command       = $CommandName
+        ok            = $Ok
+        status        = $Status
+        data          = $Data
+        error         = $ErrorInfo
     }
     [Console]::Out.WriteLine(($envelope | ConvertTo-Json -Depth 50 -Compress))
 }
@@ -45,7 +46,8 @@ try {
     $moduleDirectory = Join-Path $PSScriptRoot 'modules'
     Import-Module (Join-Path $moduleDirectory 'Migration.Core.psm1') -DisableNameChecking
     Import-Module (Join-Path $moduleDirectory 'Migration.Pipeline.psm1') -DisableNameChecking
-    $projectRoot = Resolve-MigrationRoot -Path (Get-Location).Path
+    $requestedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { (Get-Location).Path } else { $ProjectRoot }
+    $projectRoot = Resolve-MigrationRoot -Path $requestedProjectRoot
 
     $result = switch ($commandName) {
         'inspect' { Invoke-InspectMigration -ProjectRoot $projectRoot }
@@ -73,7 +75,7 @@ catch {
     if ($exception.Data.Contains('code')) { $code = [string]$exception.Data['code'] }
     if ($exception.Data.Contains('details')) { $details = $exception.Data['details'] }
     $errorInfo = [PSCustomObject]@{
-        code = $code
+        code    = $code
         message = $exception.Message
         details = $details
     }

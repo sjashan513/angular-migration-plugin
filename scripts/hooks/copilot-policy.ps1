@@ -54,17 +54,6 @@ function Protect-RepairText {
     $value = [regex]::Replace($value, '(?im)^.*(?:authorization|proxy-authorization|cookie|set-cookie|_auth|password|token|secret|\.npmrc).*(?:\r?\n|$)', '[redacted]' + "`n")
     $value = [regex]::Replace($value, '(?i)https?://[^\s]+', '[redacted-url]')
     $value = [regex]::Replace($value, '(?i)\b(?:gh[pousr]_[a-z0-9_]+|github_pat_[a-z0-9_]+|npm_[a-z0-9]+|eyJ[a-z0-9_.-]+)\b', '[redacted]')
-    if ($Root) {
-        $npmrc = Join-Path $Root '.npmrc'
-        if (Test-Path -LiteralPath $npmrc -PathType Leaf) {
-            foreach ($line in [IO.File]::ReadAllLines($npmrc)) {
-                if ($line -match '^\s*[^#;][^=]*=\s*(.+?)\s*$') {
-                    $secret = $Matches[1].Trim('"', "'")
-                    if ($secret) { $value = $value.Replace($secret, '[redacted]') }
-                }
-            }
-        }
-    }
     return $value
 }
 

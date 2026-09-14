@@ -332,6 +332,8 @@ function Invoke-MigrationStatus {
             stage               = $state.stage
             attempt             = $state.attempt
             migrationStatus     = $state.migrationStatus
+            resolutionStatus    = $state.resolutionStatus
+            manifestSha256      = $state.manifestSha256
             documentationStatus = $state.documentationStatus
             documentation       = $state.documentation
             lastDiagnostic      = $state.lastDiagnostic
@@ -344,7 +346,7 @@ function Invoke-MigrationStatus {
 
 $script:TechnicalCheckIds = @('typecheck', 'lint', 'unit-test', 'build', 'e2e')
 $script:DependencySections = @('dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies')
-$script:PackageRendererPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'helpers\render-package-json.js'
+$script:PackageRendererPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'js\render-package-json.js'
 
 function Throw-PipelineError {
     param(

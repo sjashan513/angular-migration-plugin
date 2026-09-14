@@ -18,7 +18,15 @@
   "properties": {
     "id": {
       "type": "string",
-      "enum": ["typecheck", "lint", "unit-test", "build", "e2e"]
+      "enum": [
+        "install",
+        "dependency-tree",
+        "typecheck",
+        "lint",
+        "unit-test",
+        "build",
+        "e2e"
+      ]
     },
     "status": {
       "type": "string",

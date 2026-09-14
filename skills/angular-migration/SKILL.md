@@ -45,6 +45,12 @@ y no ejecuta gates por su cuenta.
    Conserva el `runId` del envelope. Si `start` no devuelve `status=running`, informa
    `blocked` o `failed` desde su resultado y no continues.
 
+   Cuando `start` devuelva `status=running`, comunica al usuario: "Todo esta listo para
+   ejecutar la migracion. A partir de ahora trabajare autonomamente, sin pedir
+   supervision en cada etapa. Solo me detendre si el controlador detecta un bloqueo,
+   un fallo o necesita una reparacion tecnica acotada." No pidas otra confirmacion para
+   cada stage.
+
 5. Ejecuta `run` con el `runId` conservado como un unico proceso de fachada que pueda
    mantenerse en curso y consulta `status` mientras avanza. No invoques un segundo
    `run` para sondear ni para reemplazar al proceso original. El proceso principal
@@ -55,6 +61,36 @@ y no ejecuta gates por su cuenta.
    powershell -NoProfile -File <plugin-root>\scripts\angular-migration.ps1 run -RunId <run-id> -ProjectRoot <ProjectRoot>
    powershell -NoProfile -File <plugin-root>\scripts\angular-migration.ps1 status -RunId <run-id> -ProjectRoot <ProjectRoot>
    ```
+
+   Si `run` termina en `blocked` con `error.code=baseline_check_failed`,
+   `error.details.checkId=dependency-tree`, ejecuta:
+
+   ```powershell
+   powershell -NoProfile -File <plugin-root>\scripts\angular-migration.ps1 baseline-dependency-context -RunId <run-id> -ProjectRoot <ProjectRoot>
+   ```
+
+   Presenta cada elemento de `data.packages` con su nombre y version exacta,
+   `requiredRange`, `requiredBy` y `reason`. Explica que son dependencias peer que npm
+   ha marcado como ausentes y que se instalaran como dependencias directas para que el
+   arbol existente pase antes de iniciar la migracion. Explica tambien que no se
+   cambiara ningun paquete Angular en esta operacion y que `npm ls --all` verificara el
+   resultado.
+
+   Pide una confirmacion explicita y espera la respuesta. No instales nada ante una
+   respuesta ambigua o negativa. Solo despues de un "si" usa el `proposalHash` devuelto:
+
+   ```powershell
+   powershell -NoProfile -File <plugin-root>\scripts\angular-migration.ps1 approve-baseline-dependencies -RunId <run-id> -ProposalHash <proposal-hash> -Confirmed -ProjectRoot <ProjectRoot>
+   ```
+
+   Esta operacion instala las versiones exactas, ejecuta `npm ls --all`, crea un commit
+   controlado y devuelve `nextAction=inspect-and-start-new-run`. Si falla, informa el
+   bloqueo y no intentes reanudar el run antiguo.
+
+   Tras un resultado `ready`, ejecuta `inspect`, crea automaticamente un run nuevo con
+   el mismo objetivo secuencial ya confirmado y vuelve a anunciar que todo esta listo y
+   que continuaras autonomamente. La confirmacion de dependencias y la confirmacion
+   inicial de `start` son las unicas confirmaciones humanas de este flujo.
 
 6. Para research, solo despues de observar `status.data.resolutionStatus=resolved`,
    ejecuta `documentation-context -Mode research`, entrega ese JSON al documenter y
@@ -101,11 +137,15 @@ y no ejecuta gates por su cuenta.
   manifest, resultado o logs.
 - Si cualquiera de los agentes pide una ruta, herramienta o alcance no incluido en su
   contexto, no lo autorices: registra el bloqueo desde el envelope del controlador.
+- Ningun agente instala dependencias baseline. Esa accion pertenece exclusivamente a
+  `approve-baseline-dependencies` despues de la confirmacion del usuario.
 - Un agente no puede liberar el lock ni cambiar el estado final.
 
 ## Recuperacion
 
 Ante una interrupcion, consulta `status` con el mismo `runId` y reanuda `run` solo si
 el lock pertenece a un proceso que ya termino. Un run en `needs-repair` requiere una
-entrega aceptada antes de reanudar. Un run `verified` espera publish; un run `completed`
-es terminal. No crees un segundo run para continuar el primero.
+entrega aceptada antes de reanudar. Un run bloqueado por `dependency-tree` requiere
+`baseline-dependency-context`, confirmacion y `approve-baseline-dependencies`; despues
+se crea un run nuevo. Un run `verified` espera publish; un run `completed` es terminal.
+No crees un segundo run salvo para sustituir explicitamente ese baseline bloqueado.

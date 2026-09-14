@@ -5,6 +5,8 @@ param(
     [Parameter(Mandatory = $true, Position = 0)][string]$Command,
     [int]$TargetMajor = 0,
     [string]$RunId,
+    [string]$ProposalHash,
+    [switch]$Confirmed,
     [ValidateSet('research', 'publish')][string]$Mode,
     [string]$InputFile,
     [string]$ProjectRoot
@@ -54,12 +56,14 @@ try {
         'start' { Invoke-StartMigration -ProjectRoot $projectRoot -TargetMajor $TargetMajor }
         'status' { Invoke-MigrationStatus -ProjectRoot $projectRoot -RunId $RunId }
         'run' { Invoke-MigrationRun -ProjectRoot $projectRoot -RunId $RunId }
+        'baseline-dependency-context' { Invoke-MigrationBaselineDependencyContext -ProjectRoot $projectRoot -RunId $RunId }
+        'approve-baseline-dependencies' { Invoke-ApproveMigrationBaselineDependencies -ProjectRoot $projectRoot -RunId $RunId -ProposalHash $ProposalHash -Confirmed:$Confirmed }
         'repair-context' { Invoke-MigrationRepairContext -ProjectRoot $projectRoot -RunId $RunId }
         'record-repair' { Invoke-MigrationRecordRepair -ProjectRoot $projectRoot -RunId $RunId -InputFile $InputFile }
         'documentation-context' { Invoke-DocumentationContext -ProjectRoot $projectRoot -RunId $RunId -Mode $Mode }
         'record-documentation' { Invoke-RecordDocumentation -ProjectRoot $projectRoot -RunId $RunId -Mode $Mode -InputFile $InputFile }
         default {
-            Throw-MigrationError -Code 'unsupported_command' -Message "Unsupported v5 command: $Command" -Status blocked -Details ([PSCustomObject]@{ supported = @('inspect', 'start', 'status', 'run', 'repair-context', 'record-repair', 'documentation-context', 'record-documentation') })
+            Throw-MigrationError -Code 'unsupported_command' -Message "Unsupported v5 command: $Command" -Status blocked -Details ([PSCustomObject]@{ supported = @('inspect', 'start', 'status', 'run', 'baseline-dependency-context', 'approve-baseline-dependencies', 'repair-context', 'record-repair', 'documentation-context', 'record-documentation') })
         }
     }
 

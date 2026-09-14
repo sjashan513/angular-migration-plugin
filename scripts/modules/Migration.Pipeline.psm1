@@ -179,7 +179,7 @@ function Invoke-MigrationBaseline {
         $state = Read-MigrationRunState -ProjectRoot $root -RunId $RunId
         $manifest = Read-MigrationJson -Path $paths.manifest -Required
         if ($manifest.schemaVersion -ne (Get-MigrationSchemaVersion) -or $manifest.runId -cne $RunId -or
-              $manifest.manifestType -cne 'migration' -or $manifest.project.root -cne (Resolve-MigrationRoot -Path $ProjectRoot) -or $state.projectRoot -cne $root -or
+            $manifest.manifestType -cne 'migration' -or $manifest.project.root -cne (Resolve-MigrationRoot -Path $ProjectRoot) -or $state.projectRoot -cne $root -or
             $manifest.sourceMajor -ne $state.sourceMajor -or $manifest.targetMajor -ne $state.targetMajor -or
             $manifest.project.git.initialCommit -cne $state.initialCommit) {
             Throw-MigrationError -Code 'invalid_run_manifest' -Message 'Manifest and state must describe the same run and project.' -Status failed
@@ -229,6 +229,189 @@ function Invoke-MigrationBaseline {
             status = $status; checks = @($results); notStarted = @($checks | Select-Object -Skip @($results).Count)
             diagnostic = [PSCustomObject]@{ code = $code; message = 'Baseline could not be completed.' }
         }
+    }
+}
+
+function Get-BaselineDependencyProposal {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)]$State
+    )
+
+    if ($State.status -cne 'blocked' -or $State.stage -cne 'baseline' -or
+        -not $State.lastDiagnostic -or $State.lastDiagnostic.code -cne 'baseline_check_failed' -or
+        -not $State.lastDiagnostic.details -or $State.lastDiagnostic.details.checkId -cne 'dependency-tree') {
+        Throw-PipelineError -Code 'baseline_dependency_context_unavailable' -Message 'A blocked dependency-tree baseline is required before proposing dependency changes.' -Status blocked
+    }
+
+    $paths = Get-MigrationRunPaths -ProjectRoot $ProjectRoot -RunId $RunId
+    $diagnostic = $State.lastDiagnostic.details
+    $output = ''
+    foreach ($log in @($diagnostic.stdoutLog, $diagnostic.stderrLog)) {
+        if ([string]::IsNullOrWhiteSpace([string]$log)) { continue }
+        if ($log -notmatch '^logs/baseline/[a-zA-Z0-9._-]+\.(?:stdout|stderr)\.log$') {
+            Throw-PipelineError -Code 'baseline_dependency_log_invalid' -Message 'The baseline dependency log path is invalid.' -Status failed
+        }
+        $fullLog = Join-Path $paths.root $log.Replace('/', '\')
+        if (-not (Test-Path -LiteralPath $fullLog -PathType Leaf)) {
+            Throw-PipelineError -Code 'baseline_dependency_log_missing' -Message 'The baseline dependency log is missing.' -Status failed
+        }
+        $output += "`n" + [IO.File]::ReadAllText($fullLog)
+    }
+
+    $pattern = '(?im)^\s*(?:npm\s+error\s+)?missing:\s+(?<name>@[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*|[a-z0-9][a-z0-9._-]*)@(?<range>.+?),\s+required\s+by\s+(?<parent>.+?)\s*$'
+    $groups = @{}
+    foreach ($match in [regex]::Matches($output, $pattern)) {
+        $name = [string]$match.Groups['name'].Value
+        $range = [string]$match.Groups['range'].Value.Trim()
+        $parent = [string]$match.Groups['parent'].Value.Trim()
+        if ($range -notmatch '^[0-9A-Za-z.*xX~^<>=|+() \-]+$' -or $parent -notmatch '^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*(?:@[^\s]+)?$') {
+            Throw-PipelineError -Code 'baseline_dependency_proposal_unsafe' -Message "The baseline dependency proposal contains an unsupported npm spec: $name." -Status blocked
+        }
+        if (-not $groups.ContainsKey($name)) {
+            $groups[$name] = [ordered]@{ ranges = @(); requiredBy = @() }
+        }
+        $groups[$name].ranges += $range
+        $groups[$name].requiredBy += $parent
+    }
+    if ($groups.Count -eq 0) {
+        Throw-PipelineError -Code 'baseline_dependency_proposal_unavailable' -Message 'The dependency-tree log does not contain a supported missing peer dependency.' -Status blocked
+    }
+
+    $npm = Find-MigrationExecutable -Names @('npm.cmd', 'npm.exe', 'npm')
+    if (-not $npm) { Throw-PipelineError -Code 'node_toolchain_missing' -Message 'npm is unavailable for baseline dependency proposal.' -Status blocked }
+    $packages = @()
+    $queryIndex = 0
+    foreach ($name in @($groups.Keys | Sort-Object)) {
+        $ranges = @($groups[$name].ranges | Sort-Object -Unique)
+        if ($ranges.Count -ne 1) {
+            Throw-PipelineError -Code 'baseline_dependency_proposal_ambiguous' -Message "Multiple peer ranges were reported for $name." -Status blocked -Details ([PSCustomObject]@{ package = $name; ranges = $ranges })
+        }
+        $range = [string]$ranges[0]
+        $queryIndex++
+        $query = Invoke-PipelineLoggedProcess -RunPaths $paths -Stage 'baseline-dependency-context' -Prefix ('{0:D2}-npm-view-' -f $queryIndex) -FilePath $npm -Arguments @('view', "$name@$range", 'version', '--json') -WorkingDirectory $ProjectRoot -TimeoutSeconds 120
+        if ($query.timedOut -or $query.exitCode -ne 0) {
+            Throw-PipelineError -Code 'baseline_dependency_proposal_unavailable' -Message "Registry metadata is unavailable for $name@$range." -Status blocked -Details ([PSCustomObject]@{ package = $name; requiredRange = $range; stdoutLog = $query.stdoutLog; stderrLog = $query.stderrLog })
+        }
+        try { $rawVersions = $query.stdout | ConvertFrom-Json } catch { Throw-PipelineError -Code 'baseline_dependency_proposal_unavailable' -Message "Registry metadata for $name is not valid JSON." -Status blocked }
+        $versions = if ($rawVersions -is [array]) { @($rawVersions) } else { @($rawVersions) }
+        $candidates = @($versions | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^\d+\.\d+\.\d+$' })
+        if ($candidates.Count -eq 0) {
+            Throw-PipelineError -Code 'baseline_dependency_proposal_unavailable' -Message "Registry metadata for $name has no stable exact version." -Status blocked
+        }
+        $selectedVersion = [string](@($candidates | Sort-Object { [version]$_ } -Descending | Select-Object -First 1)[0])
+        $requiredBy = @($groups[$name].requiredBy | Sort-Object -Unique)
+        $packages += [PSCustomObject][ordered]@{
+            name           = $name
+            installVersion = $selectedVersion
+            requiredRange  = $range
+            requiredBy     = $requiredBy
+            section        = 'dependencies'
+            reason         = "The project declares a package that requires $name as a peer dependency, but npm reports it missing. Installing it as a direct runtime dependency makes that requirement explicit and allows the dependency tree to pass before migration."
+        }
+    }
+
+    $proposal = [PSCustomObject][ordered]@{
+        schemaVersion = 1
+        runId         = $RunId
+        stage         = 'baseline'
+        failedCheck   = 'dependency-tree'
+        status        = 'confirmation-required'
+        packages      = @($packages)
+        rationale     = 'These exact stable versions satisfy the peer ranges reported by npm. No Angular package or migration dependency is changed by this proposal.'
+        verification  = 'The controller will run npm ls --all after installation and will roll back the proposal if the dependency tree remains invalid.'
+    }
+    $proposalHash = Get-PipelineObjectHash -Value $proposal
+    $proposal | Add-Member -NotePropertyName proposalHash -NotePropertyValue $proposalHash
+    return $proposal
+}
+
+function Invoke-MigrationBaselineDependencyContext {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$RunId
+    )
+
+    if ([string]::IsNullOrWhiteSpace($RunId)) { Throw-MigrationError -Code 'run_id_required' -Message '-RunId is required for baseline dependency context.' -Status blocked }
+    Assert-MigrationRunId -RunId $RunId
+    $root = Resolve-MigrationRoot -Path $ProjectRoot
+    $state = Read-MigrationRunState -ProjectRoot $root -RunId $RunId
+    $proposal = Get-BaselineDependencyProposal -ProjectRoot $root -RunId $RunId -State $state
+    return [PSCustomObject]@{
+        ok     = $false
+        status = 'blocked'
+        data   = $proposal
+        error  = [PSCustomObject]@{ code = 'baseline_dependency_confirmation_required'; message = 'Explicit confirmation is required before installing the proposed baseline dependencies.'; details = $proposal }
+    }
+}
+
+function Invoke-ApproveMigrationBaselineDependencies {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$RunId,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ProposalHash,
+        [switch]$Confirmed
+    )
+
+    if (-not $Confirmed) { Throw-MigrationError -Code 'confirmation_required' -Message 'Baseline dependency installation requires explicit confirmation.' -Status blocked }
+    if ([string]::IsNullOrWhiteSpace($RunId)) { Throw-MigrationError -Code 'run_id_required' -Message '-RunId is required for baseline dependency approval.' -Status blocked }
+    if ($ProposalHash -notmatch '^[0-9a-f]{64}$') { Throw-MigrationError -Code 'proposal_hash_required' -Message 'A valid baseline dependency proposal hash is required.' -Status blocked }
+    Assert-MigrationRunId -RunId $RunId
+    $root = Resolve-MigrationRoot -Path $ProjectRoot
+    $state = Read-MigrationRunState -ProjectRoot $root -RunId $RunId
+    $proposal = Get-BaselineDependencyProposal -ProjectRoot $root -RunId $RunId -State $state
+    if ($proposal.proposalHash -cne $ProposalHash) {
+        Throw-MigrationError -Code 'baseline_dependency_proposal_changed' -Message 'The baseline dependency proposal changed; request confirmation again.' -Status blocked -Details $proposal
+    }
+    Assert-PipelineRunGitContext -ProjectRoot $root -State $state
+    $before = @(Get-PipelineGitStatus -ProjectRoot $root)
+    $npm = Find-MigrationExecutable -Names @('npm.cmd', 'npm.exe', 'npm')
+    if (-not $npm) { Throw-MigrationError -Code 'node_toolchain_missing' -Message 'npm is unavailable for baseline dependency approval.' -Status blocked }
+    $lockCreated = $false
+    $committed = $false
+    $paths = Get-MigrationRunPaths -ProjectRoot $root -RunId $RunId
+    try {
+        New-ActiveRunLock -ProjectRoot $root -RunId $RunId
+        $lockCreated = $true
+        Add-MigrationEvent -ProjectRoot $root -RunId $RunId -Type 'baseline-dependencies-approval-started' -Stage 'baseline' -Data ([PSCustomObject]@{ proposalHash = $proposal.proposalHash; packages = @($proposal.packages | ForEach-Object { [PSCustomObject]@{ name = $_.name; version = $_.installVersion; reason = $_.reason } }) })
+        $specs = @($proposal.packages | ForEach-Object { "$($_.name)@$($_.installVersion)" })
+        $install = Invoke-PipelineLoggedProcess -RunPaths $paths -Stage 'baseline-dependency-repair' -Prefix '01-npm-install' -FilePath $npm -Arguments (@('install', '--save-exact') + $specs) -WorkingDirectory $root -TimeoutSeconds 900
+        if ($install.timedOut -or $install.exitCode -ne 0) {
+            Throw-PipelineError -Code 'baseline_dependency_install_failed' -Message 'The approved baseline dependency installation failed.' -Status blocked -Details ([PSCustomObject]@{ stdoutLog = $install.stdoutLog; stderrLog = $install.stderrLog; exitCode = $install.exitCode; timedOut = $install.timedOut })
+        }
+        $changed = @(Get-PipelineGitStatus -ProjectRoot $root)
+        $unexpected = @($changed | Where-Object { $_.path -notin @('package.json', 'package-lock.json') })
+        if ($unexpected.Count -gt 0) {
+            Throw-PipelineError -Code 'baseline_dependency_scope_violation' -Message 'The approved dependency installation changed a path outside package metadata.' -Status blocked -Details ([PSCustomObject]@{ paths = @($unexpected.path) })
+        }
+        $tree = Invoke-PipelineLoggedProcess -RunPaths $paths -Stage 'baseline-dependency-repair' -Prefix '02-npm-ls-all' -FilePath $npm -Arguments @('ls', '--all') -WorkingDirectory $root -TimeoutSeconds 300
+        if ($tree.timedOut -or $tree.exitCode -ne 0 -or ([string]$tree.stdout + "`n" + [string]$tree.stderr) -match '(?i)\b(invalid|extraneous|missing)\b') {
+            Throw-PipelineError -Code 'baseline_dependency_tree_failed' -Message 'The approved dependencies did not produce a valid npm dependency tree.' -Status blocked -Details ([PSCustomObject]@{ stdoutLog = $tree.stdoutLog; stderrLog = $tree.stderrLog; exitCode = $tree.exitCode; timedOut = $tree.timedOut })
+        }
+        $changed = @(Get-PipelineGitStatus -ProjectRoot $root)
+        $unexpected = @($changed | Where-Object { $_.path -notin @('package.json', 'package-lock.json') })
+        if ($unexpected.Count -gt 0 -or $changed.Count -eq 0) {
+            Throw-PipelineError -Code 'baseline_dependency_scope_violation' -Message 'The approved dependency installation did not produce only the expected package metadata changes.' -Status blocked -Details ([PSCustomObject]@{ paths = @($changed.path) })
+        }
+        $commit = New-PipelineCheckpoint -ProjectRoot $root -RunId $RunId -Message "chore(angular-migration): satisfy baseline peer dependencies [$RunId]"
+        $committed = $true
+        Add-MigrationEvent -ProjectRoot $root -RunId $RunId -Type 'baseline-dependencies-approved' -Stage 'baseline' -Data ([PSCustomObject]@{ proposalHash = $proposal.proposalHash; packages = @($proposal.packages | ForEach-Object { [PSCustomObject]@{ name = $_.name; version = $_.installVersion } }); verification = 'npm ls --all'; commit = $commit })
+        return [PSCustomObject]@{
+            ok     = $true
+            status = 'ready'
+            data   = [PSCustomObject]@{ runId = $RunId; status = 'ready-for-new-run'; commit = $commit; packages = @($proposal.packages); proposalHash = $proposal.proposalHash; nextAction = 'inspect-and-start-new-run' }
+            error  = $null
+        }
+    }
+    catch {
+        if (-not $committed) {
+            try { Invoke-PipelineRollback -ProjectRoot $root -CheckpointCommit $state.checkpointCommit -BeforeItems $before } catch { throw }
+        }
+        throw
+    }
+    finally {
+        if ($lockCreated) { Remove-ActiveRunLock -ProjectRoot $root -RunId $RunId }
     }
 }
 
@@ -2428,14 +2611,14 @@ function New-DocumentationResearchContext {
             }
         })
     return [PSCustomObject][ordered]@{
-        schemaVersion   = 1
-        mode            = 'research'
-        runId           = $RunId
-        sourceMajor     = [int]$State.sourceMajor
-        targetMajor     = [int]$State.targetMajor
-        manifestSha256  = [string]$State.manifestSha256
-        dependencies    = $dependencies
-        questions       = @(
+        schemaVersion    = 1
+        mode             = 'research'
+        runId            = $RunId
+        sourceMajor      = [int]$State.sourceMajor
+        targetMajor      = [int]$State.targetMajor
+        manifestSha256   = [string]$State.manifestSha256
+        dependencies     = $dependencies
+        questions        = @(
             "$questionStart breaking changes oficiales aplican de Angular $($State.sourceMajor) a $($State.targetMajor)?"
             ($questionStart + ' migraciones autom' + [char]0x00e1 + 'ticas declara cada paquete actualizado?')
             ($questionStart + ' conceptos nuevos afectan al mantenimiento del proyecto?')
@@ -2620,6 +2803,8 @@ Export-ModuleMember -Function @(
     'Invoke-InspectMigration',
     'Invoke-StartMigration',
     'Invoke-MigrationStatus',
+    'Invoke-MigrationBaselineDependencyContext',
+    'Invoke-ApproveMigrationBaselineDependencies',
     'Invoke-MigrationRepairContext',
     'Invoke-MigrationRecordRepair',
     'Invoke-MigrationRun',

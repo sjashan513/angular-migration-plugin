@@ -48,6 +48,13 @@ Ejecuta la fachada desde la raiz del proyecto o proporciona `-ProjectRoot`:
 de la skill. `run` reanuda desde el ultimo checkpoint. `status` solo lee state y
 diagnostico. Cada comando escribe un unico envelope JSON en stdout.
 
+Si el baseline detecta peers npm ausentes, la skill ejecuta
+`baseline-dependency-context`, explica las versiones exactas y los paquetes que las
+requieren, y solicita confirmacion. Solo despues ejecuta
+`approve-baseline-dependencies`, que instala esas versiones, valida `npm ls --all`,
+crea un commit controlado y obliga a comenzar un run nuevo. La skill anuncia entonces
+que la migracion esta lista para continuar autonomamente.
+
 ## 6. Agentes
 
 `migration-implementer` interviene solo cuando el state esta en `needs-repair`. Recibe
@@ -65,7 +72,8 @@ Los hooks y la fachada aplican allowlists de rutas y herramientas. El manifest
 resuelto, el runtime, el resultado y las entregas se protegen con SHA-256. Los
 eventos son append-only y cada etapa mutante deja un commit controlado. No se
 aceptan `--force`, `--legacy-peer-deps`, cambios sucios, comandos libres, push ni
-decisiones de versionado provenientes de un agente.
+decisiones de versionado provenientes de un agente. La reparacion baseline de peers es
+una operacion del controlador y exige aprobacion humana con hash de propuesta.
 
 ## 8. Artefactos y retencion
 
@@ -89,8 +97,9 @@ No retires un lock de un proceso vivo ni crees otro run para reemplazar el prime
 - `1`: fallo interno o estado `failed`.
 
 Resuelve primero el `error.code` y el diagnostico de `status`; no relajes un gate con
-opciones de bypass. Un bloqueo por Node, Git, lockfile, registry o scope requiere
-corregir la precondicion y comenzar un run nuevo si el estado ya es terminal.
+opciones de bypass. Un bloqueo por peers npm puede seguir el contexto y aprobacion
+baseline descritos arriba. Los bloqueos por Node, Git, lockfile, registry o scope
+requieren corregir la precondicion y comenzar un run nuevo si el estado ya es terminal.
 
 ## 11. Desinstalacion
 
@@ -102,7 +111,8 @@ commits ni artefactos `.angular-migration` ya creados.
 
 No se cambian versiones de Node, no se hace push, merge o pull request, no se reparan
 dependencias ni lockfiles desde un agente y no se soportan proyectos fuera del
-perimetro npm/Git indicado. Un piloto real necesita una aplicacion Angular 7
+perimetro npm/Git indicado. Solo se pueden instalar peers baseline propuestos por el
+controlador y aprobados explícitamente. Un piloto real necesita una aplicacion Angular 7
 descartable, un Node compatible y un entorno de Copilot CLI disponible.
 
 ## 13. Documentacion tecnica

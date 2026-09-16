@@ -71,8 +71,8 @@ function Get-DependencyQueryLogContext {
     $directory = $script:ResolutionContext.logDirectory
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
     return [PSCustomObject]@{
-        stdoutPath = Join-Path $directory ($prefix + '.stdout.log')
-        stderrPath = Join-Path $directory ($prefix + '.stderr.log')
+        stdoutPath     = Join-Path $directory ($prefix + '.stdout.log')
+        stderrPath     = Join-Path $directory ($prefix + '.stderr.log')
         stdoutRelative = 'logs/resolve/' + $prefix + '.stdout.log'
         stderrRelative = 'logs/resolve/' + $prefix + '.stderr.log'
     }
@@ -99,13 +99,13 @@ function ConvertTo-DependencyMetadataRecord {
                 $candidateDistTags = Get-DependencyObjectValue -Object $candidate -Name 'dist-tags'
                 if ($null -eq $candidateDistTags) { $candidateDistTags = Get-DependencyObjectValue -Object $candidate -Name 'distTags' }
                 $candidates += [PSCustomObject][ordered]@{
-                    version = $candidateVersion
-                    deprecated = [bool](Get-DependencyObjectValue -Object $candidate -Name 'deprecated')
-                    peerDependencies = ConvertTo-DependencyMap (Get-DependencyObjectValue -Object $candidate -Name 'peerDependencies')
+                    version              = $candidateVersion
+                    deprecated           = [bool](Get-DependencyObjectValue -Object $candidate -Name 'deprecated')
+                    peerDependencies     = ConvertTo-DependencyMap (Get-DependencyObjectValue -Object $candidate -Name 'peerDependencies')
                     peerDependenciesMeta = ConvertTo-DependencyMap (Get-DependencyObjectValue -Object $candidate -Name 'peerDependenciesMeta')
-                    engines = ConvertTo-DependencyMap (Get-DependencyObjectValue -Object $candidate -Name 'engines')
-                    ngUpdate = $candidateNgUpdate
-                    distTags = ConvertTo-DependencyMap $candidateDistTags
+                    engines              = ConvertTo-DependencyMap (Get-DependencyObjectValue -Object $candidate -Name 'engines')
+                    ngUpdate             = $candidateNgUpdate
+                    distTags             = ConvertTo-DependencyMap $candidateDistTags
                 }
             }
         }
@@ -138,16 +138,16 @@ function ConvertTo-DependencyMetadataRecord {
     }
     $deprecated = if ($deprecatedValue -is [bool]) { [bool]$deprecatedValue } else { -not [string]::IsNullOrWhiteSpace([string]$deprecatedValue) }
     $record = [ordered]@{
-        version = $version
-        source = 'npm-view'
-        selector = $VersionSelector
-        retrievedAt = $RetrievedAt
-        deprecated = $deprecated
-        peerDependencies = $peerDependencies
+        version              = $version
+        source               = 'npm-view'
+        selector             = $VersionSelector
+        retrievedAt          = $RetrievedAt
+        deprecated           = $deprecated
+        peerDependencies     = $peerDependencies
         peerDependenciesMeta = $peerDependenciesMeta
-        engines = $engines
-        ngUpdate = $ngUpdate
-        distTags = $distTags
+        engines              = $engines
+        ngUpdate             = $ngUpdate
+        distTags             = $distTags
     }
     if ($candidates.Count -gt 0) { $record.candidates = @($candidates) }
     return [PSCustomObject]$record
@@ -207,12 +207,12 @@ function Get-DependencyMetadata {
     }
     $queryEvent = [ordered]@{
         packageName = $PackageName
-        selector = $VersionSelector
-        exitCode = $process.exitCode
-        timedOut = [bool]$process.timedOut
-        durationMs = [int64]($finished - $started).TotalMilliseconds
-        stdoutLog = if ($logContext) { $logContext.stdoutRelative } else { $null }
-        stderrLog = if ($logContext) { $logContext.stderrRelative } else { $null }
+        selector    = $VersionSelector
+        exitCode    = $process.exitCode
+        timedOut    = [bool]$process.timedOut
+        durationMs  = [int64]($finished - $started).TotalMilliseconds
+        stdoutLog   = if ($logContext) { $logContext.stdoutRelative } else { $null }
+        stderrLog   = if ($logContext) { $logContext.stderrRelative } else { $null }
     }
     $script:MetadataQueryEvents += [PSCustomObject]$queryEvent
     if ($process.timedOut -or $process.exitCode -ne 0) {
@@ -264,21 +264,40 @@ function Get-DependencyCandidateList {
     $candidates = Get-DependencyObjectValue -Object $Metadata -Name 'candidates'
     if ($null -ne $candidates) {
         return @($candidates | ForEach-Object {
-            [PSCustomObject]@{
-                version = [string](Get-DependencyObjectValue -Object $_ -Name 'version')
-                source = Get-DependencyObjectValue -Object $Metadata -Name 'source'
-                selector = Get-DependencyObjectValue -Object $Metadata -Name 'selector'
-                retrievedAt = Get-DependencyObjectValue -Object $Metadata -Name 'retrievedAt'
-                deprecated = [bool](Get-DependencyObjectValue -Object $_ -Name 'deprecated')
-                peerDependencies = ConvertTo-DependencyMap (Get-DependencyObjectValue -Object $_ -Name 'peerDependencies')
-                peerDependenciesMeta = ConvertTo-DependencyMap (Get-DependencyObjectValue -Object $_ -Name 'peerDependenciesMeta')
-                engines = ConvertTo-DependencyMap (Get-DependencyObjectValue -Object $_ -Name 'engines')
-                ngUpdate = Get-DependencyObjectValue -Object $_ -Name 'ngUpdate'
-                distTags = Get-DependencyObjectValue -Object $Metadata -Name 'distTags'
-            }
-        })
+                $candidateDistTags = Get-DependencyObjectValue -Object $_ -Name 'distTags'
+                if ($null -eq $candidateDistTags) { $candidateDistTags = Get-DependencyObjectValue -Object $_ -Name 'dist-tags' }
+                if ($null -eq $candidateDistTags) { $candidateDistTags = Get-DependencyObjectValue -Object $Metadata -Name 'distTags' }
+                [PSCustomObject]@{
+                    version              = [string](Get-DependencyObjectValue -Object $_ -Name 'version')
+                    source               = Get-DependencyObjectValue -Object $Metadata -Name 'source'
+                    selector             = Get-DependencyObjectValue -Object $Metadata -Name 'selector'
+                    retrievedAt          = Get-DependencyObjectValue -Object $Metadata -Name 'retrievedAt'
+                    deprecated           = [bool](Get-DependencyObjectValue -Object $_ -Name 'deprecated')
+                    peerDependencies     = ConvertTo-DependencyMap (Get-DependencyObjectValue -Object $_ -Name 'peerDependencies')
+                    peerDependenciesMeta = ConvertTo-DependencyMap (Get-DependencyObjectValue -Object $_ -Name 'peerDependenciesMeta')
+                    engines              = ConvertTo-DependencyMap (Get-DependencyObjectValue -Object $_ -Name 'engines')
+                    ngUpdate             = Get-DependencyObjectValue -Object $_ -Name 'ngUpdate'
+                    distTags             = ConvertTo-DependencyMap $candidateDistTags
+                }
+            })
     }
     return @($Metadata)
+}
+
+function Test-DependencyLtsCandidate {
+    param(
+        [Parameter(Mandatory = $true)]$Candidate,
+        [Parameter(Mandatory = $true)][int]$Major
+    )
+
+    $version = [string](Get-DependencyObjectValue -Object $Candidate -Name 'version')
+    $distTags = Get-DependencyObjectValue -Object $Candidate -Name 'distTags'
+    foreach ($tag in @(Get-DependencyObjectNames -Object $distTags)) {
+        if ([string]$tag -ieq "v$Major-lts" -and [string](Get-DependencyObjectValue -Object $distTags -Name ([string]$tag)) -ceq $version) {
+            return $true
+        }
+    }
+    return $false
 }
 
 function Select-DependencyCandidate {
@@ -287,13 +306,15 @@ function Select-DependencyCandidate {
         [int]$Major = -1,
         [string]$RequiredRange,
         [string]$ExactVersion,
+        [switch]$AllowLtsDeprecated,
         [string]$FailureCode = 'registry_metadata_invalid'
     )
 
     $valid = @()
     foreach ($candidate in @(Get-DependencyCandidateList -Metadata $Metadata)) {
         $tuple = Get-DependencyVersionTuple -Version ([string]$candidate.version)
-        if ($null -eq $tuple -or [bool]$candidate.deprecated) { continue }
+        $deprecatedAllowed = $AllowLtsDeprecated -and $Major -ge 0 -and (Test-DependencyLtsCandidate -Candidate $candidate -Major $Major)
+        if ($null -eq $tuple -or ([bool]$candidate.deprecated -and -not $deprecatedAllowed)) { continue }
         if ($Major -ge 0 -and $tuple[0] -ne $Major) { continue }
         if ($ExactVersion -and $candidate.version -cne $ExactVersion) { continue }
         if ($RequiredRange -and -not (Test-DependencyVersionRange -Version $candidate.version -Range $RequiredRange)) { continue }
@@ -477,7 +498,7 @@ function Resolve-MigrationManifest {
             $selectorMajor = if ($role -in @('angular-framework', 'angular-tooling')) { $targetMajor } else { $currentMajor }
             $metadata = Get-DependencyMetadata -PackageName $name -VersionSelector ([string]$selectorMajor) -ProjectRoot $root -FnmPath $FnmPath -NodeVersion $NodeVersion
             $candidateFailureCode = if ($role -eq 'angular-framework') { 'angular_framework_unresolvable' } else { 'registry_metadata_invalid' }
-            $candidate = Select-DependencyCandidate -Metadata $metadata -Major $selectorMajor -FailureCode $candidateFailureCode
+            $candidate = Select-DependencyCandidate -Metadata $metadata -Major $selectorMajor -AllowLtsDeprecated:($role -in @('angular-framework', 'angular-tooling')) -FailureCode $candidateFailureCode
             $angularPeers = @(Get-DependencyObjectNames (Get-DependencyObjectValue $candidate 'peerDependencies') | Where-Object { $_ -in @('@angular/core', '@angular/common', '@angular/compiler') })
             if ($role -eq 'registry-ordinary' -and $angularPeers.Count -gt 0) {
                 $role = 'angular-aware-external'
@@ -488,13 +509,13 @@ function Resolve-MigrationManifest {
         foreach ($alignedName in @('@angular/common', '@angular/compiler')) {
             if ($selected.ContainsKey('@angular/core') -and $selected.ContainsKey($alignedName) -and $selected[$alignedName].version -cne $selected['@angular/core'].version) {
                 $alignedMetadata = Get-DependencyMetadata -PackageName $alignedName -VersionSelector ([string]$selected['@angular/core'].version) -ProjectRoot $root -FnmPath $FnmPath -NodeVersion $NodeVersion
-                $selected[$alignedName] = Select-DependencyCandidate -Metadata $alignedMetadata -ExactVersion ([string]$selected['@angular/core'].version) -FailureCode 'angular_framework_unresolvable'
+                $selected[$alignedName] = Select-DependencyCandidate -Metadata $alignedMetadata -ExactVersion ([string]$selected['@angular/core'].version) -AllowLtsDeprecated -FailureCode 'angular_framework_unresolvable'
                 $targetVersions[$alignedName] = [string]$selected[$alignedName].version
             }
         }
         if ($byName.ContainsKey('@angular/cli') -and -not $byName.ContainsKey('@angular/compiler-cli')) {
             $metadata = Get-DependencyMetadata -PackageName '@angular/compiler-cli' -VersionSelector ([string]$targetMajor) -ProjectRoot $root -FnmPath $FnmPath -NodeVersion $NodeVersion
-            $selected['@angular/compiler-cli'] = Select-DependencyCandidate -Metadata $metadata -Major $targetMajor -FailureCode 'toolchain_unresolvable'
+            $selected['@angular/compiler-cli'] = Select-DependencyCandidate -Metadata $metadata -Major $targetMajor -AllowLtsDeprecated -FailureCode 'toolchain_unresolvable'
             $targetVersions['@angular/compiler-cli'] = [string]$selected['@angular/compiler-cli'].version
             $byName['@angular/compiler-cli'] = [PSCustomObject]@{ name = '@angular/compiler-cli'; section = 'devDependencies'; role = 'dev'; spec = $null; kind = 'registry'; added = $true }
         }
@@ -508,7 +529,7 @@ function Resolve-MigrationManifest {
             for ($candidateMajor = $currentMajor + 1; $candidateMajor -le $currentMajor + 10; $candidateMajor++) {
                 try {
                     $nextMetadata = Get-DependencyMetadata -PackageName $name -VersionSelector ([string]$candidateMajor) -ProjectRoot $root -FnmPath $FnmPath -NodeVersion $NodeVersion
-                    $nextCandidate = Select-DependencyCandidate -Metadata $nextMetadata -Major $candidateMajor -FailureCode 'peer_dependency_conflict'
+                    $nextCandidate = Select-DependencyCandidate -Metadata $nextMetadata -Major $candidateMajor -AllowLtsDeprecated:((Get-DependencyRole -PackageName $name) -in @('angular-framework', 'angular-tooling')) -FailureCode 'peer_dependency_conflict'
                 }
                 catch {
                     continue
@@ -606,17 +627,17 @@ function Resolve-MigrationManifest {
             if ($role -eq 'registry-ordinary' -and $angularPeers.Count -gt 0) { $role = 'angular-aware-external' }
             $targetVersion = [string]$candidate.version
             $resolvedEntries += [PSCustomObject][ordered]@{
-                name = $name
-                section = [string]$item.section
-                role = $role
-                kind = 'registry'
-                declaredSpec = [string]$item.spec
+                name           = $name
+                section        = [string]$item.section
+                role           = $role
+                kind           = 'registry'
+                declaredSpec   = [string]$item.spec
                 currentVersion = $currentVersion
-                targetVersion = $targetVersion
-                writeSpec = Get-DependencyWriteSpec -DeclaredSpec ([string]$item.spec) -TargetVersion $targetVersion
-                change = Get-DependencyEntryChange -CurrentVersion $currentVersion -TargetVersion $targetVersion -Added $null
-                reason = if ($role -eq 'angular-framework') { "Angular framework packages align to target major $targetMajor" } elseif ($role -eq 'angular-tooling') { 'Angular tooling follows the target framework' } elseif ($role -eq 'angular-aware-external') { 'Angular peer compatibility requires this candidate' } else { 'Latest stable version within the installed major' }
-                metadata = ConvertTo-PublishedDependencyMetadata -Metadata $candidate
+                targetVersion  = $targetVersion
+                writeSpec      = Get-DependencyWriteSpec -DeclaredSpec ([string]$item.spec) -TargetVersion $targetVersion
+                change         = Get-DependencyEntryChange -CurrentVersion $currentVersion -TargetVersion $targetVersion -Added $null
+                reason         = if ($role -eq 'angular-framework') { "Angular framework packages align to target major $targetMajor" } elseif ($role -eq 'angular-tooling') { 'Angular tooling follows the target framework' } elseif ($role -eq 'angular-aware-external') { 'Angular peer compatibility requires this candidate' } else { 'Latest stable version within the installed major' }
+                metadata       = ConvertTo-PublishedDependencyMetadata -Metadata $candidate
             }
         }
         if ($byName.ContainsKey('@angular/compiler-cli') -and -not @($inventory | Where-Object name -eq '@angular/compiler-cli')) {
@@ -635,10 +656,10 @@ function Resolve-MigrationManifest {
         $resolved.dependencies = @($resolvedEntries)
         $resolved.warnings = @($warnings)
         $resolved.angular = [ordered]@{
-            declaredCoreSpec = $PendingManifest.angular.declaredCoreSpec
+            declaredCoreSpec    = $PendingManifest.angular.declaredCoreSpec
             resolvedCoreVersion = $PendingManifest.angular.resolvedCoreVersion
-            current = $PendingManifest.angular.current
-            target = [ordered]@{ major = $targetMajor; resolved = $true; resolutionStatus = 'resolved'; coreVersion = $targetVersions['@angular/core'] }
+            current             = $PendingManifest.angular.current
+            target              = [ordered]@{ major = $targetMajor; resolved = $true; resolutionStatus = 'resolved'; coreVersion = $targetVersions['@angular/core'] }
         }
         if (-not (Test-ResolvedManifest -Manifest ([PSCustomObject]$resolved))) { Throw-MigrationError -Code 'registry_metadata_invalid' -Message 'Resolved manifest failed its contract validation.' -Status blocked }
         $resolved.manifestSha256 = Get-ResolvedManifestHash -Manifest ([PSCustomObject]$resolved)

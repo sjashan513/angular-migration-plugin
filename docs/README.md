@@ -1,5 +1,7 @@
 # Plan de finalización de angular-migration v5
 
+Para una lectura narrativa del recorrido completo, consulta [flujo-del-pipeline.md](flujo-del-pipeline.md). Ese documento resume como se relacionan la fachada, el controlador, los agentes, los checkpoints, los estados y la documentacion final.
+
 ## 1. Propósito
 
 Esta carpeta es el contrato de implementación de las fases que faltan para convertir el esqueleto actual de `angular-migration` en una pipeline completa de migración Angular. Sustituye toda la documentación anterior. Los documentos históricos, auditorías y candidatos de ADR eliminados no deben utilizarse como fuente de comportamiento.
@@ -10,7 +12,7 @@ La intención es que un implementador pueda completar cada fase sin decidir arqu
 
 Se considera ya implementado y fuera del trabajo restante:
 
-- fachada PowerShell 5.1 con `preflight`, `inspect`, `start` y `status`;
+- fachada PowerShell 5.1 con `inspect`, `preflight`, `discover`, `approve-runtime-install`, `start`, `run`, `status`, `skip-check` y `skip-checks`;
 - módulos `Migration.Core.psm1`, `Migration.State.psm1`, `Migration.Project.psm1` y `Migration.Pipeline.psm1`;
 - detección de proyecto Angular CLI npm en la raíz;
 - inventario de dependencias directas;
@@ -22,11 +24,11 @@ Se considera ya implementado y fuera del trabajo restante:
 - identificadores de run no predecibles;
 - JSON atómico;
 - argumentos de proceso estructurados;
-- smoke tests de inspect, start, status, concurrencia y estado corrupto;
+- smoke tests de inspect, discover, start, status, concurrencia y estado corrupto;
 - dos perfiles: Migration Implementer y Migration Documenter;
 - ausencia de Playwright en el flujo principal.
 
-El estado actual todavía no migra ningún proyecto. `start` crea el run y conserva el lock, pero no resuelve versiones, no ejecuta `ng update`, no actualiza el resto de dependencias y no ejecuta checks.
+Las fases de ejecución y discovery ya están integradas: `discover` persiste el plan de repositorio y runtimes, `start` crea el run después de validarlo y `run` ejecuta las etapas deterministas, incluidos `ng update`, la resolución de dependencias y los checks.
 
 ## 3. Principios no negociables
 
@@ -52,28 +54,47 @@ Todas las fases deben respetar estas reglas:
 
 Las fases se implementan en este orden:
 
-| Orden | Documento                                                                   | Resultado exigido                                                                                               |
-| ----- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| 3     | [03-inspeccion-y-baseline.md](phases/03-inspeccion-y-baseline.md)           | Los checks del proyecto pueden ejecutarse de forma normalizada y la baseline impide migrar un proyecto ya roto. |
-| 4     | [04-resolucion-de-dependencias.md](phases/04-resolucion-de-dependencias.md) | Existe un manifest exacto, completo, auditable e inmutable.                                                     |
-| 5     | [05-ejecucion-determinista.md](phases/05-ejecucion-determinista.md)         | `run` lleva el proyecto hasta `verified`, `needs-repair`, `blocked` o `failed` y puede reanudarse.              |
-| 6     | [06-migration-implementer.md](phases/06-migration-implementer.md)           | El Implementer solo repara archivos autorizados y no controla la pipeline.                                      |
-| 7     | [07-migration-documenter.md](phases/07-migration-documenter.md)             | El Documenter investiga en paralelo y publica únicamente después de `verified`.                                 |
-| 8     | [08-integracion-y-release.md](phases/08-integracion-y-release.md)           | Un piloto Angular 7 -> 8 completa el flujo y el plugin queda preparado para uso interno.                        |
+1. [03-inspeccion-y-baseline.md](phases/03-inspeccion-y-baseline.md): los checks del
+   proyecto se ejecutan de forma normalizada y la baseline impide migrar un proyecto
+   ya roto.
+2. [04-resolucion-de-dependencias.md](phases/04-resolucion-de-dependencias.md): existe
+   un manifest exacto, completo, auditable e inmutable.
+3. [05-ejecucion-determinista.md](phases/05-ejecucion-determinista.md): `run` lleva el
+   proyecto hasta `verified`, `needs-repair`, `blocked` o `failed` y puede reanudarse.
+4. [06-migration-implementer.md](phases/06-migration-implementer.md): el Implementer
+   solo repara archivos autorizados y no controla la pipeline.
+5. [07-migration-documenter.md](phases/07-migration-documenter.md): el Documenter
+   investiga en paralelo y publica únicamente después de `verified`.
+6. [08-integracion-y-release.md](phases/08-integracion-y-release.md): un piloto
+   Angular 7 -> 8 completa el flujo y el plugin queda preparado para uso interno.
+7. [09-discovery-runtimes-y-skips-batch.md](phases/09-discovery-runtimes-y-skips-batch.md):
+   Discovery persiste el repositorio, resuelve runtimes Node por operación y permite
+   aprobar skips en batch.
+8. [10-historial-de-reparacion.md](phases/10-historial-de-reparacion.md): cada
+   fingerprint dispone de un `repair.jsonl` local como contrato documental para
+   evitar reparaciones repetidas sin saturar state o events.
 
 No se empieza una fase si la anterior no cumple su checklist de salida. No se mezclan en un mismo cambio tareas de dos fases salvo que una prueba de la fase anterior necesite un fixture que pertenezca a la siguiente; en ese caso, el fixture debe ser mínimo y no contener lógica futura.
 
+Las fases 9 y 10 son incrementos posteriores al cierre inicial de v5. Cuando entren en
+implementación, sus contratos sustituyen las restricciones anteriores que exigían un
+único Node activo, prohibían instalar runtimes aprobados o conservaban todo el detalle
+de intentos de reparación en `state.json` y `events.jsonl`.
+
 ## 5. API pública final
 
-La fachada debe terminar con estos comandos:
+La fachada expone estos comandos:
 
 ```text
 inspect
 preflight
+discover
+approve-runtime-install
 start
 run
 status
 skip-check
+skip-checks
 repair-context
 record-repair
 documentation-context
@@ -82,18 +103,21 @@ record-documentation
 
 Contrato de cada comando:
 
-| Comando                                                    | Mutante | Requiere run activo                               | Finalidad                                                              |
-| ---------------------------------------------------------- | ------- | ------------------------------------------------- | ---------------------------------------------------------------------- |
-| `preflight`                                                | No      | No                                                | Analizar archivos, herramientas y checks antes del run.                |
-| `inspect`                                                  | No      | No                                                | Alias compatible de la inspeccion de preflight.                        |
-| `start -TargetMajor N`                                     | Sí      | No                                                | Crear un run `N-1 -> N`, adquirir lock y persistir el input inicial.   |
-| `run -RunId ID`                                            | Sí      | Sí                                                | Ejecutar o reanudar etapas deterministas.                              |
-| `status -RunId ID`                                         | No      | No                                                | Leer estado y último diagnóstico.                                      |
-| `skip-check -RunId ID -CheckId ID -Reason TEXT -Confirmed` | Sí      | Sí en preflight; adquiere ownership tras un fallo | Aprobar una excepción baseline no crítica antes o después del fallo.   |
-| `repair-context -RunId ID`                                 | No      | Sí                                                | Entregar al Implementer el fallo y las rutas editables.                |
-| `record-repair -RunId ID -InputFile PATH`                  | Sí      | Sí                                                | Validar el informe del Implementer y autorizar una reanudación.        |
-| `documentation-context -RunId ID`                          | No      | Sí                                                | Entregar inputs verificables al Documenter.                            |
-| `record-documentation -RunId ID -InputFile PATH`           | Sí      | Sí                                                | Validar investigación/documentación y actualizar el estado documental. |
+- `preflight` e `inspect` son lecturas de diagnóstico y no requieren run.
+- `discover -TargetMajor N` persiste `repo.json` sin crear run; `start` lo exige en
+  estado `ready` y con el mismo fingerprint.
+- `approve-runtime-install -TargetMajor N -ProposalHash HASH -Confirmed` es mutante
+  sobre el inventario de fnm y solo acepta la propuesta vigente.
+- `start -TargetMajor N` crea un run `N-1 -> N`, adquiere ownership y persiste el
+  input inicial.
+- `run -RunId ID` ejecuta o reanuda etapas deterministas con un run activo.
+- `status -RunId ID` lee el estado y el ultimo diagnostico.
+- `skip-checks -RunId ID -InputFile PATH -Confirmed` registra atomicamente un conjunto
+  de omisiones opcionales durante `running/baseline`.
+- `skip-check -RunId ID -CheckId ID -Reason TEXT -Confirmed` conserva la recuperación
+  individual de un único fallo baseline.
+- `repair-context`, `record-repair`, `documentation-context` y
+  `record-documentation` entregan o registran artefactos controlados dentro de un run.
 
 Ningún comando público acepta versiones de paquetes, nombres de ejecutables, argumentos libres, ramas, mensajes de commit, rutas de log o estados elegidos por un agente.
 
@@ -114,11 +138,9 @@ Todo comando escribe exactamente un JSON comprimido en stdout:
 
 Códigos de salida:
 
-| Código | Significado                                                               |
-| ------ | ------------------------------------------------------------------------- |
-| `0`    | Operación correcta; estados `ready`, `running`, `verified` o `completed`. |
-| `1`    | Error interno o estado `failed`.                                          |
-| `2`    | Acción humana necesaria; estados `blocked` o `needs-repair`.              |
+- `0`: operación correcta; estados `ready`, `running`, `verified` o `completed`.
+- `1`: error interno o estado `failed`.
+- `2`: acción humana necesaria; estados `blocked` o `needs-repair`.
 
 Stdout no contiene progreso, warnings ni logs. Todo mensaje humano va a stderr. Los outputs completos de herramientas externas se guardan en `logs/` y el envelope solo devuelve rutas relativas y resúmenes.
 
@@ -166,8 +188,8 @@ verified/document           -> verified/document si falla la documentación
 ```
 
 Un bloqueo `blocked/baseline` causado por `typecheck`, `lint`, `unit-test` o `e2e`
-puede volver a `running/baseline` únicamente mediante `skip-check`, con confirmación
-explícita, razón no vacía y el diagnóstico del check actual. `install`,
+puede volver a `running/baseline` mediante `skip-check` o `skip-checks`, siempre con
+confirmación explícita y razones no vacías. `install`,
 `dependency-tree` y `build` son críticos y no tienen transición de skip. La aprobación
 se conserva en `state.json` y `events.jsonl`; el check omitido produce `status:
 skipped` sin ejecutar su comando.
@@ -193,6 +215,9 @@ No se permite:
       events.jsonl
       result.json
       research.json
+      repair-history/
+        {fingerprint-sin-prefijo}/repair.jsonl
+      repairs/
       inbox/
         repair.json
         documentation.json
@@ -209,6 +234,19 @@ No se permite:
 
 `state.json` es el único resumen mutable. `events.jsonl` es append-only. `result.json` se vuelve inmutable cuando `migrationStatus` alcanza `verified`. `research.json` puede actualizarse durante la investigación, pero la versión final queda asociada por hash cuando se completa la documentación.
 
+Cada fingerprint de reparación tiene un `repair.jsonl` independiente bajo el run. Sus
+entradas tienen schema cerrado, `sequence`, `entryId` y `entrySha256`; el controlador
+es el único que añade líneas y el hook solo permite al Implementer leer el archivo
+exacto del contexto activo. `state.json` conserva mirrors y summaries compactos, y
+`events.jsonl` conserva únicamente hitos globales como `repair-required`,
+`repair-accepted` y `repair-exhausted`.
+
+El historial se retiene hasta archivar el run. Se redactan secretos, credenciales,
+rutas absolutas y texto excesivo; no se persisten prompts, tool calls, diffs ni logs
+completos. `submission-accepted` significa que el diff fue validado y committed, no
+que el gate haya pasado. Solo `verification-passed` hace efectiva la reparación para
+`result.json` y la documentación final.
+
 ## 9. Definition of Done global
 
 El producto se considera terminado únicamente cuando:
@@ -221,6 +259,10 @@ El producto se considera terminado únicamente cuando:
 - una baseline rota no modifica `package.json` ni `package-lock.json`;
 - una ejecución interrumpida reanuda desde el último checkpoint confirmado;
 - un fallo reparable entrega al Implementer un scope explícito;
+- una reparación aceptada conserva su contexto hasta que el gate registre
+  `verification-passed`;
+- una interrupción entre append, commit, state y transición se reconcilia sin repetir
+  mutaciones; historial corrupto o evidencia ambigua bloquea el run;
 - el cuarto intento del mismo fingerprint se bloquea;
 - el Documenter puede investigar después de resolver el manifest y antes de finalizar la migración;
 - la documentación final no se publica antes de `verified`;

@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://sjashan513.github.io/angular-migration-plugin/schemas/runtime-install-proposal.schema.json",
+  "title": "Angular migration runtime installation proposal v1",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "projectRoot",
+    "targetMajor",
+    "inputFingerprint",
+    "versions",
+    "proposalHash"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "projectRoot": { "type": "string", "minLength": 1 },
+    "targetMajor": { "type": "integer", "minimum": 1 },
+    "inputFingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "versions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["version", "profiles", "reasons"],
+        "properties": {
+          "version": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+          },
+          "profiles": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "reasons": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "proposalHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  },
+  "additionalProperties": false
+}

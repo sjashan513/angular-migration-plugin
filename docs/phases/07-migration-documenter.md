@@ -261,14 +261,17 @@ Debe incluir:
     "result": ".angular-migration/runs/<run-id>/result.json",
     "research": ".angular-migration/runs/<run-id>/artifacts/research.json",
     "events": ".angular-migration/runs/<run-id>/events.jsonl",
-    "repairs": ".angular-migration/runs/<run-id>/repairs"
+    "repairs": ".angular-migration/runs/<run-id>/repairs",
+    "repairHistory": ".angular-migration/runs/<run-id>/repair-history"
   },
   "submissionPath": ".angular-migration/runs/<run-id>/inbox/documentation.json"
 }
 ```
 
-El agente puede leer el diff entre el commit de inicio y `technicalVerifiedCommit`, pero
-no puede escribir hasta que el hook confirme que la ruta está bajo `outputDirectory`.
+El agente puede leer el diff entre el commit de inicio y `technicalVerifiedCommit` y los
+`repair.jsonl` de fingerprints accepted que el hook autorice desde `state.json`, pero
+no puede escribirlos. El hook no autoriza el directorio de historial completo por el
+mero hecho de aparecer en el contexto.
 
 ## 9. Documentos finales y plantillas
 
@@ -280,15 +283,19 @@ Crear exactamente ocho archivos. No condensarlos en uno ni crear variantes.
 # Migración Angular <source> → <target>
 
 ## Resumen
+
 Estado técnico, fecha, run id y commits de inicio/final.
 
 ## Alcance
+
 Qué paquetes y áreas se actualizaron.
 
 ## Resultado
+
 Qué gates pasaron y si quedan warnings.
 
 ## Navegación
+
 Enlaces relativos a los otros siete documentos.
 ```
 
@@ -298,12 +305,15 @@ Enlaces relativos a los otros siete documentos.
 # Cambios aplicados
 
 ## Cambios automáticos de Angular
+
 Para cada cambio: archivo, descripción, evento/commit y fuente oficial.
 
 ## Cambios manuales
+
 Para cada reparación: error original, causa, modificación mínima y gate que la validó.
 
 ## Cambios oficiales no aplicables
+
 Cambio, motivo de no aplicabilidad y evidencia del proyecto.
 ```
 
@@ -312,7 +322,10 @@ observados en este repo.
 
 ### `errors-and-repairs.md`
 
-Una sección por fingerprint:
+Una sección por fingerprint. Una submission accepted se describe como intento
+registrado, pero solo una pareja `submission-accepted` + `verification-passed` se
+presenta como reparación aplicada. Un `verification-failed` debe quedar visible cuando
+explique por qué se necesitó otro intento:
 
 ```markdown
 ## <check> — <resumen>
@@ -324,6 +337,10 @@ Una sección por fingerprint:
 - Archivos modificados: lista exacta
 - Reparación: qué se hizo y por qué
 - Verificación: gate, exit code y evento que demuestra el resultado
+
+El resultado técnico puede contener únicamente summaries accepted que estén verificados;
+el historial local conserva el detalle operativo de rechazos y fallos sin convertirlo
+en un claim de producto.
 ```
 
 Si no hubo reparaciones, escribir: “La ejecución no requirió reparaciones manuales”.
@@ -342,9 +359,13 @@ Explicar cada concepto con esta estructura:
 ## <concepto>
 
 ### Explicación intuitiva
+
 ### Qué cambió entre las versiones
+
 ### Cómo aparece en este proyecto
+
 ### Qué debe hacer el equipo a partir de ahora
+
 ### Fuente oficial
 ```
 
@@ -352,15 +373,12 @@ No incluir conceptos genéricos sin relación demostrada con manifest, diff o re
 
 ### `dependencies.md`
 
-Tabla construida exclusivamente desde manifest:
+Contenido construido exclusivamente desde manifest:
 
-```markdown
-| Paquete | Sección | Antes | Después | Tipo de cambio | Motivo |
-| --- | --- | ---: | ---: | --- | --- |
-```
-
-Incluir todas las dependencias directas, incluso las que no cambiaron. Añadir secciones
-para cambios de major, constraints de peers, Node requerido y paquetes deprecated.
+Para cada dependencia directa se incluye su nombre, sección, versión anterior, versión
+posterior, tipo de cambio y motivo. Deben aparecer también las dependencias que no
+cambiaron. El documento añade secciones narrativas para cambios de major, constraints
+de peers, Node requerido y paquetes deprecated.
 
 ### `validation.md`
 
@@ -387,9 +405,7 @@ Después de escribir los ocho archivos, el agente entrega:
   "researchSha256": "<64-hex>",
   "technicalVerifiedCommit": "<40-hex>",
   "outputDirectory": "docs/migration/v8",
-  "files": [
-    {"path": "docs/migration/v8/README.md", "sha256": "<64-hex>"}
-  ],
+  "files": [{ "path": "docs/migration/v8/README.md", "sha256": "<64-hex>" }],
   "claims": [
     {
       "id": "D-001",
@@ -525,6 +541,8 @@ Cubrir al menos:
 - [ ] Existen exactamente ocho documentos finales.
 - [ ] Todas las dependencias directas aparecen documentadas.
 - [ ] Errores, reparaciones, warnings y conceptos tienen evidencia.
+- [ ] La documentación distingue submissions accepted de reparaciones verificadas y
+      puede explicar intentos fallidos desde el historial autorizado.
 - [ ] Los hechos observados no se mezclan con cambios oficiales o inferencias.
 - [ ] El facade valida contenido y diff antes de cerrar el run.
 - [ ] Un fallo documental no invalida el resultado técnico.

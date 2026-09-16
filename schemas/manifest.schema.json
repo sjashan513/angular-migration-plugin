@@ -16,8 +16,13 @@
     "angular",
     "dependencies",
     "warnings",
+    "policies",
+    "authorizedOperations",
     "policy",
-    "checks"
+    "checks",
+    "discoverySha256",
+    "inputFingerprint",
+    "runtimePlan"
   ],
   "properties": {
     "schemaVersion": { "type": "integer", "enum": [5] },
@@ -28,6 +33,15 @@
     "targetMajor": { "type": "integer", "minimum": 1 },
     "resolutionStatus": { "type": "string", "enum": ["pending", "resolved"] },
     "resolverVersion": { "type": "integer", "const": 1 },
+    "discoverySha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "inputFingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "runtimePlan": { "$ref": "#/definitions/runtimePlan" },
+    "policies": { "$ref": "#/definitions/policies" },
+    "authorizedOperations": { "$ref": "#/definitions/authorizedOperations" },
+    "node": { "$ref": "#/definitions/node" },
     "resolvedAt": { "type": "string", "format": "date-time" },
     "manifestSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "project": {
@@ -41,6 +55,7 @@
         "scripts",
         "builders",
         "toolchain",
+        "runtimeToolchain",
         "git"
       ],
       "properties": {
@@ -90,6 +105,23 @@
             "node": { "$ref": "#/definitions/tool" },
             "npm": { "$ref": "#/definitions/tool" },
             "errors": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": false
+        },
+        "runtimeToolchain": {
+          "type": "object",
+          "required": ["fnm"],
+          "properties": {
+            "fnm": {
+              "type": "object",
+              "required": ["available", "executable", "version"],
+              "properties": {
+                "available": { "type": "boolean" },
+                "executable": { "type": ["string", "null"] },
+                "version": { "type": ["string", "null"] }
+              },
+              "additionalProperties": false
+            }
           },
           "additionalProperties": false
         },
@@ -259,7 +291,8 @@
           "unit-test",
           "build",
           "e2e",
-          "skip-check"
+          "skip-check",
+          "skip-checks"
         ]
       }
     },
@@ -297,7 +330,9 @@
           "displayCommand",
           "cwd",
           "timeoutSeconds",
-          "reason"
+          "reason",
+          "canSkip",
+          "runtimeProfile"
         ],
         "properties": {
           "id": {
@@ -322,7 +357,9 @@
             "type": "integer",
             "enum": [300, 600, 900, 1200, 1800]
           },
-          "reason": { "type": ["string", "null"] }
+          "reason": { "type": ["string", "null"] },
+          "canSkip": { "type": "boolean" },
+          "runtimeProfile": { "type": "string", "minLength": 1 }
         },
         "additionalProperties": false
       }
@@ -404,6 +441,85 @@
           "type": "object",
           "additionalProperties": { "type": "string" }
         }
+      },
+      "additionalProperties": false
+    },
+    "runtimePlan": {
+      "type": "object",
+      "required": ["profiles", "conflicts", "missingVersions"],
+      "properties": {
+        "profiles": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/runtimeProfile" }
+        },
+        "conflicts": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/runtimeConflict" }
+        },
+        "missingVersions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "runtimeProfile": {
+      "type": "object",
+      "required": [
+        "id",
+        "operations",
+        "requiredNodeRanges",
+        "requiredNpmRange",
+        "constraints",
+        "selectedNodeVersion",
+        "detectedNpmVersion",
+        "status"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "operations": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "requiredNodeRanges": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "requiredNpmRange": { "type": "string", "minLength": 1 },
+        "constraints": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/runtimeConstraint" }
+        },
+        "selectedNodeVersion": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "detectedNpmVersion": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "status": { "enum": ["installed", "missing", "blocked"] }
+      },
+      "additionalProperties": false
+    },
+    "runtimeConstraint": {
+      "type": "object",
+      "required": ["source", "value", "reason"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1 },
+        "value": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "runtimeConflict": {
+      "type": "object",
+      "required": ["code", "profileId", "message"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "profileId": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false
     }

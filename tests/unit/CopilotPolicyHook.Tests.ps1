@@ -36,7 +36,11 @@ try {
     [IO.File]::WriteAllText((Join-Path $temporary 'src/app.ts'), 'old')
     Write-MigrationJsonAtomic -Value ([PSCustomObject]@{ schemaVersion = 5; runId = $runId; processId = $PID }) -Path (Join-Path $temporary '.angular-migration/active.lock')
     $facade = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../scripts/angular-migration.ps1'))
-    $context = [PSCustomObject]@{ runId = $runId; status = 'needs-repair'; fingerprint = ('sha256:' + ('a' * 64)); attempt = 1; allowedPaths = @('src/**/*'); forbiddenPaths = @('src/protected.ts', 'package.json'); submissionPath = ".angular-migration/runs/$runId/inbox/repair.json" }
+    $historyRelative = ".angular-migration/runs/$runId/repair-history/$('a' * 64)/repair.jsonl"
+    $historyPath = Join-Path $temporary $historyRelative
+    New-Item -ItemType Directory -Path (Split-Path -Parent $historyPath) -Force | Out-Null
+    [IO.File]::WriteAllText($historyPath, "{}" + [Environment]::NewLine)
+    $context = [PSCustomObject]@{ runId = $runId; status = 'needs-repair'; fingerprint = ('sha256:' + ('a' * 64)); attempt = 1; allowedPaths = @('src/**/*'); forbiddenPaths = @('src/protected.ts', 'package.json'); history = [PSCustomObject]@{ path = $historyRelative; entryCount = 1; previousAttempts = 0; lastOutcome = $null }; submissionPath = ".angular-migration/runs/$runId/inbox/repair.json" }
     $state = [PSCustomObject]@{ schemaVersion = 5; runId = $runId; status = 'needs-repair'; runtimeSha256 = (Get-FileHash -LiteralPath $source).Hash.ToLowerInvariant(); repair = [PSCustomObject]@{ context = $context; facadePath = $facade; accepted = $null } }
     $statePath = Join-Path $runRoot 'state.json'
     Write-MigrationJsonAtomic -Value $state -Path $statePath
@@ -70,6 +74,15 @@ try {
     }
     $result = Invoke-HookFixture @{ toolName = 'create'; toolArgs = @{ path = $context.submissionPath; file_text = '{}' } }
     Assert-Hook 'contractual submission is writable' ($result.json.permissionDecision -eq 'allow')
+    $result = Invoke-HookFixture @{ toolName = 'read'; toolArgs = @{ path = $historyRelative } }
+    Assert-Hook 'implementer can read the active history only' ($result.json.permissionDecision -eq 'allow')
+    $foreignHistory = ".angular-migration/runs/$runId/repair-history/$('b' * 64)/repair.jsonl"
+    $result = Invoke-HookFixture @{ toolName = 'read'; toolArgs = @{ path = $foreignHistory } }
+    Assert-Hook 'implementer cannot read a foreign fingerprint history' ($result.json.permissionDecision -eq 'deny')
+    foreach ($toolName in @('edit', 'create', 'move', 'delete')) {
+        $result = Invoke-HookFixture @{ toolName = $toolName; toolArgs = @{ path = $historyRelative; content = '{}' } }
+        Assert-Hook "$toolName on repair history is denied" ($result.json.permissionDecision -eq 'deny')
+    }
     $result = Invoke-HookFixture @{ agentName = 'migration-implementer'; response = 'Everything works.' } subagentStop
     Assert-Hook 'missing registration blocks even with success claim' ($result.json.decision -eq 'block')
     $result = Invoke-HookFixture @{ agentName = 'other-agent' } subagentStop
@@ -97,6 +110,7 @@ try {
         targetMajor = 8
         manifestSha256 = $documenterManifestHash
         documentation = [PSCustomObject]@{ status = 'researching'; phase = 'research' }
+        repairs = @()
     }
     Write-MigrationJsonAtomic -Value $documenterState -Path $statePath
     $researchInputPath = Join-Path $runRoot 'inbox/research.json'
@@ -113,13 +127,20 @@ try {
     Assert-Hook 'documenter research edit is limited to inbox' ($result.json.permissionDecision -eq 'allow')
     $result = Invoke-HookFixture @{ agentName = 'migration-documenter'; toolName = 'edit'; toolArgs = @{ path = 'docs/migration/v8/README.md'; file_text = '#' } }
     Assert-Hook 'documenter research cannot edit final docs' ($result.json.permissionDecision -eq 'deny')
+    $result = Invoke-HookFixture @{ agentName = 'migration-documenter'; toolName = 'read'; toolArgs = @{ path = $historyRelative } }
+    Assert-Hook 'documenter research cannot read repair history' ($result.json.permissionDecision -eq 'deny')
     Write-MigrationJsonAtomic -Value ([PSCustomObject]@{ schemaVersion = 1; runId = $runId; manifestSha256 = $documenterManifestHash; sources = @(@{ id = 'S-001' }); findings = @(@{ id = 'F-001' }); researchedAt = '2026-09-10T10:30:00.0000000Z' }) -Path $researchInputPath
     $result = Invoke-HookFixture @{ agentName = 'migration-documenter' } subagentStop
     Assert-Hook 'valid research input allows documenter to stop' ($result.json.decision -eq 'allow')
     $documenterState.documentation.status = 'publishing'
     $documenterState.documentation.phase = 'publish'
     $documenterState.migrationStatus = 'verified'
+    $documenterState.repairs = @([PSCustomObject]@{ fingerprint = ('sha256:' + ('a' * 64)) })
     Write-MigrationJsonAtomic -Value $documenterState -Path $statePath
+    $documenterHistoryRelative = ".angular-migration/runs/$runId/repair-history/$('a' * 64)/repair.jsonl"
+    $documenterHistoryPath = Join-Path $temporary $documenterHistoryRelative
+    New-Item -ItemType Directory -Path (Split-Path -Parent $documenterHistoryPath) -Force | Out-Null
+    [IO.File]::WriteAllText($documenterHistoryPath, "{}" + [Environment]::NewLine)
     $publishDirectory = Join-Path $temporary 'docs/migration/v8'
     New-Item -ItemType Directory -Path $publishDirectory -Force | Out-Null
     foreach ($name in @('README.md', 'changes.md', 'errors-and-repairs.md', 'warnings.md', 'new-concepts.md', 'dependencies.md', 'validation.md', 'sources.md')) {
@@ -134,6 +155,16 @@ try {
     Assert-Hook 'documenter publish edit is limited to target docs' ($result.json.permissionDecision -eq 'allow')
     $result = Invoke-HookFixture @{ agentName = 'migration-documenter'; toolName = 'edit'; toolArgs = @{ path = $researchInputPath; file_text = '{}' } }
     Assert-Hook 'documenter publish cannot edit research artifact' ($result.json.permissionDecision -eq 'deny')
+    $result = Invoke-HookFixture @{ agentName = 'migration-documenter'; toolName = 'read'; toolArgs = @{ path = $documenterHistoryRelative } }
+    Assert-Hook 'documenter publish can read run repair history evidence' ($result.json.permissionDecision -eq 'allow')
+    $foreignDocumenterHistoryRelative = ".angular-migration/runs/$runId/repair-history/$('b' * 64)/repair.jsonl"
+    $foreignDocumenterHistoryPath = Join-Path $temporary $foreignDocumenterHistoryRelative
+    New-Item -ItemType Directory -Path (Split-Path -Parent $foreignDocumenterHistoryPath) -Force | Out-Null
+    [IO.File]::WriteAllText($foreignDocumenterHistoryPath, "{}" + [Environment]::NewLine)
+    $result = Invoke-HookFixture @{ agentName = 'migration-documenter'; toolName = 'read'; toolArgs = @{ path = $foreignDocumenterHistoryRelative } }
+    Assert-Hook 'documenter publish cannot read a foreign repair history' ($result.json.permissionDecision -eq 'deny')
+    $result = Invoke-HookFixture @{ agentName = 'migration-documenter'; toolName = 'read'; toolArgs = @{ path = ".angular-migration/runs/$runId/repair-history" } }
+    Assert-Hook 'documenter publish cannot read the repair history container' ($result.json.permissionDecision -eq 'deny')
     $result = Invoke-HookFixture @{ agentName = 'migration-documenter' } subagentStop
     Assert-Hook 'valid publish input and files allow documenter to stop' ($result.json.decision -eq 'allow')
     $agentText = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../../agents/migration-documenter.agent.md') -Raw

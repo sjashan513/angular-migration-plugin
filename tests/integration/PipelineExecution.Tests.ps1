@@ -30,6 +30,7 @@ foreach ($moduleName in @('Migration.Project', 'Migration.Dependencies', 'Migrat
             if ($Names -contains 'git.exe' -or $Names -contains 'git') { return (Get-Command git.exe -ErrorAction Stop).Source }
             if ($Names -contains 'node.exe' -or $Names -contains 'node') { return (Join-Path $script:FixtureTools 'node.cmd') }
             if ($Names -contains 'npm.cmd' -or $Names -contains 'npm.exe' -or $Names -contains 'npm') { return (Join-Path $script:FixtureTools 'npm.cmd') }
+            if ($Names -contains 'fnm.exe' -or $Names -contains 'fnm') { return (Join-Path $script:FixtureTools 'fnm.cmd') }
             return $null
         }
     } $toolDirectory
@@ -86,10 +87,20 @@ function Assert-RequiredProperties {
     }
 }
 
+function Start-TestMigration {
+    param([string]$ProjectRoot)
+
+    $discovery = Invoke-MigrationDiscover -ProjectRoot $ProjectRoot -TargetMajor 8
+    if (-not $discovery.ok -or $discovery.status -ne 'ready') {
+        throw ('Test discovery failed: ' + ($discovery | ConvertTo-Json -Depth 20 -Compress))
+    }
+    return Invoke-StartMigration -ProjectRoot $ProjectRoot -TargetMajor 8
+}
+
 function Invoke-HappyPath {
     param([string]$ProjectRoot)
 
-    $start = Invoke-StartMigration -ProjectRoot $ProjectRoot -TargetMajor 8
+    $start = Start-TestMigration -ProjectRoot $ProjectRoot
     $runId = [string]$start.data.runId
     $result = Invoke-MigrationRun -ProjectRoot $ProjectRoot -RunId $runId
     if (-not $result.ok) { throw ('Happy path failed: ' + ($result | ConvertTo-Json -Depth 20 -Compress)) }
@@ -145,14 +156,14 @@ try {
     $baselineRoot = Join-Path $temporaryRoot 'baseline-failure'
     New-PipelineProject -Path $baselineRoot
     New-Item -ItemType File -Path (Join-Path $baselineRoot '.fixture-fail-build') | Out-Null
-    $baselineStart = Invoke-StartMigration -ProjectRoot $baselineRoot -TargetMajor 8
+    $baselineStart = Start-TestMigration -ProjectRoot $baselineRoot
     $baselineRun = Invoke-MigrationRun -ProjectRoot $baselineRoot -RunId $baselineStart.data.runId
     Assert-Integration 'baseline failure blocks before branch creation' ($baselineRun.status -eq 'blocked' -and $baselineRun.error.code -eq 'baseline_check_failed' -and (Get-CurrentBranch -ProjectRoot $baselineRoot) -eq 'master' -and -not (Test-Path -LiteralPath (Join-Path $baselineRoot 'src/migrated-by-ng.ts')))
     Assert-Integration 'baseline failure releases ownership' (-not (Test-Path -LiteralPath (Join-Path $baselineRoot '.angular-migration/active.lock')))
 
     $branchRoot = Join-Path $temporaryRoot 'branch-exists'
     New-PipelineProject -Path $branchRoot
-    $branchStart = Invoke-StartMigration -ProjectRoot $branchRoot -TargetMajor 8
+    $branchStart = Start-TestMigration -ProjectRoot $branchRoot
     $branchName = 'migration/angular-7-to-8-' + $branchStart.data.runId.Substring($branchStart.data.runId.Length - 8)
     & git -C $branchRoot branch $branchName
     $branchRun = Invoke-MigrationRun -ProjectRoot $branchRoot -RunId $branchStart.data.runId
@@ -161,7 +172,7 @@ try {
     $protectedRoot = Join-Path $temporaryRoot 'protected-path'
     New-PipelineProject -Path $protectedRoot
     $env:MIGRATION_FIXTURE_PROTECTED_PROJECT = $protectedRoot
-    $protectedStart = Invoke-StartMigration -ProjectRoot $protectedRoot -TargetMajor 8
+    $protectedStart = Start-TestMigration -ProjectRoot $protectedRoot
     $protectedRun = Invoke-MigrationRun -ProjectRoot $protectedRoot -RunId $protectedStart.data.runId
     Remove-Item Env:MIGRATION_FIXTURE_PROTECTED_PROJECT -ErrorAction SilentlyContinue
     Assert-Integration 'protected path blocks and rolls back Angular changes' ($protectedRun.status -eq 'blocked' -and $protectedRun.error.code -eq 'protected_path_modified' -and -not (Test-Path -LiteralPath (Join-Path $protectedRoot 'docs/unexpected.md')) -and -not (Test-Path -LiteralPath (Join-Path $protectedRoot 'src/migrated-by-ng.ts')))
@@ -170,8 +181,8 @@ try {
     New-PipelineProject -Path $blockedRoot
     $blockedResponses = Join-Path $temporaryRoot 'blocked-responses.json'
     @{ '@angular/core@8' = @{ version = '8.2.14'; peerDependencies = @{}; peerDependenciesMeta = @{}; engines = @{}; deprecated = $false; 'dist-tags' = @{} } } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $blockedResponses -Encoding UTF8
+    $blockedStart = Start-TestMigration -ProjectRoot $blockedRoot
     $env:MIGRATION_REGISTRY_FIXTURE = $blockedResponses
-    $blockedStart = Invoke-StartMigration -ProjectRoot $blockedRoot -TargetMajor 8
     $blockedRun = Invoke-MigrationRun -ProjectRoot $blockedRoot -RunId $blockedStart.data.runId
     Assert-Integration 'resolver block leaves project dependency files untouched' ($blockedRun.status -eq 'blocked' -and $blockedRun.error.code -eq 'registry_metadata_unavailable' -and -not (Test-Path -LiteralPath (Join-Path $blockedRoot 'src/migrated-by-ng.ts')) -and -not (Test-Path -LiteralPath (Join-Path $blockedRoot '.angular-migration/active.lock')))
     $env:MIGRATION_REGISTRY_FIXTURE = $registryFixture
@@ -179,7 +190,7 @@ try {
     $installRoot = Join-Path $temporaryRoot 'install-failure'
     New-PipelineProject -Path $installRoot
     New-Item -ItemType File -Path (Join-Path $installRoot '.fixture-fail-second-ci') | Out-Null
-    $installStart = Invoke-StartMigration -ProjectRoot $installRoot -TargetMajor 8
+    $installStart = Start-TestMigration -ProjectRoot $installRoot
     $installRun = Invoke-MigrationRun -ProjectRoot $installRoot -RunId $installStart.data.runId
     Assert-Integration 'npm ci failure blocks after dependency checkpoint' ($installRun.status -eq 'blocked' -and $installRun.error.code -eq 'dependency_install_failed' -and $installRun.data.stage -eq 'install')
     Assert-Integration 'install failure keeps no active ownership lock' (-not (Test-Path -LiteralPath (Join-Path $installRoot '.angular-migration/active.lock')))
@@ -187,7 +198,7 @@ try {
     $repairRoot = Join-Path $temporaryRoot 'validation-repair'
     New-PipelineProject -Path $repairRoot
     New-Item -ItemType File -Path (Join-Path $repairRoot '.fixture-fail-second-build') | Out-Null
-    $repairStart = Invoke-StartMigration -ProjectRoot $repairRoot -TargetMajor 8
+    $repairStart = Start-TestMigration -ProjectRoot $repairRoot
     $repairFirst = Invoke-MigrationRun -ProjectRoot $repairRoot -RunId $repairStart.data.runId
     Assert-Integration 'final check failure produces scoped needs-repair' ($repairFirst.status -eq 'needs-repair' -and $repairFirst.error.code -eq 'validation_failed' -and (Test-Path -LiteralPath (Join-Path $repairRoot ('.angular-migration/runs/' + $repairStart.data.runId + '/failure-context.json'))))
     Assert-Integration 'needs-repair keeps ownership' (Test-Path -LiteralPath (Join-Path $repairRoot '.angular-migration/active.lock') -PathType Leaf)
@@ -213,7 +224,7 @@ try {
 
     $repairLimitRoot = Join-Path $temporaryRoot 'repair-limit'
     New-PipelineProject -Path $repairLimitRoot
-    $repairLimitStart = Invoke-StartMigration -ProjectRoot $repairLimitRoot -TargetMajor 8
+    $repairLimitStart = Start-TestMigration -ProjectRoot $repairLimitRoot
     $repairLimitState = Read-MigrationRunState -ProjectRoot $repairLimitRoot -RunId $repairLimitStart.data.runId
     $repairLimitState.status = 'needs-repair'
     $repairLimitState.stage = 'validate'
@@ -225,7 +236,7 @@ try {
 
     $recoveryRoot = Join-Path $temporaryRoot 'interrupted-operation'
     New-PipelineProject -Path $recoveryRoot
-    $recoveryStart = Invoke-StartMigration -ProjectRoot $recoveryRoot -TargetMajor 8
+    $recoveryStart = Start-TestMigration -ProjectRoot $recoveryRoot
     $recoveryState = Read-MigrationRunState -ProjectRoot $recoveryRoot -RunId $recoveryStart.data.runId
     $recoveryBranch = 'migration/angular-7-to-8-' + $recoveryStart.data.runId.Substring($recoveryStart.data.runId.Length - 8)
     & git -C $recoveryRoot switch -c $recoveryBranch $recoveryState.initialCommit | Out-Null

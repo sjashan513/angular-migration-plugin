@@ -107,13 +107,24 @@
         "evidence": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["manifest", "result", "research", "events", "repairs"],
+          "required": [
+            "manifest",
+            "result",
+            "research",
+            "events",
+            "repairs",
+            "repairHistory"
+          ],
           "properties": {
             "manifest": { "type": "string", "minLength": 1 },
             "result": { "type": "string", "minLength": 1 },
             "research": { "type": "string", "minLength": 1 },
             "events": { "type": "string", "minLength": 1 },
-            "repairs": { "type": "string", "minLength": 1 }
+            "repairs": { "type": "string", "minLength": 1 },
+            "repairHistory": {
+              "type": "string",
+              "pattern": "^\\.angular-migration/runs/[a-z0-9TZ-]+/repair-history$"
+            }
           }
         },
         "submissionPath": {

@@ -66,6 +66,55 @@ try {
     }
     Write-Host 'PASS all technical transition families'
 
+    $repairFixture = New-StateFixture
+    try {
+        $repairState = Read-MigrationRunState -ProjectRoot $repairFixture.root -RunId $repairFixture.runId
+        $repairFingerprint = 'sha256:' + ('b' * 64)
+        $repairState.status = 'needs-repair'
+        $repairState.stage = 'validate'
+        $repairState.manifestSha256 = 'c' * 64
+        $repairState.repair = [PSCustomObject]@{
+            context = [PSCustomObject]@{
+                runId = $repairFixture.runId; status = 'needs-repair'; stage = 'validate'; failedCheck = 'build'
+                fingerprint = $repairFingerprint; attempt = 1; checkpointCommit = 'a' * 40; historyCheckpointCommit = 'a' * 40
+                manifestSha256 = $repairState.manifestSha256; allowedPaths = @('src/**/*'); forbiddenPaths = @('.angular-migration/**')
+                diagnostic = [PSCustomObject]@{ summary = 'Build failed.'; exitCode = 1; logFiles = @(); relatedFiles = @(); warnings = @() }
+                history = [PSCustomObject]@{ path = ".angular-migration/runs/$($repairFixture.runId)/repair-history/$('b' * 64)/repair.jsonl"; entryCount = 1; previousAttempts = 0; lastOutcome = $null }
+                submissionPath = ".angular-migration/runs/$($repairFixture.runId)/inbox/repair.json"
+            }
+            diagnosticHash = 'd' * 64
+            before = @()
+            protected = @()
+            accepted = $null
+            facadePath = 'scripts/angular-migration.ps1'
+        }
+        Write-MigrationRunState -ProjectRoot $repairFixture.root -RunId $repairFixture.runId -State $repairState
+        Write-Host 'PASS emitted active repair state satisfies strict nested contract'
+
+        $repairState = Read-MigrationRunState -ProjectRoot $repairFixture.root -RunId $repairFixture.runId
+        $repairState.repair.context.history.path = '.angular-migration/runs/other-run/repair-history/' + ('b' * 64) + '/repair.jsonl'
+        Assert-Code { Write-MigrationRunState -ProjectRoot $repairFixture.root -RunId $repairFixture.runId -State $repairState } 'invalid_run_state'
+        $repairState = Read-MigrationRunState -ProjectRoot $repairFixture.root -RunId $repairFixture.runId
+        $repairState.repair.context = [PSCustomObject]@{ runId = $repairFixture.runId }
+        Assert-Code { Write-MigrationRunState -ProjectRoot $repairFixture.root -RunId $repairFixture.runId -State $repairState } 'invalid_run_state'
+        $repairState = Read-MigrationRunState -ProjectRoot $repairFixture.root -RunId $repairFixture.runId
+        $repairState.repair.before = @([PSCustomObject]@{ path = 'src/app.ts'; untracked = $false })
+        Assert-Code { Write-MigrationRunState -ProjectRoot $repairFixture.root -RunId $repairFixture.runId -State $repairState } 'invalid_run_state'
+        $repairState = Read-MigrationRunState -ProjectRoot $repairFixture.root -RunId $repairFixture.runId
+        $repairState.repair.accepted = [PSCustomObject]@{ fingerprint = 'sha256:' + ('e' * 64); attempt = 1; commit = 'a' * 40; report = ".angular-migration/runs/$($repairFixture.runId)/repairs/a.json"; reportSha256 = 'f' * 64 }
+        Assert-Code { Write-MigrationRunState -ProjectRoot $repairFixture.root -RunId $repairFixture.runId -State $repairState } 'invalid_run_state'
+        $repairState = Read-MigrationRunState -ProjectRoot $repairFixture.root -RunId $repairFixture.runId
+        $repairState.repairs = @(
+            [PSCustomObject]@{ fingerprint = $repairFingerprint; attempt = 1; commit = 'a' * 40; report = ".angular-migration/runs/$($repairFixture.runId)/repairs/a.json"; reportSha256 = 'f' * 64 },
+            [PSCustomObject]@{ fingerprint = $repairFingerprint; attempt = 1; commit = 'a' * 40; report = ".angular-migration/runs/$($repairFixture.runId)/repairs/b.json"; reportSha256 = 'f' * 64 }
+        )
+        Assert-Code { Write-MigrationRunState -ProjectRoot $repairFixture.root -RunId $repairFixture.runId -State $repairState } 'invalid_run_state'
+        Write-Host 'PASS malformed repair context, accepted summary and duplicate identity are rejected'
+    }
+    finally {
+        Remove-Item -LiteralPath $repairFixture.root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
     $state = Read-MigrationRunState -ProjectRoot $fixture.root -RunId $fixture.runId
     $state.targetMajor = 10
     Write-MigrationJsonAtomic -Value $state -Path $fixture.paths.state

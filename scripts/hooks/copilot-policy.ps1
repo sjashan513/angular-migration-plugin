@@ -105,6 +105,19 @@ function Test-PolicyDocumentationRead {
     return $true
 }
 
+function Test-PolicyRepairHistoryRead {
+    param([string]$Root, [string]$RunId, [string]$Path, [string[]]$AuthorizedPaths = @())
+    try {
+        $full = Resolve-RepairPath $Root $Path
+        $relative = $full.Substring($Root.TrimEnd('\', '/').Length + 1).Replace('\', '/')
+        $prefix = '.angular-migration/runs/' + $RunId + '/repair-history/'
+        if ($relative -notmatch ('^' + [regex]::Escape($prefix) + '[0-9a-f]{64}/repair\.jsonl$')) { return $false }
+        if ($AuthorizedPaths.Count -eq 0 -or $AuthorizedPaths -cnotcontains $relative) { return $false }
+        return Test-Path -LiteralPath $full -PathType Leaf
+    }
+    catch { return $false }
+}
+
 function Test-PolicyDocumentationSubmission {
     param([string]$Root, $State, [string]$Mode)
     $runId = [string]$State.runId
@@ -160,6 +173,13 @@ try {
             else { [Console]::Out.Write('{"permissionDecision":"deny","permissionDecisionReason":"angular-migration-v5: documentation context is not active"}') }
             exit 0
         }
+        $authorizedHistoryPaths = @()
+        if ($mode -eq 'publish') {
+            $accepted = @((Get-PolicyProperty -Object $state -Name 'repairs') | Where-Object { $_ -and $_.fingerprint -match '^sha256:[0-9a-f]{64}$' })
+            foreach ($repair in $accepted) {
+                $authorizedHistoryPaths += '.angular-migration/runs/' + $state.runId + '/repair-history/' + ([string]$repair.fingerprint).Substring(7) + '/repair.jsonl'
+            }
+        }
         if ($Event -eq 'subagentStop') {
             if (Test-PolicyDocumentationSubmission -Root $root -State $state -Mode $mode) { [Console]::Out.Write('{"decision":"allow"}') }
             else { [Console]::Out.Write('{"decision":"block","reason":"La entrega documental no contiene los archivos contractuales validables."}') }
@@ -206,6 +226,23 @@ try {
         }
         elseif ($tool -in @('read', 'search', 'view', 'grep', 'rg', 'glob')) {
             $allowed = Test-PolicyDocumentationRead -Root $root -Tool $tool -Arguments $arguments
+            if ($allowed) {
+                $readPaths = @()
+                foreach ($name in @('path', 'paths', 'filePath')) {
+                    if ($arguments.PSObject.Properties[$name]) { $readPaths += @($arguments.$name) }
+                }
+                foreach ($path in $readPaths) {
+                    if ($path -is [string]) {
+                        try {
+                            $full = Resolve-RepairPath $root $path
+                            $relative = $full.Substring($root.TrimEnd('\', '/').Length + 1).Replace('\', '/')
+                            if ($relative -match ('^\.angular-migration/runs/' + [regex]::Escape($state.runId) + '/repair-history(?:/|$)') -and
+                                -not (Test-PolicyRepairHistoryRead -Root $root -RunId $state.runId -Path $path -AuthorizedPaths $authorizedHistoryPaths)) { $allowed = $false }
+                        }
+                        catch { $allowed = $false }
+                    }
+                }
+            }
         }
         $decision = if ($allowed) { 'allow' } else { 'deny' }
         $reason = if ($allowed) { 'angular-migration-v5: operation is inside active documentation contract' } else { 'angular-migration-v5: operation outside active documentation contract' }
@@ -270,6 +307,8 @@ try {
                         if ($relative -cne $context.submissionPath -and -not (Test-RepairAllowedPath $relative $context)) { $allowed = $false }
                     }
                     else {
+                        $historyRootPattern = '^\.angular-migration/runs/[^/]+/repair-history(?:/|$)'
+                        if ($relative -match $historyRootPattern -and $relative -cne [string]$context.history.path) { $allowed = $false }
                         $credentialPattern = '(?i)(^|/)(\.npmrc|\.env[^/]*|\.ssh|\.git|id_rsa[^/]*|id_ed25519[^/]*|[^/]*\.(pem|key|pfx|p12))(/|$)'
                         if ($relative -match $credentialPattern) { $allowed = $false }
                         if (Test-Path -LiteralPath $full -PathType Container) {

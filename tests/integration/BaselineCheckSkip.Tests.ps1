@@ -66,6 +66,15 @@ exit 1
                 executable = 'fixture'
             }
         }
+        function script:Get-PipelineRuntimeProfile {
+            param([string]$ProjectRoot, [string]$RunId, [string]$ProfileId)
+            return [PSCustomObject]@{
+                id = $ProfileId
+                nodeVersion = '20.11.1'
+                npmVersion = '10.2.4'
+                fnmPath = 'fixture-fnm'
+            }
+        }
     } (Join-Path $root '.fixture-trace')
     $coreModule = Get-Module Migration.Core
     & $coreModule {

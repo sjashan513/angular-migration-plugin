@@ -32,9 +32,10 @@ Playwright:        fuera de alcance
 Cloud agent:       no soportado en v5
 ```
 
-El plugin no instala ni cambia Node. El operador debe iniciar el run con una versión de
-Node compatible con Angular origen y objetivo. `inspect`/`start` bloquean antes de tocar
-el repo si no existe intersección válida.
+Discovery selecciona una versión exacta de Node mediante fnm para cada operación. Si
+falta una versión, el operador debe aprobar explícitamente la propuesta de instalación
+antes de iniciar el run; el plugin no cambia el runtime predeterminado. `discover` y
+`start` bloquean antes de tocar el repo si no existe una intersección válida.
 
 ## 3. Inventario final esperado
 
@@ -183,16 +184,19 @@ Reglas adicionales:
 
 Todos funcionan sin red, Copilot, Git remoto ni Angular real.
 
-| Área | Cobertura mínima |
-| --- | --- |
-| Core | Procesos con arrays, timeout, redacción, escritura atómica, JSON canónico, hashes. |
-| Project | Raíz, Git limpio, Node/npm, package y lockfiles v1/v2/v3, specs no soportados. |
-| State | Ownership, transiciones, lock, reanudación, eventos append-only. |
-| Dependencies | Resolución completa, peers, engines, ng-update, estabilidad y majors. |
-| Pipeline | Stages, checkpoints, rollback acotado, gates, interrupciones y result. |
-| Repair | Contexto, perímetro, entrega, diff real e intentos. |
-| Documentation | Research, evidencias, ocho archivos y cierre. |
-| Hooks | stdin/stdout JSON, allow/deny, error y defensa tras timeout. |
+La cobertura mínima se distribuye así:
+
+- **Core**: procesos con arrays, timeout, redacción, escritura atómica, JSON canónico
+  y hashes.
+- **Project**: raíz, Git limpio, Node/npm, package y lockfiles v1/v2/v3 y specs no
+  soportados.
+- **State**: ownership, transiciones, lock, reanudación y eventos append-only.
+- **Dependencies**: resolución completa, peers, engines, ng-update, estabilidad y
+  majors.
+- **Pipeline**: stages, checkpoints, rollback acotado, gates, interrupciones y result.
+- **Repair**: contexto, perímetro, entrega, diff real e intentos.
+- **Documentation**: research, evidencias, ocho archivos y cierre.
+- **Hooks**: stdin/stdout JSON, allow/deny, error y defensa tras timeout.
 
 ### 7.2 Integración
 

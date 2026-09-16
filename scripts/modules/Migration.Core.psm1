@@ -99,7 +99,8 @@ function Read-MigrationJson {
         [switch]$Required
     )
 
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    $ioPath = if ($Path.Length -ge 248 -and $Path -match '^[A-Za-z]:\\') { '\\?\' + $Path } else { $Path }
+    if (-not [IO.File]::Exists($ioPath)) {
         if ($Required) {
             Throw-MigrationError -Code 'json_not_found' -Message "JSON file not found: $Path" -Status failed
         }
@@ -109,7 +110,7 @@ function Read-MigrationJson {
     try {
         $jsonParameters = @{}
         if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $jsonParameters.DateKind = 'String' }
-        return (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json @jsonParameters)
+        return ([IO.File]::ReadAllText($ioPath, [Text.Encoding]::UTF8) | ConvertFrom-Json @jsonParameters)
     }
     catch {
         Throw-MigrationError -Code 'invalid_json' -Message "Invalid JSON file: $Path" -Status failed -Details $_.Exception.Message
@@ -123,31 +124,35 @@ function Write-MigrationJsonAtomic {
     )
 
     $directory = Split-Path -Parent $Path
-    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
-        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    $directoryIoPath = if ($directory.Length -ge 248 -and $directory -match '^[A-Za-z]:\\') { '\\?\' + $directory } else { $directory }
+    if (-not [IO.Directory]::Exists($directoryIoPath)) {
+        [IO.Directory]::CreateDirectory($directoryIoPath) | Out-Null
     }
 
     $tempPath = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
     $backupPath = "$Path.$([guid]::NewGuid().ToString('N')).bak"
+    $pathIo = if ($Path.Length -ge 248 -and $Path -match '^[A-Za-z]:\\') { '\\?\' + $Path } else { $Path }
+    $tempIoPath = if ($tempPath.Length -ge 248 -and $tempPath -match '^[A-Za-z]:\\') { '\\?\' + $tempPath } else { $tempPath }
+    $backupIoPath = if ($backupPath.Length -ge 248 -and $backupPath -match '^[A-Za-z]:\\') { '\\?\' + $backupPath } else { $backupPath }
     $json = $Value | ConvertTo-Json -Depth 50 -Compress
     try {
-        [IO.File]::WriteAllText($tempPath, $json, (New-Object System.Text.UTF8Encoding($false)))
-        if (Test-Path -LiteralPath $Path -PathType Leaf) {
-            [IO.File]::Replace($tempPath, $Path, $backupPath)
+        [IO.File]::WriteAllText($tempIoPath, $json, (New-Object System.Text.UTF8Encoding($false)))
+        if ([IO.File]::Exists($pathIo)) {
+            [IO.File]::Replace($tempIoPath, $pathIo, $backupIoPath)
         }
         else {
-            [IO.File]::Move($tempPath, $Path)
+            [IO.File]::Move($tempIoPath, $pathIo)
         }
     }
     catch {
         Throw-MigrationError -Code 'atomic_write_failed' -Message "Could not write JSON atomically: $Path" -Status failed -Details $_.Exception.Message
     }
     finally {
-        if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
-            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        if ([IO.File]::Exists($tempIoPath)) {
+            [IO.File]::Delete($tempIoPath)
         }
-        if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
-            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+        if ([IO.File]::Exists($backupIoPath)) {
+            [IO.File]::Delete($backupIoPath)
         }
     }
 }
@@ -159,30 +164,34 @@ function Write-MigrationTextAtomic {
     )
 
     $directory = Split-Path -Parent $Path
-    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
-        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    $directoryIoPath = if ($directory.Length -ge 248 -and $directory -match '^[A-Za-z]:\\') { '\\?\' + $directory } else { $directory }
+    if (-not [IO.Directory]::Exists($directoryIoPath)) {
+        [IO.Directory]::CreateDirectory($directoryIoPath) | Out-Null
     }
 
     $tempPath = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
     $backupPath = "$Path.$([guid]::NewGuid().ToString('N')).bak"
+    $pathIo = if ($Path.Length -ge 248 -and $Path -match '^[A-Za-z]:\\') { '\\?\' + $Path } else { $Path }
+    $tempIoPath = if ($tempPath.Length -ge 248 -and $tempPath -match '^[A-Za-z]:\\') { '\\?\' + $tempPath } else { $tempPath }
+    $backupIoPath = if ($backupPath.Length -ge 248 -and $backupPath -match '^[A-Za-z]:\\') { '\\?\' + $backupPath } else { $backupPath }
     try {
-        [IO.File]::WriteAllText($tempPath, $Text, (New-Object System.Text.UTF8Encoding($false)))
-        if (Test-Path -LiteralPath $Path -PathType Leaf) {
-            [IO.File]::Replace($tempPath, $Path, $backupPath)
+        [IO.File]::WriteAllText($tempIoPath, $Text, (New-Object System.Text.UTF8Encoding($false)))
+        if ([IO.File]::Exists($pathIo)) {
+            [IO.File]::Replace($tempIoPath, $pathIo, $backupIoPath)
         }
         else {
-            [IO.File]::Move($tempPath, $Path)
+            [IO.File]::Move($tempIoPath, $pathIo)
         }
     }
     catch {
         Throw-MigrationError -Code 'atomic_write_failed' -Message "Could not write text atomically: $Path" -Status failed -Details $_.Exception.Message
     }
     finally {
-        if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
-            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        if ([IO.File]::Exists($tempIoPath)) {
+            [IO.File]::Delete($tempIoPath)
         }
-        if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
-            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+        if ([IO.File]::Exists($backupIoPath)) {
+            [IO.File]::Delete($backupIoPath)
         }
     }
 }
@@ -198,6 +207,145 @@ function Find-MigrationExecutable {
     }
 
     return $null
+}
+
+function Get-MigrationVersionTuple {
+    param([Parameter(Mandatory = $true)][string]$Version)
+
+    $match = [regex]::Match($Version, '^([0-9]+)\.([0-9]+)\.([0-9]+)$')
+    if (-not $match.Success) { return $null }
+    return @([int]$match.Groups[1].Value, [int]$match.Groups[2].Value, [int]$match.Groups[3].Value)
+}
+
+function Compare-MigrationVersionTuple {
+    param(
+        [Parameter(Mandatory = $true)][int[]]$Left,
+        [Parameter(Mandatory = $true)][int[]]$Right
+    )
+
+    for ($index = 0; $index -lt 3; $index++) {
+        if ($Left[$index] -lt $Right[$index]) { return -1 }
+        if ($Left[$index] -gt $Right[$index]) { return 1 }
+    }
+    return 0
+}
+
+function Test-MigrationVersionRange {
+    param(
+        [Parameter(Mandatory = $true)][string]$Version,
+        [Parameter(Mandatory = $true)][string]$Range
+    )
+
+    $versionTuple = Get-MigrationVersionTuple -Version $Version
+    if ($null -eq $versionTuple -or [string]::IsNullOrWhiteSpace($Range)) { return $false }
+    $Range = $Range -replace '(^|\s)v(?=\d)', '$1'
+    foreach ($alternative in ($Range -split '\|\|')) {
+        $alternativeText = $alternative.Trim()
+        if ($alternativeText -in @('', '*', 'x', 'X')) { return $true }
+        if ($alternativeText -match '^([0-9]+)\.([0-9]+)\.([0-9]+)\s+-\s+([0-9]+)\.([0-9]+)\.([0-9]+)$') {
+            $lower = @([int]$Matches[1], [int]$Matches[2], [int]$Matches[3])
+            $upper = @([int]$Matches[4], [int]$Matches[5], [int]$Matches[6])
+            if ((Compare-MigrationVersionTuple -Left $versionTuple -Right $lower) -ge 0 -and
+                (Compare-MigrationVersionTuple -Left $versionTuple -Right $upper) -le 0) { return $true }
+            continue
+        }
+        $tokens = @($alternativeText -split '\s+' | Where-Object { $_ })
+        $matches = $true
+        foreach ($token in $tokens) {
+            $operator = ''
+            $value = $token
+            if ($token -match '^(\^|~|>=|<=|>|<)(.+)$') { $operator = $Matches[1]; $value = $Matches[2] }
+            $parts = $value -split '\.'
+            if ($parts.Count -gt 3 -or $parts[0] -notmatch '^\d+$') { $matches = $false; break }
+            $major = [int]$parts[0]
+            $minor = 0
+            $patch = 0
+            $minorWildcard = $parts.Count -lt 2 -or $parts[1] -in @('x', 'X', '*')
+            $patchWildcard = $parts.Count -lt 3 -or $parts[2] -in @('x', 'X', '*')
+            if (-not $minorWildcard -and $parts[1] -notmatch '^\d+$') { $matches = $false; break }
+            if (-not $patchWildcard -and $parts[2] -notmatch '^\d+$') { $matches = $false; break }
+            if (-not $minorWildcard) { $minor = [int]$parts[1] }
+            if (-not $patchWildcard) { $patch = [int]$parts[2] }
+            $base = @($major, $minor, $patch)
+            $comparison = Compare-MigrationVersionTuple -Left $versionTuple -Right $base
+            if ($operator -eq '^') {
+                $upper = if ($major -gt 0) { @(($major + 1), 0, 0) } elseif ($minor -gt 0) { @(0, ($minor + 1), 0) } else { @(0, 0, ($patch + 1)) }
+                if ((Compare-MigrationVersionTuple -Left $versionTuple -Right $base) -lt 0 -or
+                    (Compare-MigrationVersionTuple -Left $versionTuple -Right $upper) -ge 0) { $matches = $false; break }
+            }
+            elseif ($operator -eq '~') {
+                $upper = @($major, ($minor + 1), 0)
+                if ($comparison -lt 0 -or (Compare-MigrationVersionTuple -Left $versionTuple -Right $upper) -ge 0) { $matches = $false; break }
+            }
+            elseif ($operator -eq '>=') { if ($comparison -lt 0) { $matches = $false; break } }
+            elseif ($operator -eq '>') { if ($comparison -le 0) { $matches = $false; break } }
+            elseif ($operator -eq '<=') { if ($comparison -gt 0) { $matches = $false; break } }
+            elseif ($operator -eq '<') { if ($comparison -ge 0) { $matches = $false; break } }
+            elseif ($minorWildcard) {
+                if ($versionTuple[0] -ne $major) { $matches = $false; break }
+            }
+            elseif ($patchWildcard) {
+                if ($versionTuple[0] -ne $major -or $versionTuple[1] -ne $minor) { $matches = $false; break }
+            }
+            elseif ($comparison -ne 0) { $matches = $false; break }
+        }
+        if ($matches) { return $true }
+    }
+    return $false
+}
+
+function Assert-MigrationExactNodeVersion {
+    param([Parameter(Mandatory = $true)][string]$Version)
+
+    if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
+        Throw-MigrationError -Code 'invalid_node_version' -Message "Node version must be an exact stable version: $Version" -Status blocked
+    }
+    return $Version
+}
+
+function Invoke-MigrationNodeProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$NodeVersion,
+        [Parameter(Mandatory = $true)][string]$Executable,
+        [string[]]$Arguments = @(),
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+        [int]$TimeoutSeconds = 0,
+        [AllowNull()][AllowEmptyString()][string]$StandardInput = $null,
+        [string]$FnmPath = ''
+    )
+
+    Assert-MigrationExactNodeVersion -Version $NodeVersion | Out-Null
+    if ([string]::IsNullOrWhiteSpace($Executable) -or $Executable.IndexOf([char]0) -ge 0 -or $Executable.IndexOf([char]13) -ge 0 -or $Executable.IndexOf([char]10) -ge 0) {
+        Throw-MigrationError -Code 'invalid_node_executable' -Message 'Node-managed executable is invalid.' -Status blocked
+    }
+    $resolvedFnm = if ($FnmPath) { $FnmPath } else { Find-MigrationExecutable -Names @('fnm.exe', 'fnm') }
+    if (-not $resolvedFnm) {
+        Throw-MigrationError -Code 'fnm_missing' -Message 'fnm is required for Node-managed processes.' -Status blocked
+    }
+    $fnmArguments = @('exec', '--using', $NodeVersion, '--', $Executable) + @($Arguments)
+    return Invoke-MigrationProcess -FilePath $resolvedFnm -Arguments $fnmArguments -WorkingDirectory $WorkingDirectory -TimeoutSeconds $TimeoutSeconds -StandardInput $StandardInput
+}
+
+function Get-MigrationNodeIdentity {
+    param(
+        [Parameter(Mandatory = $true)][string]$FnmPath,
+        [Parameter(Mandatory = $true)][string]$NodeVersion,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+        [int]$TimeoutSeconds = 30
+    )
+
+    Assert-MigrationExactNodeVersion -Version $NodeVersion | Out-Null
+    $node = Invoke-MigrationNodeProcess -FnmPath $FnmPath -NodeVersion $NodeVersion -Executable 'node' -Arguments @('--version') -WorkingDirectory $WorkingDirectory -TimeoutSeconds $TimeoutSeconds
+    $npm = Invoke-MigrationNodeProcess -FnmPath $FnmPath -NodeVersion $NodeVersion -Executable 'npm' -Arguments @('--version') -WorkingDirectory $WorkingDirectory -TimeoutSeconds $TimeoutSeconds
+    $observedNode = if ($node.exitCode -eq 0) { ([string]$node.stdout).Trim() -replace '^v', '' } else { $null }
+    $observedNpm = if ($npm.exitCode -eq 0) { ([string]$npm.stdout).Trim() -replace '^v', '' } else { $null }
+    $usable = $node.exitCode -eq 0 -and $npm.exitCode -eq 0 -and $observedNode -ceq $NodeVersion -and $observedNode -match '^[0-9]+\.[0-9]+\.[0-9]+$' -and $observedNpm -match '^[0-9]+\.[0-9]+\.[0-9]+$'
+    return [PSCustomObject]@{
+        nodeVersion = $NodeVersion
+        npmVersion  = if ($observedNpm -match '^[0-9]+\.[0-9]+\.[0-9]+$') { $observedNpm } else { $null }
+        status      = if ($usable) { 'usable' } else { 'unusable' }
+        reason      = if ($usable) { $null } else { 'Node or npm identity did not match the selected exact runtime.' }
+    }
 }
 
 function ConvertTo-MigrationCommandLineArgument {
@@ -309,5 +457,11 @@ Export-ModuleMember -Function @(
     'Write-MigrationJsonAtomic',
     'Write-MigrationTextAtomic',
     'Find-MigrationExecutable',
-    'Invoke-MigrationProcess'
+    'Get-MigrationVersionTuple',
+    'Compare-MigrationVersionTuple',
+    'Test-MigrationVersionRange',
+    'Assert-MigrationExactNodeVersion',
+    'Invoke-MigrationProcess',
+    'Invoke-MigrationNodeProcess',
+    'Get-MigrationNodeIdentity'
 )

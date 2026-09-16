@@ -16,15 +16,15 @@ con los contextos que el controlador les entrega.
 - Un salto `N -> N+1` seleccionado con `-TargetMajor`; para llegar a una major
   posterior se ejecutan runs secuenciales.
 
-Quedan fuera de v5 el cambio automatico de Node, Yarn, pnpm, workspaces, Nx,
+Quedan fuera de v5 la instalacion de Node sin aprobacion, Yarn, pnpm, workspaces, Nx,
 dependencias no registry sin politica, agentes cloud y cualquier runtime visual.
 
 ## 3. Requisitos
 
-Se necesita Windows, Git con identidad local, Node compatible con los dos majors,
-npm compatible con el lockfile y GitHub Copilot CLI instalado y autenticado. El
-working tree debe estar limpio y `.angular-migration/` debe estar ignorado por Git.
-El plugin no instala ni cambia Node.
+Se necesita Windows, Git con identidad local, fnm, npm compatible con el lockfile y
+GitHub Copilot CLI instalado y autenticado. El working tree debe estar limpio y
+`.angular-migration/` debe estar ignorado por Git. El plugin selecciona runtimes
+exactos con fnm y solo instala una version ausente despues de una aprobacion explicita.
 
 ## 4. Instalacion
 
@@ -39,22 +39,25 @@ definitivos y los hooks una sola vez.
 Ejecuta la fachada desde la raiz del proyecto o proporciona `-ProjectRoot`:
 
 ```powershell
-./scripts/angular-migration.ps1 preflight -ProjectRoot C:\src\my-angular-app
 ./scripts/angular-migration.ps1 inspect -ProjectRoot C:\src\my-angular-app
+./scripts/angular-migration.ps1 discover -TargetMajor 8 -ProjectRoot C:\src\my-angular-app
+./scripts/angular-migration.ps1 approve-runtime-install -TargetMajor 8 -ProposalHash <proposal-hash> -Confirmed -ProjectRoot C:\src\my-angular-app
 ./scripts/angular-migration.ps1 start -TargetMajor 8 -ProjectRoot C:\src\my-angular-app
-./scripts/angular-migration.ps1 skip-check -ProjectRoot C:\src\my-angular-app -RunId <run-id> -CheckId lint -Reason "El repositorio no tiene lint" -Confirmed
+./scripts/angular-migration.ps1 skip-checks -ProjectRoot C:\src\my-angular-app -RunId <run-id> -InputFile .angular-migration/runs/<run-id>/inbox/skips.json -Confirmed
 ./scripts/angular-migration.ps1 run -ProjectRoot C:\src\my-angular-app -RunId <run-id>
 ./scripts/angular-migration.ps1 status -ProjectRoot C:\src\my-angular-app -RunId <run-id>
 ```
 
-`preflight` analiza sin escribir y devuelve los archivos detectados o ausentes, los
-checks criticos y los checks opcionales. `inspect` conserva el mismo analisis como
-alias de compatibilidad. `start` recibe la major objetivo, que debe ser exactamente
-la siguiente a la major actual, y crea rama, runtime y estado despues de la
-confirmacion de la skill. Antes de `run`, `skip-check` permite aprobar omisiones de
-`typecheck`, `lint`, `unit-test` o `e2e`; la aprobacion queda auditada en el mismo run.
-`run` reanuda desde el ultimo checkpoint. `status` solo lee state y diagnostico.
-Cada comando escribe un unico envelope JSON en stdout.
+`preflight` e `inspect` son diagnósticos compatibles; el flujo operativo empieza con
+`discover`, que persiste `.angular-migration/repo.json`, resuelve un plan de runtimes
+por operación y detecta lockfile, npm y riesgos Webpack/OpenSSL. Si falta una versión
+exacta, `approve-runtime-install` exige el hash de la propuesta y `-Confirmed`; no
+ejecuta `fnm use` ni cambia el runtime predeterminado. `start` solo acepta un
+discovery íntegro y listo, y la major objetivo debe ser exactamente la siguiente.
+Antes de `run`, `skip-checks` permite aprobar en una sola operación las omisiones de
+`typecheck`, `lint`, `unit-test` o `e2e`; el input se guarda en el run y la operación
+es atómica. `run` reanuda desde el último checkpoint. `status` solo lee state y
+diagnóstico. Cada comando escribe un único envelope JSON en stdout.
 
 Si el baseline detecta peers npm ausentes, la skill ejecuta
 `baseline-dependency-context`, explica las versiones exactas y los paquetes que las
@@ -70,17 +73,26 @@ pedir una aprobacion humana explicita para omitir solo ese check en el run actua
 ./scripts/angular-migration.ps1 skip-check -ProjectRoot C:\src\my-angular-app -RunId <run-id> -CheckId lint -Reason "Falta el tsconfig de lint del proyecto" -Confirmed
 ```
 
-`skip-check` acepta una aprobacion durante `running/baseline` o el fallo baseline
-actual, conserva la razon y el diagnostico en `state.json`, `events.jsonl` y el
-`result.json` tecnico cuando existe, y mantiene el mismo `runId`. `install`,
-`dependency-tree` y `build` son gates criticos y nunca pueden omitirse. El check
-aprobado aparece como `skipped`; no se ejecutan gates manualmente fuera de la fachada.
+`skip-check` conserva esta recuperación individual para un único fallo baseline
+posterior. `skip-checks` se usa antes de `run` para registrar el conjunto completo en
+una sola escritura. Ambos conservan la razon y el diagnostico en `state.json`,
+`events.jsonl` y el `result.json` tecnico cuando existe, y mantienen el mismo `runId`.
+`install`, `dependency-tree` y `build` son gates criticos y nunca pueden omitirse.
+Los checks aprobados aparecen como `skipped`; no se ejecutan gates manualmente fuera
+de la fachada.
 
 ## 6. Agentes
 
 `migration-implementer` interviene solo cuando el state esta en `needs-repair`. Recibe
 un fingerprint, un attempt y un perimetro cerrado; no puede tocar `package.json`, el
 lockfile, Git ni los artefactos del run.
+
+Cada fingerprint conserva su propio historial append-only en
+`.angular-migration/runs/<run-id>/repair-history/<fingerprint-sin-prefijo>/repair.jsonl`.
+El implementer puede leer solo el historial activo y nunca puede escribirlo. Una
+submission aceptada crea un commit, pero no es una reparacion efectiva hasta que el
+gate posterior registra `verification-passed`; `verification-failed` conserva el
+intento y entrega el siguiente contexto sin repetir la mutacion a ciegas.
 
 `migration-documenter` tiene dos modos. Research empieza cuando el manifest esta
 resuelto y puede ejecutarse en paralelo con la continuacion tecnica. Publish solo
@@ -101,16 +113,29 @@ una operacion del controlador y exige aprobacion humana con hash de propuesta.
 ## 8. Artefactos y retencion
 
 Cada run vive en `.angular-migration/runs/<run-id>/` y contiene `manifest.json`,
-`state.json`, `events.jsonl`, `result.json`, research, reparaciones, entregas y logs.
+`state.json`, `events.jsonl`, `result.json`, research, reparaciones, entregas, logs y
+`repair-history/<fingerprint>/repair.jsonl`. El historial conserva contextos emitidos,
+submissions recibidas o rechazadas, accepted y outcomes de verificacion hasta que el
+run se archive; no se purga al pasar a `completed`, `blocked` o `failed`.
 El lock activo esta en `.angular-migration/active.lock`. El plugin no purga artefactos
 automaticamente: conserva el run para auditoria hasta que el responsable lo archive
-segun la politica local. Nunca se archiva `.npmrc`, el entorno ni tokens.
+segun la politica local. Los historiales son JSONL UTF-8 sin BOM, con hash individual
+por entrada, y solo guardan rutas relativas, resumenes limitados y referencias a logs.
+Se redactan rutas absolutas, URLs con credenciales, tokens, cabeceras, valores de
+`.npmrc` y variables de entorno; no se guardan prompts, tool calls, diffs ni contenido
+completo de archivos. Nunca se archiva `.npmrc`, el entorno ni tokens.
 
 ## 9. Recuperacion
 
 Tras una interrupcion, usa `status` con el mismo `runId` y vuelve a ejecutar `run` una
 vez confirmado que el proceso propietario del lock termino. Un run `needs-repair`
 requiere `repair-context`, una entrega valida y `record-repair` antes de continuar.
+Si el historial ya contiene `submission-accepted` o `verification-failed`, `run`
+reconcilia el informe archivado, el commit, `state.json` y `events.jsonl`; no vuelve a
+ejecutar una reparacion mutante solo porque falte una escritura de state. Si las
+postcondiciones son ambiguas, el run falla cerrado con `repair_history_state_mismatch`.
+Un historial vacio, truncado, con JSON invalido, secuencia discontinua o hash alterado
+produce `repair_history_corrupt` y no se reconstruye automaticamente.
 Un bloqueo baseline no critico puede continuar mediante `skip-check` con confirmacion;
 los gates `install`, `dependency-tree` y `build` requieren resolver la causa. No
 retires un lock de un proceso vivo ni crees otro run para reemplazar el primero.
@@ -125,6 +150,10 @@ Resuelve primero el `error.code` y el diagnostico de `status`; no relajes un gat
 opciones de bypass. Un bloqueo por peers npm puede seguir el contexto y aprobacion
 baseline descritos arriba. Los bloqueos por Node, Git, lockfile, registry o scope
 requieren corregir la precondicion y comenzar un run nuevo si el estado ya es terminal.
+`result.json` solo presenta summaries de reparaciones accepted que tambien tienen
+`verification-passed`; el documenter puede consultar historiales autorizados para
+explicar intentos fallidos, pero la documentacion solo presenta como aplicada una
+reparacion verificada.
 
 ## 11. Desinstalacion
 
@@ -134,11 +163,12 @@ commits ni artefactos `.angular-migration` ya creados.
 
 ## 12. Limitaciones conocidas
 
-No se cambian versiones de Node, no se hace push, merge o pull request, no se reparan
-dependencias ni lockfiles desde un agente y no se soportan proyectos fuera del
-perimetro npm/Git indicado. Solo se pueden instalar peers baseline propuestos por el
-controlador y aprobados explícitamente. Un piloto real necesita una aplicacion Angular 7
-descartable, un Node compatible y un entorno de Copilot CLI disponible.
+No se instala Node fuera de una propuesta exacta aprobada por el controlador, no se
+hace push, merge o pull request, no se reparan dependencias ni lockfiles desde un
+agente y no se soportan proyectos fuera del perimetro npm/Git indicado. Solo se pueden
+instalar runtimes y peers baseline propuestos por el controlador y aprobados
+explicitamente. Un piloto real necesita una aplicacion Angular 7 descartable, fnm y un
+entorno de Copilot CLI disponible.
 
 ## 13. Documentacion tecnica
 

@@ -14,10 +14,12 @@
     "attempt",
     "maxAttempts",
     "checkpointCommit",
+    "historyCheckpointCommit",
     "manifestSha256",
     "allowedPaths",
     "forbiddenPaths",
     "diagnostic",
+    "history",
     "submissionPath"
   ],
   "properties": {
@@ -32,6 +34,10 @@
     "attempt": { "type": "integer", "minimum": 1, "maximum": 3 },
     "maxAttempts": { "type": "integer", "const": 3 },
     "checkpointCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "historyCheckpointCommit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
     "manifestSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "allowedPaths": {
       "type": "array",
@@ -65,6 +71,30 @@
         "warnings": {
           "type": "array",
           "items": { "type": "string", "pattern": "\\S" }
+        }
+      }
+    },
+    "history": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "entryCount", "previousAttempts", "lastOutcome"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^\\.angular-migration/runs/[a-z0-9TZ-]+/repair-history/[0-9a-f]{64}/repair\\.jsonl$"
+        },
+        "entryCount": { "type": "integer", "minimum": 1 },
+        "previousAttempts": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "lastOutcome": {
+          "type": ["string", "null"],
+          "enum": [
+            "submission-rejected",
+            "submission-accepted",
+            "verification-failed",
+            "verification-passed",
+            "attempts-exhausted",
+            null
+          ]
         }
       }
     },

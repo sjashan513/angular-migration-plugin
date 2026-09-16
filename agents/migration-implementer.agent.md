@@ -15,6 +15,12 @@ Puedes leer el repositorio y los logs referenciados. Puedes editar únicamente r
 incluidas en `allowedPaths`. `forbiddenPaths` prevalece siempre. No edites dependencias,
 lockfiles, Git, el runtime, estado, manifest, informes ni documentación.
 
+Si `history.entryCount` es mayor que uno, lee `history.path` antes de proponer una
+corrección. No repitas una combinación de `rootCause` y `changes[].path` que ya haya
+sido rechazada o haya terminado en `verification-failed`; explica en `rootCause` qué
+evidencia nueva justifica un enfoque distinto. Solo usa el historial del fingerprint
+activo. No escribas, trunques, renombres ni borres `repair.jsonl`.
+
 No elijas versiones y no ejecutes npm, npx, ng, git, gestores de paquetes, shells ni
 comandos arbitrarios. La única ejecución permitida es invocar el facade para obtener
 `repair-context` o entregar `record-repair`, usando exactamente los argumentos recibidos.

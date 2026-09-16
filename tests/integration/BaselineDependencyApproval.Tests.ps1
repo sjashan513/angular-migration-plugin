@@ -9,6 +9,9 @@ Import-Module (Join-Path $modules 'Migration.Pipeline.psm1') -Force -DisableName
 $root = Join-Path ([IO.Path]::GetTempPath()) ('baseline-dependency-approval-' + [guid]::NewGuid().ToString('N'))
 $fakeNpm = Join-Path $root 'fake-npm.cmd'
 $fakeNpmScript = Join-Path $root 'fake-npm.ps1'
+$fnmPath = Join-Path $root 'fnm.cmd'
+$registryFixture = Join-Path $root 'registry.json'
+$originalRegistryFixture = $env:MIGRATION_REGISTRY_FIXTURE
 
 try {
     New-Item -ItemType Directory -Path $root -Force | Out-Null
@@ -43,6 +46,17 @@ if ($Arguments[0] -eq 'ls') {
 exit 1
 '@ | Set-Content -LiteralPath $fakeNpmScript -Encoding UTF8
     @("@echo off", "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"%~dp0fake-npm.ps1`" %*", 'exit /b %ERRORLEVEL%') | Set-Content -LiteralPath $fakeNpm -Encoding ASCII
+    $fixtureTools = (Resolve-Path (Join-Path $PSScriptRoot '../fixtures/tools')).Path
+    Copy-Item -LiteralPath (Join-Path $fixtureTools 'fnm.cmd') -Destination $fnmPath -Force
+    Copy-Item -LiteralPath (Join-Path $fixtureTools 'fnm-fixture.ps1') -Destination (Join-Path $root 'fnm-fixture.ps1') -Force
+    Copy-Item -LiteralPath $fakeNpm -Destination (Join-Path $root 'npm.cmd') -Force
+        @'
+{
+    "jquery@1.9.1 - 3": ["3.7.1"],
+    "popper.js@^1.16.1": ["1.16.1"]
+}
+'@ | Set-Content -LiteralPath $registryFixture -Encoding UTF8
+        $env:MIGRATION_REGISTRY_FIXTURE = $registryFixture
 
     @'
 {
@@ -98,25 +112,45 @@ npm error missing: popper.js@^1.16.1, required by bootstrap@4.6.2
     }
     New-ActiveRunLock -ProjectRoot $root -RunId $runId
     Write-MigrationRunState -ProjectRoot $root -RunId $runId -State $state
+    $manifest = [PSCustomObject]@{
+        schemaVersion = 5
+        manifestType = 'migration'
+        runId = $runId
+        project = [PSCustomObject]@{
+            root = $root
+            runtimeToolchain = [PSCustomObject]@{
+                fnm = [PSCustomObject]@{ executable = $fnmPath }
+            }
+        }
+        runtimePlan = [PSCustomObject]@{
+            profiles = @(
+                [PSCustomObject]@{ id = 'metadata'; status = 'installed'; selectedNodeVersion = '20.11.1' }
+                [PSCustomObject]@{ id = 'baseline:dependency-tree'; status = 'installed'; selectedNodeVersion = '20.11.1' }
+            )
+        }
+    }
+    Write-MigrationRunManifest -ProjectRoot $root -RunId $runId -Manifest $manifest
     Remove-ActiveRunLock -ProjectRoot $root -RunId $runId
 
     $pipelineModule = Get-Module Migration.Pipeline
     & $pipelineModule {
-        param($NpmPath)
+        param($NpmPath, $FnmPath)
         $script:BaselineTestNpmPath = $NpmPath
+        $script:BaselineTestFnmPath = $FnmPath
         function script:Find-MigrationExecutable {
             param([string[]]$Names)
+            if ($Names -contains 'fnm.exe' -or $Names -contains 'fnm') { return $script:BaselineTestFnmPath }
             if ($Names -contains 'npm.cmd' -or $Names -contains 'npm.exe' -or $Names -contains 'npm') { return $script:BaselineTestNpmPath }
             return (Get-Command ($Names | Select-Object -First 1) -ErrorAction Stop).Source
         }
-    } $fakeNpm
+    } $fakeNpm $fnmPath
 
     $context = Invoke-MigrationBaselineDependencyContext -ProjectRoot $root -RunId $runId
     if ($context.status -ne 'blocked' -or $context.error.code -ne 'baseline_dependency_confirmation_required') { throw 'Missing confirmation context' }
     if (@($context.data.packages).Count -ne 2) { throw 'Expected two missing peer dependencies' }
     $jquery = $context.data.packages | Where-Object name -eq 'jquery'
     $popper = $context.data.packages | Where-Object name -eq 'popper.js'
-    Write-Host (Get-Content (Join-Path $root 'fake-npm.trace') -Raw)
+    if (Test-Path -LiteralPath (Join-Path $root 'fake-npm.trace') -PathType Leaf) { Write-Host (Get-Content (Join-Path $root 'fake-npm.trace') -Raw) }
     if ($jquery.installVersion -ne '3.7.1' -or $popper.installVersion -ne '1.16.1') { throw 'Proposal versions were not resolved exactly' }
     if ($jquery.requiredBy -notcontains 'bootstrap@4.6.2' -or $jquery.reason -notmatch 'peer dependency') { throw 'Proposal did not explain the dependency reason' }
 
@@ -136,5 +170,6 @@ npm error missing: popper.js@^1.16.1, required by bootstrap@4.6.2
     Write-Host 'PASS baseline dependency proposal, confirmation, verification and controlled commit'
 }
 finally {
+    if ($null -eq $originalRegistryFixture) { Remove-Item Env:MIGRATION_REGISTRY_FIXTURE -ErrorAction SilentlyContinue } else { $env:MIGRATION_REGISTRY_FIXTURE = $originalRegistryFixture }
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }

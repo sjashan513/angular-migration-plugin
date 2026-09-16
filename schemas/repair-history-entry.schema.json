@@ -1,0 +1,525 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sjashan513.github.io/angular-migration-plugin/schemas/repair-history-entry.schema.json",
+  "title": "Angular migration repair history entry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "sequence",
+    "entryId",
+    "runId",
+    "fingerprint",
+    "attempt",
+    "type",
+    "timestamp",
+    "stage",
+    "failedCheck",
+    "checkpointCommit",
+    "manifestSha256",
+    "data",
+    "entrySha256"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "entryId": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+    "runId": { "type": "string", "pattern": "^[a-z0-9TZ]+(?:-[a-z0-9TZ]+)*$" },
+    "fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "attempt": { "type": "integer", "minimum": 1, "maximum": 3 },
+    "type": {
+      "type": "string",
+      "enum": [
+        "context-issued",
+        "submission-received",
+        "submission-rejected",
+        "submission-accepted",
+        "verification-failed",
+        "verification-passed",
+        "attempts-exhausted"
+      ]
+    },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "stage": { "type": "string", "enum": ["validate", "update-angular"] },
+    "failedCheck": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "checkpointCommit": { "type": "string", "pattern": "^[a-fA-F0-9]{40}$" },
+    "manifestSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "data": { "type": "object" },
+    "entrySha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "sequence",
+        "entryId",
+        "runId",
+        "fingerprint",
+        "attempt",
+        "type",
+        "timestamp",
+        "stage",
+        "failedCheck",
+        "checkpointCommit",
+        "manifestSha256",
+        "data",
+        "entrySha256"
+      ],
+      "properties": {
+        "schemaVersion": { "type": "integer", "const": 1 },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "entryId": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+        "runId": {
+          "type": "string",
+          "pattern": "^[a-z0-9TZ]+(?:-[a-z0-9TZ]+)*$"
+        },
+        "fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "attempt": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "type": { "const": "context-issued" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "stage": { "type": "string", "enum": ["validate", "update-angular"] },
+        "failedCheck": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "checkpointCommit": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{40}$"
+        },
+        "manifestSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "data": { "$ref": "#/definitions/contextIssuedData" },
+        "entrySha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "sequence",
+        "entryId",
+        "runId",
+        "fingerprint",
+        "attempt",
+        "type",
+        "timestamp",
+        "stage",
+        "failedCheck",
+        "checkpointCommit",
+        "manifestSha256",
+        "data",
+        "entrySha256"
+      ],
+      "properties": {
+        "schemaVersion": { "type": "integer", "const": 1 },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "entryId": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+        "runId": {
+          "type": "string",
+          "pattern": "^[a-z0-9TZ]+(?:-[a-z0-9TZ]+)*$"
+        },
+        "fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "attempt": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "type": { "const": "submission-received" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "stage": { "type": "string", "enum": ["validate", "update-angular"] },
+        "failedCheck": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "checkpointCommit": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{40}$"
+        },
+        "manifestSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "data": { "$ref": "#/definitions/submissionReceivedData" },
+        "entrySha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "sequence",
+        "entryId",
+        "runId",
+        "fingerprint",
+        "attempt",
+        "type",
+        "timestamp",
+        "stage",
+        "failedCheck",
+        "checkpointCommit",
+        "manifestSha256",
+        "data",
+        "entrySha256"
+      ],
+      "properties": {
+        "schemaVersion": { "type": "integer", "const": 1 },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "entryId": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+        "runId": {
+          "type": "string",
+          "pattern": "^[a-z0-9TZ]+(?:-[a-z0-9TZ]+)*$"
+        },
+        "fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "attempt": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "type": { "const": "submission-rejected" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "stage": { "type": "string", "enum": ["validate", "update-angular"] },
+        "failedCheck": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "checkpointCommit": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{40}$"
+        },
+        "manifestSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "data": { "$ref": "#/definitions/submissionRejectedData" },
+        "entrySha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "sequence",
+        "entryId",
+        "runId",
+        "fingerprint",
+        "attempt",
+        "type",
+        "timestamp",
+        "stage",
+        "failedCheck",
+        "checkpointCommit",
+        "manifestSha256",
+        "data",
+        "entrySha256"
+      ],
+      "properties": {
+        "schemaVersion": { "type": "integer", "const": 1 },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "entryId": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+        "runId": {
+          "type": "string",
+          "pattern": "^[a-z0-9TZ]+(?:-[a-z0-9TZ]+)*$"
+        },
+        "fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "attempt": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "type": { "const": "submission-accepted" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "stage": { "type": "string", "enum": ["validate", "update-angular"] },
+        "failedCheck": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "checkpointCommit": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{40}$"
+        },
+        "manifestSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "data": { "$ref": "#/definitions/submissionAcceptedData" },
+        "entrySha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "sequence",
+        "entryId",
+        "runId",
+        "fingerprint",
+        "attempt",
+        "type",
+        "timestamp",
+        "stage",
+        "failedCheck",
+        "checkpointCommit",
+        "manifestSha256",
+        "data",
+        "entrySha256"
+      ],
+      "properties": {
+        "schemaVersion": { "type": "integer", "const": 1 },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "entryId": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+        "runId": {
+          "type": "string",
+          "pattern": "^[a-z0-9TZ]+(?:-[a-z0-9TZ]+)*$"
+        },
+        "fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "attempt": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "type": { "const": "verification-failed" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "stage": { "type": "string", "enum": ["validate", "update-angular"] },
+        "failedCheck": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "checkpointCommit": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{40}$"
+        },
+        "manifestSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "data": { "$ref": "#/definitions/verificationFailedData" },
+        "entrySha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "sequence",
+        "entryId",
+        "runId",
+        "fingerprint",
+        "attempt",
+        "type",
+        "timestamp",
+        "stage",
+        "failedCheck",
+        "checkpointCommit",
+        "manifestSha256",
+        "data",
+        "entrySha256"
+      ],
+      "properties": {
+        "schemaVersion": { "type": "integer", "const": 1 },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "entryId": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+        "runId": {
+          "type": "string",
+          "pattern": "^[a-z0-9TZ]+(?:-[a-z0-9TZ]+)*$"
+        },
+        "fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "attempt": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "type": { "const": "verification-passed" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "stage": { "type": "string", "enum": ["validate", "update-angular"] },
+        "failedCheck": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "checkpointCommit": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{40}$"
+        },
+        "manifestSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "data": { "$ref": "#/definitions/verificationPassedData" },
+        "entrySha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "sequence",
+        "entryId",
+        "runId",
+        "fingerprint",
+        "attempt",
+        "type",
+        "timestamp",
+        "stage",
+        "failedCheck",
+        "checkpointCommit",
+        "manifestSha256",
+        "data",
+        "entrySha256"
+      ],
+      "properties": {
+        "schemaVersion": { "type": "integer", "const": 1 },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "entryId": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+        "runId": {
+          "type": "string",
+          "pattern": "^[a-z0-9TZ]+(?:-[a-z0-9TZ]+)*$"
+        },
+        "fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "attempt": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "type": { "const": "attempts-exhausted" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "stage": { "type": "string", "enum": ["validate", "update-angular"] },
+        "failedCheck": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "checkpointCommit": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{40}$"
+        },
+        "manifestSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "data": { "$ref": "#/definitions/attemptsExhaustedData" },
+        "entrySha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  ],
+  "definitions": {
+    "contextIssuedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowedPaths", "diagnosticSummary", "logFiles"],
+      "properties": {
+        "allowedPaths": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+        },
+        "diagnosticSummary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "logFiles": {
+          "type": "array",
+          "maxItems": 20,
+          "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+        }
+      }
+    },
+    "submissionReceivedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["submissionSha256", "declaredRootCause", "declaredChanges"],
+      "properties": {
+        "submissionSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "declaredRootCause": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "declaredChanges": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "summary"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1, "maxLength": 500 },
+              "summary": { "type": "string", "minLength": 1, "maxLength": 2000 }
+            }
+          }
+        }
+      }
+    },
+    "submissionRejectedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "changedPaths",
+        "scopeViolation",
+        "rollbackStatus"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "invalid_json",
+            "submission_path_invalid",
+            "repair_schema_invalid",
+            "repair_context_invalid",
+            "repair_head_changed",
+            "repair_diff_mismatch",
+            "repair_scope_violation",
+            "repair_mode_invalid",
+            "protected_file_changed",
+            "repair_runtime_changed",
+            "repair_evidence_invalid",
+            "repair_attempts_exhausted",
+            "repair_submission_sensitive",
+            "repair_archive_failed",
+            "repair_stage_invalid",
+            "repair_history_state_mismatch",
+            "repair_history_write_failed",
+            "repair_history_corrupt",
+            "repair_rejected"
+          ]
+        },
+        "message": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "changedPaths": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+        },
+        "scopeViolation": { "type": "boolean" },
+        "rollbackStatus": {
+          "type": "string",
+          "enum": ["passed", "failed", "not-required"]
+        }
+      }
+    },
+    "submissionAcceptedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["report", "reportSha256", "commit", "changedPaths"],
+      "properties": {
+        "report": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "reportSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "commit": { "type": "string", "pattern": "^[a-fA-F0-9]{40}$" },
+        "changedPaths": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+        }
+      }
+    },
+    "verificationFailedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checkId",
+        "exitCode",
+        "timedOut",
+        "diagnosticSummary",
+        "logFiles",
+        "nextAttempt",
+        "sameFingerprint"
+      ],
+      "properties": {
+        "checkId": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "exitCode": { "type": "integer" },
+        "timedOut": { "type": "boolean" },
+        "diagnosticSummary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "logFiles": {
+          "type": "array",
+          "maxItems": 20,
+          "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+        },
+        "nextAttempt": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "sameFingerprint": { "type": "boolean" },
+        "newFingerprint": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "verificationPassedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checkId",
+        "exitCode",
+        "timedOut",
+        "resultLogFiles",
+        "verifiedCommit"
+      ],
+      "properties": {
+        "checkId": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "exitCode": { "type": "integer" },
+        "timedOut": { "type": "boolean" },
+        "resultLogFiles": {
+          "type": "array",
+          "maxItems": 20,
+          "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+        },
+        "verifiedCommit": { "type": "string", "pattern": "^[a-fA-F0-9]{40}$" }
+      }
+    },
+    "attemptsExhaustedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["limit", "scope", "nextAction"],
+      "properties": {
+        "limit": { "type": "integer", "enum": [3, 5] },
+        "scope": { "type": "string", "enum": ["fingerprint", "run"] },
+        "nextAction": { "type": "string", "enum": ["human-review"] }
+      }
+    }
+  }
+}

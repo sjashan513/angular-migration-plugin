@@ -172,6 +172,12 @@ try {
         [IO.File]::WriteAllText((Join-Path $fixture.root 'src/app.ts'), "attempt $attempt")
         $accepted = Submit-Repair $fixture
         Assert-Repair "equivalent repair $attempt accepted pending gate" $accepted.ok
+        $state = Read-MigrationRunState -ProjectRoot $fixture.root -RunId $fixture.runId
+        $verification = & $pipeline {
+            param($Root, $RunId, $State)
+            Invoke-PipelineRepairVerification -ProjectRoot $Root -RunId $RunId -State $State -Stage validate -CheckId build -Result ([PSCustomObject]@{ status = 'failed'; exitCode = 1; timedOut = $false; diagnosticSummary = 'Compilation failed.'; stdoutLog = $null; stderrLog = 'logs/validate/build.stderr.log' }) -Output 'src/app.ts:1 TS2554'
+        } $fixture.root $fixture.runId $state
+        Assert-Repair "equivalent verification failure $attempt is recorded" ($verification.handled -and -not $verification.passed -and $verification.sameFingerprint)
         $exhausted = $false
         try {
             $context = & $pipeline {
@@ -193,6 +199,14 @@ try {
         [IO.File]::WriteAllText((Join-Path $fixture.root 'src/app.ts'), "attempt $attempt")
         $accepted = Submit-Repair $fixture
         Assert-Repair "total repair $attempt accepted pending gate" $accepted.ok
+        $output = "src/app.ts:1 TS$Attempt"
+        [IO.File]::WriteAllText((Join-Path $fixture.paths.logs 'validate/build.stderr.log'), $output)
+        $state = Read-MigrationRunState -ProjectRoot $fixture.root -RunId $fixture.runId
+        $verification = & $pipeline {
+            param($Root, $RunId, $State, $Output)
+            Invoke-PipelineRepairVerification -ProjectRoot $Root -RunId $RunId -State $State -Stage validate -CheckId build -Result ([PSCustomObject]@{ status = 'failed'; exitCode = 1; timedOut = $false; diagnosticSummary = 'Compilation failed.'; stdoutLog = $null; stderrLog = 'logs/validate/build.stderr.log' }) -Output $Output
+        } $fixture.root $fixture.runId $state $output
+        Assert-Repair "new diagnostic verification $attempt is recorded" ($verification.handled -and -not $verification.passed -and -not $verification.sameFingerprint)
         $exhausted = $false
         try {
             $context = & $pipeline {

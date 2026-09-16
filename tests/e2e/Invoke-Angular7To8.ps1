@@ -17,6 +17,11 @@ $originalFixtureRoot = $env:MIGRATION_FIXTURE_ROOT
 $originalFixtureTools = $env:MIGRATION_FIXTURE_TOOLS
 $originalRegistryFixture = $env:MIGRATION_REGISTRY_FIXTURE
 $originalNodeScript = $env:MIGRATION_FIXTURE_NODE_SCRIPT
+$originalFnmScript = $env:MIGRATION_FIXTURE_FNM_SCRIPT
+$originalInstalled = $env:FNM_FIXTURE_INSTALLED
+$originalRemote = $env:FNM_FIXTURE_REMOTE
+$originalNpm = $env:FNM_FIXTURE_NPM_VERSION
+$originalStatePath = $env:FNM_FIXTURE_STATE_PATH
 
 function Assert-E2E {
     param([Parameter(Mandatory = $true)][string]$Name, [Parameter(Mandatory = $true)][bool]$Condition)
@@ -34,10 +39,17 @@ function Write-E2EJson {
     [IO.File]::WriteAllText($Path, $json, (New-Object Text.UTF8Encoding($false)))
 }
 
+function ConvertTo-E2EIoPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ($Path.Length -ge 248 -and $Path -match '^[A-Za-z]:\\') { return '\\?\' + $Path }
+    return $Path
+}
+
 function Read-E2EJson {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    return (Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json)
+    return ([IO.File]::ReadAllText((ConvertTo-E2EIoPath -Path $Path), [Text.Encoding]::UTF8) | ConvertFrom-Json)
 }
 
 function Invoke-Facade {
@@ -103,6 +115,41 @@ public class MigrationNodeFixture {
     Add-Type -TypeDefinition $source -OutputAssembly (Join-Path $toolDirectory 'node.exe') -OutputType ConsoleApplication
 }
 
+function New-FnmFixtureExecutable {
+    $source = @'
+using System;
+using System.Diagnostics;
+
+public class MigrationFnmFixture {
+    private static string Quote(string value) {
+        return "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+    }
+
+    public static int Main(string[] args) {
+        var script = Environment.GetEnvironmentVariable("MIGRATION_FIXTURE_FNM_SCRIPT");
+        var info = new ProcessStartInfo("powershell.exe");
+        info.Arguments = "-NoProfile -ExecutionPolicy Bypass -File " + Quote(script);
+        foreach (var arg in args) { info.Arguments += " " + Quote(arg); }
+        info.UseShellExecute = false;
+        info.CreateNoWindow = true;
+        info.RedirectStandardOutput = true;
+        info.RedirectStandardError = true;
+        using (var process = new Process()) {
+            process.StartInfo = info;
+            process.Start();
+            var stdout = process.StandardOutput.ReadToEnd();
+            var stderr = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+            Console.Out.Write(stdout);
+            Console.Error.Write(stderr);
+            return process.ExitCode;
+        }
+    }
+}
+'@
+    Add-Type -TypeDefinition $source -OutputAssembly (Join-Path $toolDirectory 'fnm.exe') -OutputType ConsoleApplication
+}
+
 function New-E2EProject {
     New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
     foreach ($item in @(Get-ChildItem -LiteralPath $projectFixture -Force)) {
@@ -162,7 +209,8 @@ function New-DocumentationFiles {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
         [Parameter(Mandatory = $true)]$Manifest,
-        [Parameter(Mandatory = $true)]$Result
+        [Parameter(Mandatory = $true)]$Result,
+        [Parameter(Mandatory = $true)][object[]]$History
     )
 
     $directory = Join-Path $ProjectRoot 'docs/migration/v8'
@@ -171,7 +219,9 @@ function New-DocumentationFiles {
             $before = if ($_.currentVersion) { [string]$_.currentVersion } else { '-' }
             "| $($_.name) | $($_.section) | $before | $($_.targetVersion) | $($_.change) | $($_.reason) |"
         }) -join [Environment]::NewLine
-    $repairText = @($Result.repairs | ForEach-Object { [string]$_.fingerprint }) -join ', '
+    $repairText = @($Result.repairs | ForEach-Object { 'attempt ' + [string]$_.attempt + ' (' + [string]$_.fingerprint + ')' }) -join ', '
+    $failedAttemptText = @($History | Where-Object { $_.type -eq 'verification-failed' } | ForEach-Object { 'attempt ' + [string]$_.attempt }) -join ', '
+    $verifiedAttemptText = @($History | Where-Object { $_.type -eq 'verification-passed' } | ForEach-Object { 'attempt ' + [string]$_.attempt }) -join ', '
     $warningText = if (@($Result.warnings).Count -eq 0) { 'No quedaron warnings registrados por la pipeline.' } else { 'Warnings aceptados y documentados para seguimiento.' }
     $content = [ordered]@{
         'README.md' = @"
@@ -198,7 +248,9 @@ $dependencyRows
         'errors-and-repairs.md' = @"
 # Errores y reparaciones
 
-La reparacion registrada fue: $repairText.
+Accepted repairs: $repairText.
+Failed verification outcomes: $failedAttemptText.
+Verified effective repairs: $verifiedAttemptText.
 "@
         'warnings.md' = @"
 # Warnings
@@ -270,19 +322,30 @@ try {
     Copy-Item -LiteralPath (Join-Path $sourceTools 'npm-fixture.ps1') -Destination (Join-Path $toolDirectory 'npm-fixture.ps1') -Force
     Copy-Item -LiteralPath (Join-Path $sourceTools 'ng.cmd') -Destination (Join-Path $toolDirectory 'ng.cmd') -Force
     Copy-Item -LiteralPath (Join-Path $sourceTools 'ng-fixture.ps1') -Destination (Join-Path $toolDirectory 'ng-fixture.ps1') -Force
+    Copy-Item -LiteralPath (Join-Path $sourceTools 'fnm.cmd') -Destination (Join-Path $toolDirectory 'fnm.cmd') -Force
+    Copy-Item -LiteralPath (Join-Path $sourceTools 'fnm-fixture.ps1') -Destination (Join-Path $toolDirectory 'fnm-fixture.ps1') -Force
+    Copy-Item -LiteralPath (Join-Path $sourceTools 'node.cmd') -Destination (Join-Path $toolDirectory 'node.cmd') -Force
     Copy-Item -LiteralPath (Join-Path $sourceTools 'node-fixture.ps1') -Destination (Join-Path $toolDirectory 'node-fixture.ps1') -Force
     $env:MIGRATION_FIXTURE_NODE_SCRIPT = Join-Path $toolDirectory 'node-fixture.ps1'
     New-NodeFixtureExecutable
+    $env:MIGRATION_FIXTURE_FNM_SCRIPT = Join-Path $toolDirectory 'fnm-fixture.ps1'
+    New-FnmFixtureExecutable
     $env:PATH = $toolDirectory + [IO.Path]::PathSeparator + $originalPath
     $env:MIGRATION_FIXTURE_ROOT = $fixtureRoot
     $env:MIGRATION_FIXTURE_TOOLS = $toolDirectory
     $env:MIGRATION_REGISTRY_FIXTURE = $registryFixture
+    $env:FNM_FIXTURE_INSTALLED = '20.11.1'
+    $env:FNM_FIXTURE_REMOTE = '20.11.1,16.20.2'
+    $env:FNM_FIXTURE_NPM_VERSION = '10.2.4'
+    $env:FNM_FIXTURE_STATE_PATH = Join-Path $temporaryRoot 'fnm-installed.txt'
     New-E2EProject
 
     $inspection = Invoke-Facade -ProjectRoot $projectRoot -Arguments @('-Command', 'inspect')
     Assert-E2E 'inspect reports Angular 7 fixture ready' ($inspection.ok -and $inspection.status -eq 'ready' -and $inspection.data.angular.currentMajor -eq 7)
     Assert-E2E 'inspect uses the controlled Node and npm tools' ($inspection.data.node.node.executable -eq (Join-Path $toolDirectory 'node.exe') -and $inspection.data.node.npm.executable -eq (Join-Path $toolDirectory 'npm.cmd'))
 
+    $discovery = Invoke-Facade -ProjectRoot $projectRoot -Arguments @('-Command', 'discover', '-TargetMajor', '8')
+    Assert-E2E 'discover produces a ready runtime plan before start' ($discovery.ok -and $discovery.status -eq 'ready' -and $discovery.data.status -eq 'ready' -and $discovery.data.toolchain.fnm.available)
     $start = Invoke-Facade -ProjectRoot $projectRoot -Arguments @('-Command', 'start', '-TargetMajor', '8')
     Assert-E2E 'start creates one Angular 7 to 8 run' ($start.ok -and $start.status -eq 'running' -and $start.data.runId)
     $runId = [string]$start.data.runId
@@ -294,7 +357,6 @@ try {
     $repairContext = $repairContextEnvelope.data
     Assert-E2E 'repair context contains only source scope' (@($repairContext.allowedPaths) -contains 'src/**/*' -and @($repairContext.forbiddenPaths) -contains 'package.json')
     Add-Content -LiteralPath (Join-Path $projectRoot 'src/app.component.ts') -Value "`nexport const repairedByFixture = true;"
-    Remove-Item -LiteralPath (Join-Path $projectRoot '.fixture-fail-second-build') -Force
     $repairInput = [PSCustomObject][ordered]@{
         schemaVersion = 1
         runId = $repairContext.runId
@@ -310,11 +372,43 @@ try {
     $recordedRepair = Invoke-Facade -ProjectRoot $projectRoot -Arguments @('-Command', 'record-repair', '-RunId', $runId, '-InputFile', $repairContext.submissionPath)
     Assert-E2E 'record-repair accepts the scoped fixture change' ($recordedRepair.ok -and $recordedRepair.status -eq 'running')
 
+    $secondRun = Invoke-Facade -ProjectRoot $projectRoot -Arguments @('-Command', 'run', '-RunId', $runId) -ExpectedExitCode 2
+    Assert-E2E 'first accepted repair is followed by a failed verification' ($secondRun.status -eq 'needs-repair' -and $secondRun.error.code -eq 'validation_failed')
+    $secondContextEnvelope = Invoke-Facade -ProjectRoot $projectRoot -Arguments @('-Command', 'repair-context', '-RunId', $runId) -ExpectedExitCode 2
+    $secondContext = $secondContextEnvelope.data
+    Assert-E2E 'second context continues the same fingerprint history' ($secondContext.attempt -eq 2 -and $secondContext.fingerprint -ceq $repairContext.fingerprint -and $secondContext.history.path -ceq $repairContext.history.path -and $secondContext.history.previousAttempts -eq 1 -and $secondContext.history.lastOutcome -eq 'verification-failed')
+    Add-Content -LiteralPath (Join-Path $projectRoot 'src/app.component.ts') -Value "`nexport const repairedBySecondFixture = true;"
+    Remove-Item -LiteralPath (Join-Path $projectRoot '.fixture-fail-second-build') -Force
+    $secondRepairInput = [PSCustomObject][ordered]@{
+        schemaVersion = 1
+        runId = $secondContext.runId
+        fingerprint = $secondContext.fingerprint
+        attempt = $secondContext.attempt
+        rootCause = 'The first source adaptation did not satisfy the verification gate.'
+        changes = @([PSCustomObject][ordered]@{ path = 'src/app.component.ts'; summary = 'Complete the fixture source adaptation.'; reason = 'The repeated validation diagnostic requires a second source change.' })
+        evidence = @([PSCustomObject][ordered]@{ kind = 'diagnostic'; reference = $secondContext.diagnostic.logFiles[0]; claim = 'The second validation log identifies the remaining source diagnostic.' })
+        unresolvedWarnings = @()
+    }
+    Write-E2EJson -Value $secondRepairInput -Path (Join-Path $projectRoot $secondContext.submissionPath)
+    $recordedSecondRepair = Invoke-Facade -ProjectRoot $projectRoot -Arguments @('-Command', 'record-repair', '-RunId', $runId, '-InputFile', $secondContext.submissionPath)
+    Assert-E2E 'second record-repair accepts the revised source change' ($recordedSecondRepair.ok -and $recordedSecondRepair.status -eq 'running')
     $verified = Invoke-Facade -ProjectRoot $projectRoot -Arguments @('-Command', 'run', '-RunId', $runId)
-    Assert-E2E 'resumed run reaches verified' ($verified.ok -and $verified.status -eq 'verified' -and $verified.data.migrationStatus -eq 'verified')
+    Assert-E2E 'second accepted repair reaches verified' ($verified.ok -and $verified.status -eq 'verified' -and $verified.data.migrationStatus -eq 'verified')
     $manifest = Read-E2EJson -Path (Join-Path $runRoot 'manifest.json')
     $result = Read-E2EJson -Path (Join-Path $runRoot 'result.json')
-    Assert-E2E 'technical result and repair evidence are present' ($result.status -eq 'verified' -and @($result.repairs).Count -eq 1 -and $result.manifestSha256 -eq $manifest.manifestSha256)
+    $historyPath = Join-Path $projectRoot $secondContext.history.path
+    $history = @([IO.File]::ReadAllLines((ConvertTo-E2EIoPath -Path $historyPath), [Text.Encoding]::UTF8) | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json })
+    $historyTypes = @($history | ForEach-Object { [string]$_.type }) -join '|'
+    $historySequences = @($history | ForEach-Object { [int]$_.sequence }) -join '|'
+    $expectedSequences = (1..$history.Count) -join '|'
+    $historyRoot = Join-Path $runRoot 'repair-history'
+    $historyDirectories = @(Get-ChildItem -LiteralPath $historyRoot -Directory -Force)
+    $eventsPath = Join-Path $runRoot 'events.jsonl'
+    $events = @([IO.File]::ReadAllLines((ConvertTo-E2EIoPath -Path $eventsPath), [Text.Encoding]::UTF8) | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json })
+    Assert-E2E 'technical result includes only the verified accepted repair' ($result.status -eq 'verified' -and @($result.repairs).Count -eq 1 -and $result.repairs[0].attempt -eq 2 -and $result.manifestSha256 -eq $manifest.manifestSha256)
+    $stateAfterMigration = Read-E2EJson -Path (Join-Path $runRoot 'state.json')
+    Assert-E2E 'state and history retain both accepted attempts' (@($stateAfterMigration.repairs).Count -eq 2 -and $historyTypes -eq 'context-issued|submission-received|submission-accepted|verification-failed|context-issued|submission-received|submission-accepted|verification-passed' -and $historySequences -eq $expectedSequences)
+    Assert-E2E 'only one fingerprint history exists and global events stay compact' ($historyDirectories.Count -eq 1 -and $historyDirectories[0].Name -eq $secondContext.fingerprint.Substring(7) -and @($events | Where-Object type -eq 'repair-required').Count -eq 2 -and @($events | Where-Object type -eq 'repair-accepted').Count -eq 2 -and @($events | Where-Object type -eq 'submission-rejected').Count -eq 0)
 
     $researchContext = Invoke-Facade -ProjectRoot $projectRoot -Arguments @('-Command', 'documentation-context', '-RunId', $runId, '-Mode', 'research')
     $research = New-ResearchInput -Manifest $manifest -RunId $runId
@@ -325,7 +419,7 @@ try {
     $stateAfterResearch = Read-E2EJson -Path (Join-Path $runRoot 'state.json')
     $publishContext = Invoke-Facade -ProjectRoot $projectRoot -Arguments @('-Command', 'documentation-context', '-RunId', $runId, '-Mode', 'publish')
     Assert-E2E 'publish context is issued only after verified research' ($publishContext.status -eq 'publishing' -and $stateAfterResearch.documentationStatus -eq 'researched')
-    $outputDirectory = New-DocumentationFiles -ProjectRoot $projectRoot -Manifest $manifest -Result $result
+    $outputDirectory = New-DocumentationFiles -ProjectRoot $projectRoot -Manifest $manifest -Result $result -History $history
     $documentationInput = New-DocumentationInput -ProjectRoot $projectRoot -Manifest $manifest -Result $result -ResearchHash $stateAfterResearch.documentation.researchSha256 -RunId $runId
     $documentationPath = Join-Path $projectRoot $publishContext.data.submissionPath
     Write-E2EJson -Value $documentationInput -Path $documentationPath
@@ -335,6 +429,8 @@ try {
     $trackedChanges = @(& git -C $projectRoot status --porcelain)
     Assert-E2E 'documentation publish completes the run' ($recordedDocumentation.ok -and $recordedDocumentation.status -eq 'completed' -and $finalStatus.status -eq 'completed' -and $finalState.status -eq 'completed' -and $finalState.documentation.status -eq 'completed')
     Assert-E2E 'completion releases ownership and leaves a clean tree' (-not (Test-Path -LiteralPath (Join-Path $projectRoot '.angular-migration/active.lock')) -and $trackedChanges.Count -eq 0)
+    $repairDocumentation = Get-Content -LiteralPath (Join-Path $outputDirectory 'errors-and-repairs.md') -Raw
+    Assert-E2E 'documentation distinguishes failed attempt from effective repair' ($repairDocumentation -match 'attempt 1' -and $repairDocumentation -match 'Failed verification outcomes' -and $repairDocumentation -match 'Verified effective repairs' -and $repairDocumentation -match 'attempt 2')
     Assert-E2E 'final documentation contains exactly eight files' (@(& git -C $projectRoot show --pretty= --name-only HEAD | Where-Object { $_ }).Count -eq 8)
     Write-Host 'Angular 7 to 8 E2E OK' -ForegroundColor Green
 }
@@ -344,5 +440,10 @@ finally {
     if ($null -eq $originalFixtureTools) { Remove-Item Env:MIGRATION_FIXTURE_TOOLS -ErrorAction SilentlyContinue } else { $env:MIGRATION_FIXTURE_TOOLS = $originalFixtureTools }
     if ($null -eq $originalRegistryFixture) { Remove-Item Env:MIGRATION_REGISTRY_FIXTURE -ErrorAction SilentlyContinue } else { $env:MIGRATION_REGISTRY_FIXTURE = $originalRegistryFixture }
     if ($null -eq $originalNodeScript) { Remove-Item Env:MIGRATION_FIXTURE_NODE_SCRIPT -ErrorAction SilentlyContinue } else { $env:MIGRATION_FIXTURE_NODE_SCRIPT = $originalNodeScript }
+    if ($null -eq $originalFnmScript) { Remove-Item Env:MIGRATION_FIXTURE_FNM_SCRIPT -ErrorAction SilentlyContinue } else { $env:MIGRATION_FIXTURE_FNM_SCRIPT = $originalFnmScript }
+    if ($null -eq $originalInstalled) { Remove-Item Env:FNM_FIXTURE_INSTALLED -ErrorAction SilentlyContinue } else { $env:FNM_FIXTURE_INSTALLED = $originalInstalled }
+    if ($null -eq $originalRemote) { Remove-Item Env:FNM_FIXTURE_REMOTE -ErrorAction SilentlyContinue } else { $env:FNM_FIXTURE_REMOTE = $originalRemote }
+    if ($null -eq $originalNpm) { Remove-Item Env:FNM_FIXTURE_NPM_VERSION -ErrorAction SilentlyContinue } else { $env:FNM_FIXTURE_NPM_VERSION = $originalNpm }
+    if ($null -eq $originalStatePath) { Remove-Item Env:FNM_FIXTURE_STATE_PATH -ErrorAction SilentlyContinue } else { $env:FNM_FIXTURE_STATE_PATH = $originalStatePath }
     Remove-Item -LiteralPath $temporaryRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

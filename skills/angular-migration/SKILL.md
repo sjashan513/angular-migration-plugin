@@ -23,23 +23,35 @@ y no ejecuta gates por su cuenta.
 
 ## Secuencia
 
-1. Ejecuta `preflight` y muestra los archivos detectados o ausentes, los checks
-   criticos y los checks opcionales sin corregirlos automaticamente:
+1. Determina la major objetivo. Si la peticion no la incluye, ejecuta `inspect` solo
+   para leer `data.angular.currentMajor` y usa exactamente la major siguiente; `inspect`
+   no sustituye a `discover`. Ejecuta despues `discover` antes de crear cualquier run:
 
    ```powershell
-   powershell -NoProfile -File <plugin-root>\scripts\angular-migration.ps1 preflight -ProjectRoot <ProjectRoot>
+   powershell -NoProfile -File <plugin-root>\scripts\angular-migration.ps1 discover -TargetMajor <target> -ProjectRoot <ProjectRoot>
    ```
 
-   `inspect` conserva el mismo contrato como alias de compatibilidad.
+   Si `discover` no devuelve `status=ready` porque falta un runtime, presenta
+   `data.installProposal` con cada version exacta, sus perfiles, razones y
+   `proposalHash`. Explica que solo modifica el inventario local de fnm, no el
+   repositorio, y que no ejecuta `fnm use` ni `fnm default`. Pide una unica
+   confirmacion explicita. Ante una respuesta ambigua o negativa, termina en
+   `blocked` sin instalar nada.
 
-2. Si `preflight` no devuelve `status=ready`, termina con `blocked` usando los
-   `blockers` del envelope. No invoques agentes para resolver precondiciones.
+   Solo despues de confirmar ejecuta:
 
-3. Pide confirmacion explicita antes de `start`. Explica que el run crea la rama de
-   migracion, copia el runtime del hook y crea commits controlados.
+   ```powershell
+   powershell -NoProfile -File <plugin-root>\scripts\angular-migration.ps1 approve-runtime-install -TargetMajor <target> -ProposalHash <proposal-hash> -Confirmed -ProjectRoot <ProjectRoot>
+   ```
 
-4. Tras confirmar, calcula la major objetivo solo desde `preflight.data.angular.currentMajor`
-   y exige que sea exactamente una major posterior. Ejecuta:
+   `approve-runtime-install` valida el fingerprint y la propuesta vigente, instala
+   unicamente las versiones exactas y vuelve a ejecutar discovery. Si no devuelve
+   `status=ready`, informa el bloqueo y no invoques `start`. Cualquier otro
+   `status=blocked` de `discover` tambien detiene el flujo.
+
+2. Cuando discovery devuelva `status=ready`, pide confirmacion explicita antes de
+   `start`. Explica que el run crea la rama de migracion, copia el runtime del hook y
+   crea commits controlados. Ejecuta:
 
    ```powershell
    powershell -NoProfile -File <plugin-root>\scripts\angular-migration.ps1 start -TargetMajor <target> -ProjectRoot <ProjectRoot>
@@ -48,24 +60,39 @@ y no ejecuta gates por su cuenta.
    Conserva el `runId` del envelope. Si `start` no devuelve `status=running`, informa
    `blocked` o `failed` desde su resultado y no continues.
 
-   Cuando `start` devuelva `status=running`, comunica al usuario: "Todo esta listo para
-   ejecutar la migracion. A partir de ahora trabajare autonomamente, sin pedir
-   supervision en cada etapa. Solo me detendre si el controlador detecta un bloqueo,
-   un fallo o necesita una reparacion tecnica acotada." No pidas otra confirmacion para
-   cada stage.
+3. Tras un `start` correcto, presenta una sola vez todos los checks opcionales
+   configurados (`typecheck`, `lint`, `unit-test`, `e2e`). Explica que `install`,
+   `dependency-tree` y `build` son gates criticos y nunca pueden omitirse. Si el
+   usuario quiere omitir checks, pide una unica confirmacion para el conjunto completo,
+   con una razon no vacia por check, y escribe exactamente
+   `.angular-migration/runs/<run-id>/inbox/skips.json` con este contrato:
 
-   Antes de ejecutar `run`, presenta los elementos de `preflight.data.preflight.optionalChecks`.
-   Si el usuario quiere omitir alguno que este configurado, pide confirmacion explicita
-   para cada razon y ejecuta `skip-check` con el mismo `runId`:
-
-   ```powershell
-   powershell -NoProfile -File <plugin-root>\scripts\angular-migration.ps1 skip-check -RunId <run-id> -CheckId <check-id> -Reason <reason> -Confirmed -ProjectRoot <ProjectRoot>
+   ```json
+   {
+     "schemaVersion": 1,
+     "runId": "<run-id>",
+     "confirmed": true,
+     "skips": [{ "checkId": "lint", "reason": "razon concreta" }]
+   }
    ```
 
-   `install`, `dependency-tree` y `build` no son elegibles. Si no se solicita una
-   omision, continua directamente con `run`.
+   Invoca una sola vez el controlador para el conjunto confirmado:
 
-5. Ejecuta `run` con el `runId` conservado como un unico proceso de fachada que pueda
+   ```powershell
+    powershell -NoProfile -File <plugin-root>\scripts\angular-migration.ps1 skip-checks -RunId <run-id> -InputFile .angular-migration/runs/<run-id>/inbox/skips.json -Confirmed -ProjectRoot <ProjectRoot>
+   ```
+
+   Si no se solicita ninguna omision, continua directamente. No emitas varias
+   confirmaciones ni uses `skip-checks` para gates criticos o checks de validacion
+   final. La operacion batch es atomica: si una entrada falla, no se registra ninguna.
+
+   Cuando `start` devuelva `status=running` y, si procede, `skip-checks` sea aceptado,
+   comunica al usuario: "Todo esta listo para ejecutar la migracion. A partir de ahora
+   trabajare autonomamente, sin pedir supervision en cada etapa. Solo me detendre si el
+   controlador detecta un bloqueo, un fallo o necesita una reparacion tecnica acotada."
+   No pidas otra confirmacion para cada stage.
+
+4. Ejecuta `run` con el `runId` conservado como un unico proceso de fachada que pueda
    mantenerse en curso y consulta `status` mientras avanza. No invoques un segundo
    `run` para sondear ni para reemplazar al proceso original. El proceso principal
    debe conservar su salida hasta terminar y usar el mismo `runId` en todas las
@@ -128,7 +155,7 @@ y no ejecuta gates por su cuenta.
    reanuda `run` con ese mismo `runId`. El check omitido aparece como `status=skipped`;
    los tres gates criticos siguen siendo obligatorios.
 
-6. Para research, solo despues de observar `status.data.resolutionStatus=resolved`,
+5. Para research, solo despues de observar `status.data.resolutionStatus=resolved`,
    ejecuta `documentation-context -Mode research`, entrega ese JSON al documenter y
    deja que escriba exclusivamente `allowedWritePath`. Lanza el documenter mientras
    continua el proceso original de `run`; la investigacion debe empezar antes de que
@@ -138,9 +165,13 @@ y no ejecuta gates por su cuenta.
    nunca desde el agente, para evitar escrituras concurrentes sobre `state.json`; no
    publica documentos finales.
 
-7. Si el estado llega a `needs-repair`, ejecuta `repair-context` y lanza
+6. Si el estado llega a `needs-repair`, ejecuta `repair-context` y lanza
    `migration-implementer` exactamente una vez para la pareja `fingerprint/attempt`.
    Rechaza cualquier intento de ampliar `allowedPaths` o modificar una ruta prohibida.
+   Si `history.entryCount > 1`, el implementer debe leer `history.path` antes de editar,
+   evitar combinaciones ya rechazadas o fallidas y justificar cualquier enfoque distinto
+   con evidencia nueva. El implementer nunca escribe, trunca, renombra ni borra
+   `repair.jsonl`.
    El implementer entrega `repair.json` y registra la reparacion mediante la fachada.
    No lances otro implementer para el mismo contexto.
 
@@ -148,19 +179,22 @@ y no ejecuta gates por su cuenta.
    powershell -NoProfile -File <plugin-root>\scripts\angular-migration.ps1 repair-context -RunId <run-id> -ProjectRoot <ProjectRoot>
    ```
 
-8. Solo despues de que `record-repair` devuelva un envelope valido, reanuda `run` con
+7. Solo despues de que `record-repair` devuelva un envelope valido, reanuda `run` con
    el mismo `runId`. Nunca ejecutes manualmente un gate, ni aceptes `verified` desde el
-   agente. Si aparece un nuevo fingerprint, tratalo como un nuevo intento controlado.
+   agente. `submission-accepted` solo confirma el commit controlado; espera a que el
+   gate registre `verification-passed` antes de tratar la reparación como efectiva. Si
+   aparece un nuevo fingerprint, tratalo como un nuevo intento controlado con su propio
+   historial.
 
-9. Cuando `migrationStatus=verified`, exige que research este registrado y emite
+8. Cuando `migrationStatus=verified`, exige que research este registrado y emite
    `documentation-context -Mode publish`. Lanza `migration-documenter` en modo publish
    solo entonces. Publish y reparacion son secuenciales; no se solapan.
 
-10. Tras la entrega del documenter, registra `documentation.json` con
-    `record-documentation -Mode publish`. La fachada valida los ocho archivos, hashes,
-    enlaces, claims y commits. La skill no ejecuta validaciones alternativas.
+9. Tras la entrega del documenter, registra `documentation.json` con
+   `record-documentation -Mode publish`. La fachada valida los ocho archivos, hashes,
+   enlaces, claims y commits. La skill no ejecuta validaciones alternativas.
 
-11. Consulta `status` una ultima vez y comunica unicamente el estado del artefacto:
+10. Consulta `status` una ultima vez y comunica unicamente el estado del artefacto:
     `completed`, `blocked` o `failed`. Solo `state.status=completed` permite declarar
     exito. Conserva `runId`, rutas de state/result y el diagnostico final.
 
@@ -169,6 +203,9 @@ y no ejecuta gates por su cuenta.
 - `migration-implementer` solo interviene en `needs-repair`, con el contexto emitido
   por `repair-context`, y una vez por `fingerprint/attempt`.
 - `migration-documenter` usa research antes de verified y publish despues de verified.
+- En publish, `migration-documenter` puede leer solo los `repair.jsonl` bajo
+  `data.evidence.repairHistory` que correspondan a fingerprints accepted autorizados
+  por el run; no puede editarlo, moverlo ni borrarlo.
 - El documenter no ejecuta comandos ni cambia dependencias, configuracion, estado,
   manifest, resultado o logs.
 - Si cualquiera de los agentes pide una ruta, herramienta o alcance no incluido en su
@@ -182,7 +219,10 @@ y no ejecuta gates por su cuenta.
 
 Ante una interrupcion, consulta `status` con el mismo `runId` y reanuda `run` solo si
 el lock pertenece a un proceso que ya termino. Un run en `needs-repair` requiere una
-entrega aceptada antes de reanudar. Un run bloqueado por un check baseline no critico
+entrega aceptada antes de reanudar. Si ya existe `submission-accepted` o
+`verification-failed`, el controlador reconcilia history, informe archivado, HEAD,
+state y events; nunca vuelve a ejecutar una mutacion a ciegas. Un JSONL corrupto o
+evidencia ambigua bloquea el run. Un run bloqueado por un check baseline no critico
 puede usar `skip-check` una vez con confirmacion explicita; un bloqueo por `install`,
 `dependency-tree` o `build` no puede saltarse. Un run `verified` espera publish; un
 run `completed` es terminal.

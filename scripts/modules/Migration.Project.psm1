@@ -6,14 +6,39 @@ $script:CheckTimeouts = [ordered]@{ install = 900; 'dependency-tree' = 300; type
 
 function Get-ProjectProperty {
     param(
-        [Parameter(Mandatory = $true)]$Object,
+        [AllowNull()]$Object,
         [Parameter(Mandatory = $true)][string]$Name
     )
 
     if ($null -eq $Object) { return $null }
+    if ($Object -is [System.Collections.IDictionary] -and @($Object.Keys) -contains $Name) { return $Object[$Name] }
     $property = $Object.PSObject.Properties[$Name]
     if ($property) { return $property.Value }
     return $null
+}
+
+function Get-ProjectObjectEntries {
+    param([AllowNull()]$Object)
+
+    if ($null -eq $Object) { return @() }
+    if ($Object -is [System.Collections.IDictionary]) {
+        return @($Object.GetEnumerator() | ForEach-Object { [PSCustomObject]@{ Name = [string]$_.Key; Value = $_.Value } })
+    }
+    return @($Object.PSObject.Properties)
+}
+
+function Read-ProjectLockfileJson {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    try { return Read-MigrationJson -Path $Path -Required }
+    catch {
+        try {
+            Add-Type -AssemblyName System.Web.Extensions -ErrorAction Stop
+            $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+            return $serializer.DeserializeObject([IO.File]::ReadAllText($Path))
+        }
+        catch { throw $_ }
+    }
 }
 
 function Get-ProjectPackage {
@@ -25,18 +50,23 @@ function Get-ProjectPackage {
 }
 
 function Get-ProjectLockfile {
-    param([Parameter(Mandatory = $true)][string]$ProjectRoot)
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [string]$FnmPath = '',
+        [string]$NodeVersion = '',
+        [switch]$DisallowAmbientNode
+    )
 
     $lockPath = Join-Path $ProjectRoot 'package-lock.json'
     try {
-        $lock = Read-MigrationJson -Path $lockPath -Required
+            $lock = Read-ProjectLockfileJson -Path $lockPath
         $version = Get-ProjectProperty -Object $lock -Name 'lockfileVersion'
         if ($version -notin @(1, 2, 3)) { throw 'Unsupported lockfile version' }
         $section = if ($version -eq 1) { 'dependencies' } else { 'packages' }
         $entries = Get-ProjectProperty -Object $lock -Name $section
-        if ($null -eq $entries -or $entries -isnot [PSCustomObject]) { throw 'Invalid lockfile layout' }
+        if ($null -eq $entries -or ($entries -isnot [PSCustomObject] -and $entries -isnot [System.Collections.IDictionary])) { throw 'Invalid lockfile layout' }
         $versions = @{}
-        foreach ($entry in $entries.PSObject.Properties) {
+            foreach ($entry in (Get-ProjectObjectEntries -Object $entries)) {
             $name = $entry.Name
             if ($version -ne 1) {
                 if ($name -notmatch '^node_modules/((?:@[^/]+/)?[^/]+)$') { continue }
@@ -50,11 +80,20 @@ function Get-ProjectLockfile {
         return [PSCustomObject]@{ lockfileVersion = $version; versions = $versions }
     }
     catch {
+        if ($DisallowAmbientNode) {
+            Throw-MigrationError -Code 'lockfile_invalid' -Message 'package-lock.json cannot be read without an explicit Node runtime.' -Status blocked
+        }
         try {
-            $node = Find-MigrationExecutable -Names @('node.exe', 'node')
             $helper = Join-Path $PSScriptRoot '../js/inspect-lockfile.js'
-            if (-not $node -or -not (Test-Path -LiteralPath $helper -PathType Leaf)) { throw 'Lockfile inspector unavailable' }
-            $process = Invoke-MigrationProcess -FilePath $node -Arguments @($helper, $lockPath) -WorkingDirectory $ProjectRoot -TimeoutSeconds 30
+            if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) { throw 'Lockfile inspector unavailable' }
+            if ($FnmPath -and $NodeVersion) {
+                $process = Invoke-MigrationNodeProcess -FnmPath $FnmPath -NodeVersion $NodeVersion -Executable 'node' -Arguments @($helper, $lockPath) -WorkingDirectory $ProjectRoot -TimeoutSeconds 30
+            }
+            else {
+                $node = Find-MigrationExecutable -Names @('node.exe', 'node')
+                if (-not $node) { throw 'Lockfile inspector unavailable' }
+                $process = Invoke-MigrationProcess -FilePath $node -Arguments @($helper, $lockPath) -WorkingDirectory $ProjectRoot -TimeoutSeconds 30
+            }
             if ($process.timedOut -or $process.exitCode -ne 0) { throw 'Lockfile inspector rejected the lockfile' }
             $normalized = $process.stdout | ConvertFrom-Json
             $version = [int](Get-ProjectProperty -Object $normalized -Name 'lockfileVersion')
@@ -224,6 +263,8 @@ function Get-ProjectChecks {
     foreach ($check in $checks) {
         $check | Add-Member -NotePropertyName phase -NotePropertyValue 'baseline'
         $check | Add-Member -NotePropertyName blocking -NotePropertyValue $true
+        $check | Add-Member -NotePropertyName canSkip -NotePropertyValue ($check.id -in @('typecheck', 'lint', 'unit-test', 'e2e'))
+        $check | Add-Member -NotePropertyName runtimeProfile -NotePropertyValue ('baseline:' + $check.id)
         $check | Add-Member -NotePropertyName timeoutSeconds -NotePropertyValue $script:CheckTimeouts[$check.id]
         if ($check.id -eq 'build' -and $hasApplication -and $check.status -eq 'not-configured') {
             $check.status = 'blocked'
@@ -274,7 +315,9 @@ function Assert-ProjectCheck {
 function Invoke-ProjectCheck {
     param(
         [Parameter(Mandatory = $true)]$Check,
-        [Parameter(Mandatory = $true)][string]$LogDirectory
+        [Parameter(Mandatory = $true)][string]$LogDirectory,
+        [string]$FnmPath = '',
+        [string]$NodeVersion = ''
     )
 
     $context = Assert-ProjectCheck -Check $Check -LogDirectory $LogDirectory
@@ -285,7 +328,7 @@ function Invoke-ProjectCheck {
         executable = $null
     }
     if ($Check.status -in @('not-configured', 'blocked')) { return $result }
-    $npm = Find-MigrationExecutable -Names @('npm.cmd', 'npm.exe', 'npm')
+    $npm = if ($FnmPath -and $NodeVersion) { 'npm' } else { Find-MigrationExecutable -Names @('npm.cmd', 'npm.exe', 'npm') }
     if (-not $npm) {
         Throw-MigrationError -Code 'process_failed' -Message 'npm could not be resolved for the check.' -Status failed
     }
@@ -299,7 +342,12 @@ function Invoke-ProjectCheck {
     $result.startedAt = Get-MigrationUtcNow
     $timer = [Diagnostics.Stopwatch]::StartNew()
     try {
-        $process = Invoke-MigrationProcess -FilePath $npm -Arguments $Check.arguments -WorkingDirectory $context.projectRoot -TimeoutSeconds $Check.timeoutSeconds
+        if ($FnmPath -and $NodeVersion) {
+            $process = Invoke-MigrationNodeProcess -FnmPath $FnmPath -NodeVersion $NodeVersion -Executable 'npm' -Arguments $Check.arguments -WorkingDirectory $context.projectRoot -TimeoutSeconds $Check.timeoutSeconds
+        }
+        else {
+            $process = Invoke-MigrationProcess -FilePath $npm -Arguments $Check.arguments -WorkingDirectory $context.projectRoot -TimeoutSeconds $Check.timeoutSeconds
+        }
         [IO.File]::WriteAllText((Join-Path $context.runRoot $result.stdoutLog), [string]$process.stdout, (New-Object Text.UTF8Encoding($false)))
         [IO.File]::WriteAllText((Join-Path $context.runRoot $result.stderrLog), [string]$process.stderr, (New-Object Text.UTF8Encoding($false)))
         $result.exitCode = $process.exitCode
@@ -427,6 +475,192 @@ function Get-ProjectNode {
     }
 }
 
+function Get-ProjectNodeDeclarations {
+    param([Parameter(Mandatory = $true)][string]$ProjectRoot)
+
+    $root = Resolve-MigrationRoot -Path $ProjectRoot
+    $declarations = @()
+    $nodeRanges = @()
+    $npmRanges = @()
+    $sources = @('.nvmrc', '.node-version', '.tool-versions')
+    foreach ($relative in $sources) {
+        $path = Join-Path $root $relative
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+        $text = ([IO.File]::ReadAllText($path)).Trim()
+        if ($relative -eq '.tool-versions') {
+            $line = @($text -split "`r?`n" | Where-Object { $_ -match '^\s*nodejs\s+\S+' } | Select-Object -First 1)
+            if ($line.Count -eq 0) { continue }
+            $text = ([regex]::Match([string]$line[0], '^\s*nodejs\s+(\S+)').Groups[1].Value).Trim()
+        }
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        $declarations += [PSCustomObject][ordered]@{ source = $relative; value = $text; kind = 'node' }
+        $nodeRanges += [PSCustomObject]@{ source = $relative; value = $text }
+    }
+    $package = Get-ProjectPackage -ProjectRoot $root
+    if ($package) {
+        $engines = Get-ProjectProperty -Object $package -Name 'engines'
+        $nodeEngine = [string](Get-ProjectProperty -Object $engines -Name 'node')
+        $npmEngine = [string](Get-ProjectProperty -Object $engines -Name 'npm')
+        if ($nodeEngine) {
+            $declarations += [PSCustomObject][ordered]@{ source = 'package.json#engines.node'; value = $nodeEngine; kind = 'node' }
+            $nodeRanges += [PSCustomObject]@{ source = 'package.json#engines.node'; value = $nodeEngine }
+        }
+        if ($npmEngine) {
+            $declarations += [PSCustomObject][ordered]@{ source = 'package.json#engines.npm'; value = $npmEngine; kind = 'npm' }
+            $npmRanges += [PSCustomObject]@{ source = 'package.json#engines.npm'; value = $npmEngine }
+        }
+        $packageManager = [string](Get-ProjectProperty -Object $package -Name 'packageManager')
+        if ($packageManager -match '^npm@(.+)$') {
+            $declarations += [PSCustomObject][ordered]@{ source = 'package.json#packageManager'; value = $Matches[1]; kind = 'npm' }
+            $npmRanges += [PSCustomObject]@{ source = 'package.json#packageManager'; value = $Matches[1] }
+        }
+        $volta = Get-ProjectProperty -Object $package -Name 'volta'
+        $voltaNode = [string](Get-ProjectProperty -Object $volta -Name 'node')
+        $voltaNpm = [string](Get-ProjectProperty -Object $volta -Name 'npm')
+        if ($voltaNode) {
+            $declarations += [PSCustomObject][ordered]@{ source = 'package.json#volta.node'; value = $voltaNode; kind = 'node' }
+            $nodeRanges += [PSCustomObject]@{ source = 'package.json#volta.node'; value = $voltaNode }
+        }
+        if ($voltaNpm) {
+            $declarations += [PSCustomObject][ordered]@{ source = 'package.json#volta.npm'; value = $voltaNpm; kind = 'npm' }
+            $npmRanges += [PSCustomObject]@{ source = 'package.json#volta.npm'; value = $voltaNpm }
+        }
+    }
+    $conflicts = @()
+    $exactNodes = @($nodeRanges | Where-Object { $_.value -match '^v?\d+\.\d+\.\d+$' })
+    foreach ($left in $exactNodes) {
+        foreach ($right in @($nodeRanges | Where-Object { $_.source -cne $left.source })) {
+            $value = ([string]$left.value) -replace '^v', ''
+            if (-not (Test-MigrationVersionRange -Version $value -Range ([string]$right.value))) {
+                $conflicts += [PSCustomObject][ordered]@{ code = 'node_declarations_conflict'; source = $left.source; value = $left.value; conflictsWith = $right.source; conflictingValue = $right.value }
+            }
+        }
+    }
+    $exactNpm = @($npmRanges | Where-Object { $_.value -match '^v?\d+\.\d+\.\d+$' })
+    foreach ($left in $exactNpm) {
+        foreach ($right in @($npmRanges | Where-Object { $_.source -cne $left.source })) {
+            $value = ([string]$left.value) -replace '^v', ''
+            if (-not (Test-MigrationVersionRange -Version $value -Range ([string]$right.value))) {
+                $conflicts += [PSCustomObject][ordered]@{ code = 'npm_declarations_conflict'; source = $left.source; value = $left.value; conflictsWith = $right.source; conflictingValue = $right.value }
+            }
+        }
+    }
+    return [PSCustomObject][ordered]@{
+        declarations = @($declarations)
+        nodeRanges   = @($nodeRanges)
+        npmRanges    = @($npmRanges)
+        conflicts    = @($conflicts | Sort-Object source, conflictsWith -Unique)
+    }
+}
+
+function Get-ProjectFnmVersionsFromText {
+    param([AllowEmptyString()][string]$Text)
+
+    $versions = @()
+    foreach ($match in [regex]::Matches($Text, '(?<![0-9A-Za-z.-])v?(\d+\.\d+\.\d+)(?![-0-9A-Za-z])')) {
+        $version = $match.Groups[1].Value
+        if ($version -notin $versions) { $versions += $version }
+    }
+    return @($versions | Sort-Object { [version]$_ })
+}
+
+function Get-ProjectFnmInventory {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [switch]$IncludeRemote
+    )
+
+    $root = Resolve-MigrationRoot -Path $ProjectRoot
+    $fnm = Find-MigrationExecutable -Names @('fnm.exe', 'fnm')
+    if (-not $fnm) {
+        return [PSCustomObject][ordered]@{
+            available = $false; executable = $null; version = $null; installedVersions = @(); identities = @(); remoteVersions = @(); errors = @('fnm is not available')
+        }
+    }
+    $versionResult = Invoke-MigrationProcess -FilePath $fnm -Arguments @('--version') -WorkingDirectory $root -TimeoutSeconds 15
+    $fnmVersion = if ($versionResult.exitCode -eq 0) { ([string]$versionResult.stdout).Trim() } else { $null }
+    $list = Invoke-MigrationProcess -FilePath $fnm -Arguments @('list', '--json') -WorkingDirectory $root -TimeoutSeconds 30
+    $installed = @(Get-ProjectFnmVersionsFromText -Text $list.stdout)
+    if ($list.exitCode -ne 0 -or $installed.Count -eq 0) {
+        $list = Invoke-MigrationProcess -FilePath $fnm -Arguments @('list') -WorkingDirectory $root -TimeoutSeconds 30
+        $installed = @(Get-ProjectFnmVersionsFromText -Text $list.stdout)
+    }
+    $identities = @()
+    foreach ($version in $installed) {
+        try { $identities += Get-MigrationNodeIdentity -FnmPath $fnm -NodeVersion $version -WorkingDirectory $root -TimeoutSeconds 30 }
+        catch {
+            $identities += [PSCustomObject][ordered]@{ nodeVersion = $version; npmVersion = $null; observedNodeVersion = $null; status = 'unusable'; reason = $_.Exception.Message }
+        }
+    }
+    $remote = @()
+    if ($IncludeRemote) {
+        $remoteResult = Invoke-MigrationProcess -FilePath $fnm -Arguments @('list-remote', '--json') -WorkingDirectory $root -TimeoutSeconds 60
+        $remote = @(Get-ProjectFnmVersionsFromText -Text $remoteResult.stdout)
+        if ($remoteResult.exitCode -ne 0 -or $remote.Count -eq 0) {
+            $remoteResult = Invoke-MigrationProcess -FilePath $fnm -Arguments @('list-remote') -WorkingDirectory $root -TimeoutSeconds 60
+            $remote = @(Get-ProjectFnmVersionsFromText -Text $remoteResult.stdout)
+        }
+    }
+    $errors = @()
+    if ($versionResult.exitCode -ne 0) { $errors += 'fnm --version failed' }
+    if ($list.exitCode -ne 0) { $errors += 'fnm list failed' }
+    return [PSCustomObject][ordered]@{
+        available = $true; executable = $fnm; version = $fnmVersion; installedVersions = @($installed); identities = @($identities); remoteVersions = @($remote); errors = @($errors)
+    }
+}
+
+function Get-ProjectInputFingerprint {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)]$Inspection
+    )
+
+    $root = Resolve-MigrationRoot -Path $ProjectRoot
+    $relativePaths = @('package.json', 'package-lock.json', 'angular.json', '.nvmrc', '.node-version', '.tool-versions') + @($Inspection.files.configurations)
+    $records = @()
+    foreach ($relative in @($relativePaths | ForEach-Object { [string]$_ } | Sort-Object -Unique)) {
+        $full = Join-Path $root ($relative -replace '/', [IO.Path]::DirectorySeparatorChar)
+        $present = Test-Path -LiteralPath $full -PathType Leaf
+        $records += [ordered]@{
+            path = $relative.Replace('\', '/')
+            present = $present
+            sha256 = if ($present) { (Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null }
+        }
+    }
+    $json = [PSCustomObject][ordered]@{ files = @($records) } | ConvertTo-Json -Depth 20 -Compress
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes($json)
+        return 'sha256:' + (($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') }) -join '')
+    }
+    finally { $sha.Dispose() }
+}
+
+function Get-ProjectLockfileNpmMinimumRange {
+    param([Parameter(Mandatory = $true)][int]$LockfileVersion)
+    if ($LockfileVersion -eq 1) { return '>=5' }
+    return '>=7'
+}
+
+function Get-ProjectLockedTooling {
+    param(
+        [Parameter(Mandatory = $true)]$Lock,
+        [Parameter(Mandatory = $true)]$Package
+    )
+    $names = @('webpack', '@angular-devkit/build-angular', '@angular/cli', 'typescript', 'karma', 'jest', 'cypress', '@angular/compiler-cli')
+    $items = @()
+    foreach ($name in $names) {
+        $declared = $null
+        foreach ($sectionName in @('dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies')) {
+            $section = Get-ProjectProperty -Object $Package -Name $sectionName
+            if ($section -and $section.PSObject.Properties[$name]) { $declared = [string]$section.$name; break }
+        }
+        $locked = if ($Lock.versions.ContainsKey($name)) { [string]$Lock.versions[$name] } else { $null }
+        if ($declared -or $locked) { $items += [PSCustomObject][ordered]@{ name = $name; declaredSpec = $declared; lockedVersion = $locked } }
+    }
+    return @($items)
+}
+
 function Get-AngularPackageVersions {
     param([Parameter(Mandatory = $true)]$Inventory)
 
@@ -524,7 +758,10 @@ function Get-ProjectPreflightFiles {
 }
 
 function Get-ProjectInspection {
-    param([Parameter(Mandatory = $true)][string]$ProjectRoot)
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [switch]$SkipNodeToolchain
+    )
 
     $errors = @()
     $root = Resolve-MigrationRoot -Path $ProjectRoot
@@ -576,7 +813,7 @@ function Get-ProjectInspection {
     $coreDependency = @($inventory.items | Where-Object { $_.name -eq '@angular/core' } | Select-Object -First 1)
     $declaredMajor = Get-VersionMajor -Spec $coreSpec
     $lock = $null
-    try { $lock = Get-ProjectLockfile -ProjectRoot $root }
+    try { $lock = Get-ProjectLockfile -ProjectRoot $root -DisallowAmbientNode:$SkipNodeToolchain }
     catch { $errors += [PSCustomObject]@{ code = 'lockfile_invalid'; message = $_.Exception.Message } }
     $resolvedCoreVersion = if ($lock) { [string]$lock.versions['@angular/core'] } else { $null }
     $currentMajor = Get-VersionMajor -Spec $resolvedCoreVersion
@@ -612,8 +849,15 @@ function Get-ProjectInspection {
 
     $git = Get-ProjectGit -ProjectRoot $root
     if ($git.errorCode) { $errors += [PSCustomObject]@{ code = $git.errorCode; message = $git.error } }
-    $node = Get-ProjectNode -ProjectRoot $root
-    if (-not $node.node.available -or -not $node.npm.available) {
+    $node = if ($SkipNodeToolchain) {
+        [PSCustomObject]@{
+            node   = [PSCustomObject]@{ available = $false; executable = $null; version = $null; stdout = $null }
+            npm    = [PSCustomObject]@{ available = $false; executable = $null; version = $null; stdout = $null }
+            errors = @('active Node toolchain inspection skipped; fnm discovery is authoritative')
+        }
+    }
+    else { Get-ProjectNode -ProjectRoot $root }
+    if (-not $SkipNodeToolchain -and (-not $node.node.available -or -not $node.npm.available)) {
         $errors += [PSCustomObject]@{ code = 'node_toolchain_missing'; message = 'node and npm must be available and executable'; details = $node.errors }
     }
     if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
@@ -720,5 +964,10 @@ Export-ModuleMember -Function @(
     'Get-ProjectChecks',
     'Get-ProjectGit',
     'Get-ProjectNode',
+    'Get-ProjectNodeDeclarations',
+    'Get-ProjectFnmInventory',
+    'Get-ProjectInputFingerprint',
+    'Get-ProjectLockfileNpmMinimumRange',
+    'Get-ProjectLockedTooling',
     'Get-ProjectInspection'
 )

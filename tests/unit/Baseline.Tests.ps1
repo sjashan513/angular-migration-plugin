@@ -28,15 +28,18 @@ try {
             param($Names)
             if ($Names[0] -eq 'node.exe') { return Join-Path $script:FixtureTools 'node.cmd' }
             if ($Names[0] -eq 'npm.cmd') { return Join-Path $script:FixtureTools 'npm.cmd' }
+            if ($Names -contains 'fnm.exe' -or $Names -contains 'fnm') { return Join-Path $script:FixtureTools 'fnm.cmd' }
             return (Get-Command $Names[0] -ErrorAction Stop).Source
         }
     } $tools
+    $discovery = Invoke-MigrationDiscover -ProjectRoot $root -TargetMajor 8
+    if (-not $discovery.ok -or $discovery.status -ne 'ready') { throw 'Discovery should pass before baseline start' }
     $run = Invoke-StartMigration -ProjectRoot $root -TargetMajor 8
     $runId = $run.data.runId
     $paths = Get-MigrationRunPaths -ProjectRoot $root -RunId $runId
     $logDirectory = Join-Path $paths.logs 'baseline'
     $manifest = Read-MigrationJson -Path $paths.manifest -Required
-    if ($manifest.angular.declaredCoreSpec -ne '^7.2.0' -or $manifest.angular.resolvedCoreVersion -ne '7.2.16' -or $manifest.project.lockfileVersion -ne 1 -or -not $manifest.project.toolchain.npm.executable) { throw 'Manifest lost inspection evidence' }
+    if ($manifest.angular.declaredCoreSpec -ne '^7.2.0' -or $manifest.angular.resolvedCoreVersion -ne '7.2.16' -or $manifest.project.lockfileVersion -ne 1 -or -not $manifest.project.runtimeToolchain.fnm.executable) { throw 'Manifest lost inspection evidence' }
     $schema = Read-MigrationJson -Path (Join-Path $PSScriptRoot '../../schemas/manifest.schema.json') -Required
     if ($schema.properties.checks.items.type -ne 'object' -or $schema.properties.checks.items.required -notcontains 'timeoutSeconds') { throw 'Schema does not define structured checks' }
     foreach ($check in $manifest.checks) {
@@ -115,28 +118,28 @@ try {
     Remove-Item (Join-Path $root 'dirty.txt')
 
     & $projectModule {
-        $script:OriginalProcess = (Get-Command Invoke-MigrationProcess).ScriptBlock
-        function script:Invoke-MigrationProcess {
-            param($FilePath, $Arguments, $WorkingDirectory, $TimeoutSeconds)
-            if ($FilePath -like '*npm.cmd') {
+        $script:OriginalNodeProcess = (Get-Command Invoke-MigrationNodeProcess).ScriptBlock
+        function script:Invoke-MigrationNodeProcess {
+            param($FnmPath, $NodeVersion, $Executable, $Arguments, $WorkingDirectory, $TimeoutSeconds)
+            if ($Executable -eq 'npm') {
                 if ($TimeoutSeconds -ne 900) { throw 'Install timeout changed' }
                 return [PSCustomObject]@{ exitCode = 124; stdout = ''; stderr = ''; timedOut = $true }
             }
-            return & $script:OriginalProcess @PSBoundParameters
+            return & $script:OriginalNodeProcess @PSBoundParameters
         }
     }
     $result = Invoke-MigrationBaseline -ProjectRoot $root -RunId $runId
     if ($result.status -ne 'blocked' -or -not $result.diagnostic.timedOut -or $result.checks[0].status -ne 'timed-out' -or $result.notStarted.Count -ne 6) { throw 'Timeout must block, not request repair' }
     & $projectModule {
-        function script:Invoke-MigrationProcess {
-            param($FilePath, $Arguments, $WorkingDirectory, $TimeoutSeconds)
-            if ($FilePath -like '*npm.cmd') { Throw-MigrationError -Code 'process_failed' -Message 'Fixture cannot start' -Status failed }
-            return & $script:OriginalProcess @PSBoundParameters
+        function script:Invoke-MigrationNodeProcess {
+            param($FnmPath, $NodeVersion, $Executable, $Arguments, $WorkingDirectory, $TimeoutSeconds)
+            if ($Executable -eq 'npm') { Throw-MigrationError -Code 'process_failed' -Message 'Fixture cannot start' -Status failed }
+            return & $script:OriginalNodeProcess @PSBoundParameters
         }
     }
     $result = Invoke-MigrationBaseline -ProjectRoot $root -RunId $runId
     if ($result.status -ne 'failed' -or $result.diagnostic.code -ne 'process_failed') { throw 'Process launch error must fail' }
-    & $projectModule { Set-Item Function:script:Invoke-MigrationProcess $script:OriginalProcess }
+    & $projectModule { Set-Item Function:script:Invoke-MigrationNodeProcess $script:OriginalNodeProcess }
     $stdoutPath = Join-Path $logDirectory '01-install.stdout.log'
     Remove-Item $stdoutPath
     New-Item -ItemType Directory -Path $stdoutPath | Out-Null
@@ -155,6 +158,8 @@ try {
     Copy-Item (Join-Path $fixtures 'projects/missing-checks/package.json') (Join-Path $root 'package.json') -Force
     & git -C $root add package.json
     & git -C $root commit --quiet -m missing-checks
+    $discovery = Invoke-MigrationDiscover -ProjectRoot $root -TargetMajor 8
+    if (-not $discovery.ok -or $discovery.status -ne 'ready') { throw 'Discovery should pass before missing-check start' }
     $run = Invoke-StartMigration -ProjectRoot $root -TargetMajor 8
     $runId = $run.data.runId
     $paths = Get-MigrationRunPaths -ProjectRoot $root -RunId $runId

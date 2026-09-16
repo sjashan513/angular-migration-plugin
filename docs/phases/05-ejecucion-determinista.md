@@ -557,16 +557,19 @@ Si falla uno:
 
 ## 16. Scope reparable
 
-El failure context no se basa únicamente en texto del modelo. Se construye desde check y configuración del proyecto:
+El failure context no se basa únicamente en texto del modelo. Se construye desde el
+check y la configuración del proyecto. El scope editable se deriva así:
 
-| Check            | Rutas editables                                                                                                |
-| ---------------- | -------------------------------------------------------------------------------------------------------------- |
-| `typecheck`      | `sourceRoot/**`, tsconfig del proyecto y ficheros referenciados por el diagnóstico dentro de la raíz.          |
-| `lint`           | `sourceRoot/**` y configuración lint detectada.                                                                |
-| `unit-test`      | `sourceRoot/**`, tests dentro del proyecto y configuración del runner detectado.                               |
-| `build`          | `sourceRoot/**`, `angular.json`, tsconfig, polyfills, browserslist y ficheros referenciados dentro de la raíz. |
-| `e2e`            | Directorio e2e detectado y su configuración; nunca inventar ruta.                                              |
-| `update-angular` | Solo rutas fuente/config referenciadas por el error; package.json y lockfile siempre excluidos.                |
+- `typecheck`: `sourceRoot/**`, el tsconfig del proyecto y los ficheros referenciados
+  por el diagnóstico dentro de la raíz.
+- `lint`: `sourceRoot/**` y la configuración lint detectada.
+- `unit-test`: `sourceRoot/**`, los tests del proyecto y la configuración del runner
+  detectado.
+- `build`: `sourceRoot/**`, `angular.json`, tsconfig, polyfills, browserslist y los
+  ficheros referenciados dentro de la raíz.
+- `e2e`: el directorio e2e detectado y su configuración; nunca se inventa una ruta.
+- `update-angular`: solo las rutas fuente o de configuración relacionadas por el
+  error; `package.json` y el lockfile siempre quedan excluidos.
 
 Exclusiones absolutas para Implementer:
 
@@ -615,17 +618,19 @@ Al entrar en `run`:
 3. comprobar rama y HEAD esperados;
 4. inspeccionar `activeOperation`;
 5. comparar eventos y completedOperations;
-6. decidir con esta tabla:
+6. decidir con estas reglas:
 
-| Situación                                             | Acción                                                                                                                        |
-| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Operación no mutante iniciada sin finish              | Repetirla.                                                                                                                    |
-| Operación mutante tiene checkpoint confirmado         | No repetir; limpiar activeOperation y avanzar.                                                                                |
-| Operación mutante interrumpida con working tree sucio | Restaurar checkpoint y borrar solo nuevos untracked inventariados; luego dejar `blocked / interrupted_operation_rolled_back`. |
-| State dice completada pero checkpoint falta           | `failed / checkpoint_missing`.                                                                                                |
-| HEAD no coincide con checkpoint                       | `blocked / git_head_changed`.                                                                                                 |
-| Manifest hash no coincide                             | `failed / manifest_integrity_failed`.                                                                                         |
-| Lock pertenece a otro run                             | `blocked / run_not_owner`.                                                                                                    |
+- Una operación no mutante iniciada sin `finish` se repite.
+- Una operación mutante con checkpoint confirmado no se repite; se limpia
+  `activeOperation` y se avanza.
+- Una operación mutante interrumpida con working tree sucio restaura el checkpoint y
+  borra solo los untracked inventariados por esa operación; después deja
+  `blocked / interrupted_operation_rolled_back`.
+- Si state dice que una operación está completada pero falta el checkpoint, el resultado
+  es `failed / checkpoint_missing`.
+- Si HEAD no coincide con el checkpoint, el resultado es `blocked / git_head_changed`.
+- Si el hash del manifest no coincide, el resultado es `failed / manifest_integrity_failed`.
+- Si el lock pertenece a otro run, el resultado es `blocked / run_not_owner`.
 
 No reanudar automáticamente después de un rollback de operación mutante. Una nueva llamada explícita a `run` puede continuar cuando status haya sido revisado y autorizado por el contrato correspondiente.
 
@@ -661,14 +666,10 @@ Después de guardar `resultSha256`, el resultado técnico es inmutable. Fase 7 g
 
 ## 20. Liberación de lock
 
-| Estado                         | Lock                                         |
-| ------------------------------ | -------------------------------------------- |
-| `running`                      | Mantener                                     |
-| `needs-repair`                 | Mantener                                     |
-| `verified` con docs pendientes | Mantener                                     |
-| `completed`                    | Liberar después de verificar escritura final |
-| `blocked` definitivo           | Liberar después de persistir diagnóstico     |
-| `failed` definitivo            | Liberar después de persistir diagnóstico     |
+- `running`, `needs-repair` y `verified` con documentación pendiente mantienen el
+  lock.
+- `completed` libera el lock después de verificar la escritura final.
+- `blocked` y `failed` definitivos liberan el lock después de persistir el diagnóstico.
 
 La eliminación comprueba que `active.lock.runId` coincide. Nunca eliminar un lock ajeno.
 

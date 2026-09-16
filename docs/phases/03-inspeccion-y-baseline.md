@@ -91,13 +91,12 @@ El rango declarado y la versión resuelta deben conservarse por separado:
 
 Bloqueos obligatorios:
 
-| Código                           | Condición                                                   |
-| -------------------------------- | ----------------------------------------------------------- |
-| `angular_core_missing`           | No existe `@angular/core` en las secciones admitidas.       |
-| `angular_core_not_locked`        | Existe en `package.json`, pero no en el lockfile.           |
-| `angular_core_major_mismatch`    | El rango declarado no admite la major resuelta.             |
-| `angular_package_major_mismatch` | Un paquete `@angular/*` de framework está en otra major.    |
-| `lockfile_invalid`               | El lockfile no se puede leer o no tiene un layout admitido. |
+- `angular_core_missing`: no existe `@angular/core` en las secciones admitidas.
+- `angular_core_not_locked`: existe en `package.json`, pero no en el lockfile.
+- `angular_core_major_mismatch`: el rango declarado no admite la major resuelta.
+- `angular_package_major_mismatch`: un paquete `@angular/*` de framework está en otra
+  major.
+- `lockfile_invalid`: el lockfile no se puede leer o no tiene un layout admitido.
 
 No implementar un parser semver completo. Para determinar si el spec declarado representa la misma major se admiten únicamente specs simples ya soportados (`7`, `7.x`, `~7.2.0`, `^7.2.0`, `>=7.0.0` simple). Un rango compuesto, alias o unión se bloquea.
 
@@ -207,15 +206,13 @@ Cada check descubierto debe tener esta forma:
 
 Timeouts por defecto:
 
-| Check             | Timeout |
-| ----------------- | ------: |
-| `install`         |   900 s |
-| `dependency-tree` |   300 s |
-| `typecheck`       |   600 s |
-| `lint`            |   600 s |
-| `unit-test`       |   900 s |
-| `build`           |  1200 s |
-| `e2e`             |  1800 s |
+- `install`: 900 s.
+- `dependency-tree`: 300 s.
+- `typecheck`: 600 s.
+- `lint`: 600 s.
+- `unit-test`: 900 s.
+- `build`: 1200 s.
+- `e2e`: 1800 s.
 
 No aceptar timeouts desde el agente o la línea de comandos. Las constantes viven en `Migration.Project.psm1` y solo cambian mediante código versionado.
 
@@ -395,15 +392,14 @@ Orden:
 
 Clasificación:
 
-| Caso                               | Resultado de baseline | Estado futuro del run |
-| ---------------------------------- | --------------------- | --------------------- |
-| Check configurado devuelve 0       | Continúa              | `running`             |
-| Check `not-configured`             | Continúa              | `running`             |
-| Check declarado `blocked`          | Se detiene            | `blocked`             |
-| Check configurado devuelve no cero | Se detiene            | `blocked`             |
-| Timeout                            | Se detiene            | `blocked`             |
-| No se puede iniciar proceso        | Se detiene            | `failed`              |
-| No se puede escribir log/evento    | Se detiene            | `failed`              |
+- Un check configurado que devuelve `0` continúa en `running`.
+- Un check `not-configured` continúa en `running` sin convertirse en `passed`.
+- Un check declarado `blocked` detiene la baseline y deja el run en `blocked`.
+- Un check configurado que devuelve un código distinto de cero detiene la baseline y
+  deja el run en `blocked`.
+- Un timeout detiene la baseline y deja el run en `blocked`.
+- Si no se puede iniciar el proceso, el run termina en `failed`.
+- Si no se puede escribir el log o el evento, el run termina en `failed`.
 
 Un fallo de baseline debe incluir este diagnóstico:
 

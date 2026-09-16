@@ -133,14 +133,16 @@ function Get-DependencyMetadata {
     param(
         [Parameter(Mandatory = $true)][string]$PackageName,
         [Parameter(Mandatory = $true)][string]$VersionSelector,
-        [Parameter(Mandatory = $true)][string]$ProjectRoot
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [string]$FnmPath = '',
+        [string]$NodeVersion = ''
     )
 
     Assert-DependencyPackageName -PackageName $PackageName
     Assert-DependencyVersionSelector -VersionSelector $VersionSelector
     $key = $PackageName.ToLowerInvariant() + '|' + $VersionSelector
     if ($script:MetadataCache.ContainsKey($key)) { return $script:MetadataCache[$key] }
-    $npmPath = Find-MigrationExecutable -Names @('npm.cmd', 'npm.exe', 'npm')
+    $npmPath = if ($FnmPath -and $NodeVersion) { 'npm' } else { Find-MigrationExecutable -Names @('npm.cmd', 'npm.exe', 'npm') }
     if (-not $npmPath) {
         Throw-MigrationError -Code 'registry_metadata_unavailable' -Message 'npm is not available for registry metadata.' -Status blocked
     }
@@ -159,7 +161,12 @@ function Get-DependencyMetadata {
     $logContext = Get-DependencyQueryLogContext -PackageName $PackageName
     $started = Get-Date
     try {
-        $process = Invoke-MigrationProcess -FilePath $npmPath -Arguments $arguments -WorkingDirectory (Resolve-MigrationRoot -Path $ProjectRoot) -TimeoutSeconds 120
+        if ($FnmPath -and $NodeVersion) {
+            $process = Invoke-MigrationNodeProcess -FnmPath $FnmPath -NodeVersion $NodeVersion -Executable 'npm' -Arguments $arguments -WorkingDirectory (Resolve-MigrationRoot -Path $ProjectRoot) -TimeoutSeconds 120
+        }
+        else {
+            $process = Invoke-MigrationProcess -FilePath $npmPath -Arguments $arguments -WorkingDirectory (Resolve-MigrationRoot -Path $ProjectRoot) -TimeoutSeconds 120
+        }
     }
     catch {
         Throw-MigrationError -Code 'registry_metadata_unavailable' -Message "Could not query metadata for $PackageName." -Status blocked -Details $_.Exception.Message
@@ -224,62 +231,7 @@ function Get-DependencyVersionSortKey {
 
 function Test-DependencyVersionRange {
     param([string]$Version, [string]$Range)
-
-    $versionTuple = Get-DependencyVersionTuple -Version $Version
-    if ($null -eq $versionTuple -or [string]::IsNullOrWhiteSpace($Range)) { return $false }
-    foreach ($alternative in ($Range -split '\|\|')) {
-        $alternativeText = $alternative.Trim()
-        if ($alternativeText -in @('', '*', 'x', 'X')) { return $true }
-        $tokens = @($alternativeText -split '\s+' | Where-Object { $_ })
-        $matches = $true
-        foreach ($token in $tokens) {
-            $operator = ''
-            $value = $token
-            if ($token -match '^(\^|~|>=|<=|>|<)(.+)$') { $operator = $Matches[1]; $value = $Matches[2] }
-            $parts = $value -split '\.'
-            $major = 0; $minor = 0; $patch = 0
-            if ($parts.Count -lt 1 -or $parts[0] -notmatch '^\d+$') { $matches = $false; break }
-            $major = [int]$parts[0]
-            if ($parts.Count -gt 1 -and $parts[1] -notin @('x', 'X', '*')) {
-                if ($parts[1] -notmatch '^\d+$') { $matches = $false; break }
-                $minor = [int]$parts[1]
-            }
-            if ($parts.Count -gt 2 -and $parts[2] -notin @('x', 'X', '*')) {
-                if ($parts[2] -notmatch '^\d+$') { $matches = $false; break }
-                $patch = [int]$parts[2]
-            }
-            $base = @($major, $minor, $patch)
-            $comparison = Compare-DependencyVersion -Left $versionTuple -Right $base
-            if ($operator -eq '^') {
-                $caretCompatible = if ($major -gt 0) {
-                    $versionTuple[0] -eq $major -and $comparison -ge 0
-                }
-                elseif ($minor -gt 0) {
-                    $versionTuple[0] -eq 0 -and $versionTuple[1] -eq $minor -and $comparison -ge 0
-                }
-                else {
-                    $versionTuple[0] -eq 0 -and $versionTuple[1] -eq 0 -and $versionTuple[2] -eq $patch -and $comparison -ge 0
-                }
-                if (-not $caretCompatible) { $matches = $false; break }
-            }
-            elseif ($operator -eq '~') {
-                if ($versionTuple[0] -ne $major -or $versionTuple[1] -ne $minor -or $comparison -lt 0) { $matches = $false; break }
-            }
-            elseif ($operator -eq '>=') { if ($comparison -lt 0) { $matches = $false; break } }
-            elseif ($operator -eq '>') { if ($comparison -le 0) { $matches = $false; break } }
-            elseif ($operator -eq '<=') { if ($comparison -gt 0) { $matches = $false; break } }
-            elseif ($operator -eq '<') { if ($comparison -ge 0) { $matches = $false; break } }
-            elseif ($parts.Count -eq 1 -or $parts[1] -in @('x', 'X', '*')) {
-                if ($versionTuple[0] -ne $major) { $matches = $false; break }
-            }
-            elseif ($parts.Count -eq 2 -or $parts[2] -in @('x', 'X', '*')) {
-                if ($versionTuple[0] -ne $major -or $versionTuple[1] -ne $minor) { $matches = $false; break }
-            }
-            elseif ($comparison -ne 0) { $matches = $false; break }
-        }
-        if ($matches) { return $true }
-    }
-    return $false
+    return Test-MigrationVersionRange -Version $Version -Range $Range
 }
 
 function Get-DependencyCandidateList {
@@ -461,7 +413,9 @@ function Test-ResolvedManifest {
 function Resolve-MigrationManifest {
     param(
         [Parameter(Mandatory = $true)]$PendingManifest,
-        [Parameter(Mandatory = $true)][string]$ProjectRoot
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [string]$FnmPath = '',
+        [string]$NodeVersion = ''
     )
 
     $script:MetadataCache = @{}
@@ -477,7 +431,7 @@ function Resolve-MigrationManifest {
         Assert-MigrationRunId -RunId $runId
         $runRoot = Join-Path (Join-Path (Join-Path $root '.angular-migration') 'runs') $runId
         $script:ResolutionContext = [PSCustomObject]@{ queryIndex = 0; logDirectory = Join-Path $runRoot 'logs/resolve' }
-        $lock = Get-ProjectLockfile -ProjectRoot $root
+        $lock = Get-ProjectLockfile -ProjectRoot $root -FnmPath $FnmPath -NodeVersion $NodeVersion
         $inventory = @($PendingManifest.dependencies)
         $byName = @{}
         foreach ($item in $inventory) {
@@ -497,7 +451,7 @@ function Resolve-MigrationManifest {
             $role = Get-DependencyRole -PackageName $name
             $currentMajor = (Get-DependencyVersionTuple $currentVersion)[0]
             $selectorMajor = if ($role -in @('angular-framework', 'angular-tooling')) { $targetMajor } else { $currentMajor }
-            $metadata = Get-DependencyMetadata -PackageName $name -VersionSelector ([string]$selectorMajor) -ProjectRoot $root
+            $metadata = Get-DependencyMetadata -PackageName $name -VersionSelector ([string]$selectorMajor) -ProjectRoot $root -FnmPath $FnmPath -NodeVersion $NodeVersion
             $candidateFailureCode = if ($role -eq 'angular-framework') { 'angular_framework_unresolvable' } else { 'registry_metadata_invalid' }
             $candidate = Select-DependencyCandidate -Metadata $metadata -Major $selectorMajor -FailureCode $candidateFailureCode
             $angularPeers = @(Get-DependencyObjectNames (Get-DependencyObjectValue $candidate 'peerDependencies') | Where-Object { $_ -in @('@angular/core', '@angular/common', '@angular/compiler') })
@@ -509,13 +463,13 @@ function Resolve-MigrationManifest {
         }
         foreach ($alignedName in @('@angular/common', '@angular/compiler')) {
             if ($selected.ContainsKey('@angular/core') -and $selected.ContainsKey($alignedName) -and $selected[$alignedName].version -cne $selected['@angular/core'].version) {
-                $alignedMetadata = Get-DependencyMetadata -PackageName $alignedName -VersionSelector ([string]$selected['@angular/core'].version) -ProjectRoot $root
+                $alignedMetadata = Get-DependencyMetadata -PackageName $alignedName -VersionSelector ([string]$selected['@angular/core'].version) -ProjectRoot $root -FnmPath $FnmPath -NodeVersion $NodeVersion
                 $selected[$alignedName] = Select-DependencyCandidate -Metadata $alignedMetadata -ExactVersion ([string]$selected['@angular/core'].version) -FailureCode 'angular_framework_unresolvable'
                 $targetVersions[$alignedName] = [string]$selected[$alignedName].version
             }
         }
         if ($byName.ContainsKey('@angular/cli') -and -not $byName.ContainsKey('@angular/compiler-cli')) {
-            $metadata = Get-DependencyMetadata -PackageName '@angular/compiler-cli' -VersionSelector ([string]$targetMajor) -ProjectRoot $root
+            $metadata = Get-DependencyMetadata -PackageName '@angular/compiler-cli' -VersionSelector ([string]$targetMajor) -ProjectRoot $root -FnmPath $FnmPath -NodeVersion $NodeVersion
             $selected['@angular/compiler-cli'] = Select-DependencyCandidate -Metadata $metadata -Major $targetMajor -FailureCode 'toolchain_unresolvable'
             $targetVersions['@angular/compiler-cli'] = [string]$selected['@angular/compiler-cli'].version
             $byName['@angular/compiler-cli'] = [PSCustomObject]@{ name = '@angular/compiler-cli'; section = 'devDependencies'; role = 'dev'; spec = $null; kind = 'registry'; added = $true }
@@ -529,7 +483,7 @@ function Resolve-MigrationManifest {
             $found = $false
             for ($candidateMajor = $currentMajor + 1; $candidateMajor -le $currentMajor + 10; $candidateMajor++) {
                 try {
-                    $nextMetadata = Get-DependencyMetadata -PackageName $name -VersionSelector ([string]$candidateMajor) -ProjectRoot $root
+                    $nextMetadata = Get-DependencyMetadata -PackageName $name -VersionSelector ([string]$candidateMajor) -ProjectRoot $root -FnmPath $FnmPath -NodeVersion $NodeVersion
                     $nextCandidate = Select-DependencyCandidate -Metadata $nextMetadata -Major $candidateMajor -FailureCode 'peer_dependency_conflict'
                 }
                 catch {
@@ -568,7 +522,7 @@ function Resolve-MigrationManifest {
                     if ($range -and -not (Test-DependencyVersionRange -Version $candidate.version -Range ([string]$range))) {
                         $minimumMajor = Get-DependencyMinimumMajor -Range ([string]$range)
                         if ($null -eq $minimumMajor) { Throw-MigrationError -Code 'toolchain_unresolvable' -Message "No compatible $toolName version exists." -Status blocked }
-                        $metadata = Get-DependencyMetadata -PackageName $toolName -VersionSelector ([string]$minimumMajor) -ProjectRoot $root
+                        $metadata = Get-DependencyMetadata -PackageName $toolName -VersionSelector ([string]$minimumMajor) -ProjectRoot $root -FnmPath $FnmPath -NodeVersion $NodeVersion
                         $replacement = Select-DependencyCandidate -Metadata $metadata -Major $minimumMajor -RequiredRange ([string]$range) -FailureCode 'toolchain_unresolvable'
                         if ($replacement.version -cne $candidate.version) {
                             $selected[$toolName] = $replacement
@@ -588,7 +542,10 @@ function Resolve-MigrationManifest {
                 if ($range) { $nodeRanges += $range; $nodePackages += $name }
             }
         }
-        $activeNode = [string](Get-DependencyObjectValue -Object (Get-DependencyObjectValue -Object $PendingManifest.project.toolchain -Name 'node') -Name 'version')
+        $activeNode = [string]$NodeVersion
+        if ([string]::IsNullOrWhiteSpace($activeNode)) {
+            $activeNode = [string](Get-DependencyObjectValue -Object (Get-DependencyObjectValue -Object $PendingManifest.project.toolchain -Name 'node') -Name 'version')
+        }
         $activeNode = $activeNode -replace '^v', ''
         $requiredRange = if ($nodeRanges.Count -gt 0) { ($nodeRanges | Select-Object -Unique) -join ' && ' } else { '*' }
         $nodeCompatible = $true
@@ -681,5 +638,6 @@ Export-ModuleMember -Function @(
     'Get-DependencyMetadata',
     'Resolve-MigrationManifest',
     'Test-ResolvedManifest',
-    'Get-ResolvedManifestHash'
+    'Get-ResolvedManifestHash',
+    'Test-DependencyVersionRange'
 )

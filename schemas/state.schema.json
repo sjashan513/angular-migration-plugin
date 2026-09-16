@@ -23,6 +23,10 @@
     "migrationBranch",
     "checkpointCommit",
     "manifestSha256",
+    "discoverySha256",
+    "inputFingerprint",
+    "runtimePlan",
+    "runtimeFnmPath",
     "activeOperation",
     "completedOperations",
     "skippedChecks",
@@ -68,7 +72,7 @@
       ]
     },
     "stageRevision": { "type": "integer", "minimum": 0 },
-    "attempt": { "type": "integer", "minimum": 1 },
+    "attempt": { "type": "integer", "minimum": 1, "maximum": 3 },
     "migrationStatus": {
       "type": "string",
       "enum": ["running", "verified", "blocked", "failed"]
@@ -152,6 +156,20 @@
     "manifestSha256": {
       "type": ["string", "null"],
       "pattern": "^[0-9a-f]{64}$"
+    },
+    "discoverySha256": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "inputFingerprint": {
+      "type": ["string", "null"],
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "runtimePlan": {
+      "anyOf": [{ "type": "null" }, { "$ref": "#/definitions/runtimePlan" }]
+    },
+    "runtimeFnmPath": {
+      "type": ["string", "null"]
     },
     "activeOperation": {
       "type": ["object", "null"],
@@ -284,9 +302,12 @@
               "type": "string",
               "pattern": "^sha256:[0-9a-f]{64}$"
             },
-            "attempt": { "type": "integer", "minimum": 1 },
+            "attempt": { "type": "integer", "minimum": 1, "maximum": 3 },
             "commit": { "type": "string", "pattern": "^[a-fA-F0-9]{40}$" },
-            "report": { "type": "string", "minLength": 1 },
+            "report": {
+              "type": "string",
+              "pattern": "^\\.angular-migration/runs/[^/]+/repairs/[^/]+\\.json$"
+            },
             "reportSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
           },
           "additionalProperties": false
@@ -303,7 +324,7 @@
       ],
       "additionalProperties": false
     },
-    "repairTotal": { "type": "integer", "minimum": 0 },
+    "repairTotal": { "type": "integer", "minimum": 0, "maximum": 5 },
     "repairs": {
       "type": "array",
       "items": {
@@ -320,9 +341,12 @@
             "type": "string",
             "pattern": "^sha256:[0-9a-f]{64}$"
           },
-          "attempt": { "type": "integer", "minimum": 1 },
+          "attempt": { "type": "integer", "minimum": 1, "maximum": 3 },
           "commit": { "type": "string", "pattern": "^[a-fA-F0-9]{40}$" },
-          "report": { "type": "string", "minLength": 1 },
+          "report": {
+            "type": "string",
+            "pattern": "^\\.angular-migration/runs/[^/]+/repairs/[^/]+\\.json$"
+          },
           "reportSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
         },
         "additionalProperties": false
@@ -340,6 +364,87 @@
     "configRepairAllowed": { "type": "boolean" },
     "createdAt": { "type": "string", "format": "date-time" },
     "updatedAt": { "type": "string", "format": "date-time" }
+  },
+  "definitions": {
+    "runtimePlan": {
+      "type": "object",
+      "required": ["profiles", "conflicts", "missingVersions"],
+      "properties": {
+        "profiles": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/runtimeProfile" }
+        },
+        "conflicts": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/runtimeConflict" }
+        },
+        "missingVersions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "runtimeProfile": {
+      "type": "object",
+      "required": [
+        "id",
+        "operations",
+        "requiredNodeRanges",
+        "requiredNpmRange",
+        "constraints",
+        "selectedNodeVersion",
+        "detectedNpmVersion",
+        "status"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "operations": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "requiredNodeRanges": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "requiredNpmRange": { "type": "string", "minLength": 1 },
+        "constraints": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/runtimeConstraint" }
+        },
+        "selectedNodeVersion": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "detectedNpmVersion": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "status": { "enum": ["installed", "missing", "blocked"] }
+      },
+      "additionalProperties": false
+    },
+    "runtimeConstraint": {
+      "type": "object",
+      "required": ["source", "value", "reason"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1 },
+        "value": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "runtimeConflict": {
+      "type": "object",
+      "required": ["code", "profileId", "message"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "profileId": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    }
   },
   "additionalProperties": false
 }

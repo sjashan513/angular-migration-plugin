@@ -159,14 +159,21 @@ Conservar `peerDependenciesMeta` y `overrides` como políticas separadas.
 
 Clasificaciones:
 
-| Grupo | Ejemplos | Política |
-| --- | --- | --- |
-| Angular framework | `@angular/core`, `common`, `compiler`, `forms`, `router`, `animations`, `platform-*` | Major objetivo; resolver última estable compatible. |
-| Angular tooling | `@angular/cli`, `@angular/compiler-cli`, `@angular-devkit/*`, `@ngtools/*` | Resolver conjunto compatible con framework objetivo. |
-| Toolchain relacionado | `typescript`, `rxjs`, `zone.js` | Resolver dentro de los peers publicados por Angular objetivo. |
-| Angular-aware externo | Paquete cuyo peer declara `@angular/core`, `common` o `compiler` | Mantener major si existe candidato compatible; subir a la major mínima compatible si es necesario. |
-| Registry ordinario | Resto de paquetes registry | Última estable dentro de su major instalada actual. |
-| No soportado | alias, Git, URL, local, workspace, patch | `blocked`; no modificar. |
+- **Angular framework**: incluye `@angular/core`, `common`, `compiler`, `forms`,
+  `router`, `animations` y `platform-*`; usa la major objetivo y resuelve la última
+  estable compatible.
+- **Angular tooling**: incluye `@angular/cli`, `@angular/compiler-cli`,
+  `@angular-devkit/*` y `@ngtools/*`; se resuelve como un conjunto compatible con el
+  framework objetivo.
+- **Toolchain relacionado**: incluye `typescript`, `rxjs` y `zone.js`; se resuelve
+  dentro de los peers publicados por Angular objetivo.
+- **Angular-aware externo**: es un paquete cuyo peer declara `@angular/core`,
+  `common` o `compiler`; conserva la major si hay candidato compatible y sube a la
+  major mínima compatible solo si es necesario.
+- **Registry ordinario**: el resto de paquetes registry; usa la última estable dentro
+  de su major instalada actual.
+- **No soportado**: alias, Git, URL, local, workspace y patch; produce `blocked` y no
+  modifica el proyecto.
 
 Un paquete no puede cambiar de sección. Si aparece en varias secciones, bloquear con `duplicate_dependency_declaration` salvo que npm defina explícitamente una combinación admitida y exista un test para ella.
 
@@ -291,13 +298,13 @@ El manifest guarda dos valores:
 
 Reglas de `writeSpec`:
 
-| Spec original | Escribir |
-| --- | --- |
-| `7.2.0` | `8.2.14` |
-| `^7.2.0` | `^8.2.14` |
-| `~7.2.0` | `~8.2.14` |
-| `>=7.2.0` | `>=8.2.14` solo si el parser actual lo soporta de forma inequívoca; en caso contrario bloquear. |
-| `7.x` o `7.*` | `8.x` o `8.*` conservando el estilo. |
+- Un spec exacto como `7.2.0` se escribe como la versión objetivo exacta, por ejemplo
+  `8.2.14`.
+- Un spec con `^`, como `^7.2.0`, conserva el operador: `^8.2.14`.
+- Un spec con `~`, como `~7.2.0`, conserva el operador: `~8.2.14`.
+- Un spec `>=7.2.0` se escribe como `>=8.2.14` solo si el parser actual lo soporta de
+  forma inequívoca; en caso contrario se bloquea.
+- Un spec `7.x` o `7.*` se transforma en `8.x` o `8.*`, conservando el estilo.
 
 Para dependencias ordinarias que mantienen major, aplicar la misma regla sustituyendo la versión exacta resuelta.
 

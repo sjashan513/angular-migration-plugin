@@ -5,8 +5,16 @@ $scriptPath = Join-Path $PSScriptRoot '..\scripts\angular-migration.ps1'
 $coreModulePath = Join-Path $PSScriptRoot '..\scripts\modules\Migration.Core.psm1'
 $projectModulePath = Join-Path $PSScriptRoot '..\scripts\modules\Migration.Project.psm1'
 $stateModulePath = Join-Path $PSScriptRoot '..\scripts\modules\Migration.State.psm1'
+$fixtureTools = Join-Path $PSScriptRoot 'fixtures/tools'
+$registryFixture = Join-Path $PSScriptRoot 'fixtures/migrations/registry/responses.json'
 $script:failed = 0
 $originalPath = $env:PATH
+$originalRegistry = $env:MIGRATION_REGISTRY_FIXTURE
+$originalInstalled = $env:FNM_FIXTURE_INSTALLED
+$originalRemote = $env:FNM_FIXTURE_REMOTE
+$originalNpm = $env:FNM_FIXTURE_NPM_VERSION
+$originalStatePath = $env:FNM_FIXTURE_STATE_PATH
+$originalFnmScript = $env:MIGRATION_FIXTURE_FNM_SCRIPT
 
 function Assert-Check {
     param([string]$Name, [bool]$Condition)
@@ -17,6 +25,43 @@ function Assert-Check {
         Write-Host "FAIL $Name" -ForegroundColor Red
         $script:failed++
     }
+}
+
+function New-FnmFixtureExecutable {
+    param([Parameter(Mandatory = $true)][string]$ScriptPath, [Parameter(Mandatory = $true)][string]$OutputPath)
+
+    $source = @'
+using System;
+using System.Diagnostics;
+
+public class MigrationFnmFixture {
+    private static string Quote(string value) {
+        return "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+    }
+
+    public static int Main(string[] args) {
+        var script = Environment.GetEnvironmentVariable("MIGRATION_FIXTURE_FNM_SCRIPT");
+        var info = new ProcessStartInfo("powershell.exe");
+        info.Arguments = "-NoProfile -ExecutionPolicy Bypass -File " + Quote(script);
+        foreach (var arg in args) { info.Arguments += " " + Quote(arg); }
+        info.UseShellExecute = false;
+        info.CreateNoWindow = true;
+        info.RedirectStandardOutput = true;
+        info.RedirectStandardError = true;
+        using (var process = new Process()) {
+            process.StartInfo = info;
+            process.Start();
+            var stdout = process.StandardOutput.ReadToEnd();
+            var stderr = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+            Console.Out.Write(stdout);
+            Console.Error.Write(stderr);
+            return process.ExitCode;
+        }
+    }
+}
+'@
+    Add-Type -TypeDefinition $source -OutputAssembly $OutputPath -OutputType ConsoleApplication
 }
 
 function Invoke-Facade {
@@ -95,7 +140,7 @@ $hookNames = @($hooks.hooks.PSObject.Properties.Name | Sort-Object)
 Assert-Check 'hooks use version one and expected events' ($hooks.version -eq 1 -and ($hookNames -join '|') -ceq 'preToolUse|subagentStop')
 foreach ($hookName in $hookNames) { Assert-Check "hook has one PowerShell command: $hookName" (@($hooks.hooks.$hookName).Count -eq 1 -and $hooks.hooks.$hookName[0].type -ceq 'command' -and $hooks.hooks.$hookName[0].powershell) }
 
-$expectedSchemas = @('state.schema.json', 'manifest.schema.json', 'result.schema.json', 'change-set.schema.json', 'check-result.schema.json', 'repair-context.schema.json', 'repair-input.schema.json', 'documentation-context.schema.json', 'documentation-research.schema.json', 'documentation-input.schema.json')
+$expectedSchemas = @('state.schema.json', 'manifest.schema.json', 'result.schema.json', 'change-set.schema.json', 'check-result.schema.json', 'repair-context.schema.json', 'repair-history-entry.schema.json', 'repair-input.schema.json', 'documentation-context.schema.json', 'documentation-research.schema.json', 'documentation-input.schema.json', 'repo-discovery.schema.json', 'runtime-install-proposal.schema.json', 'skip-batch.schema.json')
 $schemaDirectory = Join-Path $repositoryRoot 'schemas'
 $actualSchemas = @(Get-ChildItem -LiteralPath $schemaDirectory -File -Filter '*.json' | Select-Object -ExpandProperty Name | Sort-Object)
 Assert-Check 'schema inventory is complete' ((($actualSchemas -join '|') -ceq (($expectedSchemas | Sort-Object) -join '|')))
@@ -113,7 +158,7 @@ $pipelineText = Get-Content -LiteralPath (Join-Path $repositoryRoot 'scripts/mod
 $moduleNames = @('Migration.Core', 'Migration.State', 'Migration.Project', 'Migration.Dependencies', 'Migration.Pipeline')
 foreach ($moduleName in $moduleNames) { Assert-Check "module exists: $moduleName" (Test-Path -LiteralPath (Join-Path $repositoryRoot ('scripts/modules/' + $moduleName + '.psm1')) -PathType Leaf) }
 Assert-Check 'facade loads the five module graph' (@($moduleNames | Where-Object { ($facadeText + $pipelineText) -match [regex]::Escape($_) }).Count -eq 5)
-$publicCommands = @('inspect', 'preflight', 'start', 'run', 'status', 'baseline-dependency-context', 'approve-baseline-dependencies', 'skip-check', 'repair-context', 'record-repair', 'documentation-context', 'record-documentation')
+$publicCommands = @('inspect', 'preflight', 'discover', 'approve-runtime-install', 'start', 'run', 'status', 'baseline-dependency-context', 'approve-baseline-dependencies', 'skip-check', 'skip-checks', 'repair-context', 'record-repair', 'documentation-context', 'record-documentation')
 foreach ($publicCommand in $publicCommands) { Assert-Check "facade exposes command: $publicCommand" ($facadeText -match ("'" + [regex]::Escape($publicCommand) + "'\s*\{")) }
 Assert-Check 'JavaScript inventory is under scripts/js' ((Test-Path -LiteralPath (Join-Path $repositoryRoot 'scripts/js/inspect-lockfile.js') -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $repositoryRoot 'scripts/js/render-package-json.js') -PathType Leaf) -and -not (Test-Path -LiteralPath (Join-Path $repositoryRoot 'scripts/helpers/render-package-json.js')))
 $legacyVisualFixtureFiles = @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'tests/vision-fixture') -File -Recurse -ErrorAction SilentlyContinue)
@@ -121,11 +166,15 @@ Assert-Check 'legacy visual and marketplace files are absent' (-not (Test-Path -
 
 $functionalFiles = @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'scripts') -File -Recurse) + @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'agents') -File -Recurse) + @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'skills') -File -Recurse)
 $functionalText = (($functionalFiles | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }) -join "`n")
+$policyText = Get-Content -LiteralPath (Join-Path $repositoryRoot 'scripts/hooks/copilot-policy.ps1') -Raw
 Assert-Check 'functional files contain no visual runtime references' ($functionalText -notmatch '(?i)\bplaywright\b|\bscreenshot\b|\bvision\b|(?<![\w-])browser(?![\w-])')
 Assert-Check 'functional files contain no bypass flags' ($functionalText -notmatch '(?i)npx\s+--force|npm\s+(?:install|ci)\s+--force|npm\s+install\s+--legacy-peer-deps|ng\s+update\s+--force|--allow-dirty|--ignore-scripts')
 Assert-Check 'skill requires confirmation for baseline dependencies' ($functionalText -match 'baseline-dependency-context' -and $functionalText -match 'approve-baseline-dependencies' -and $functionalText -match 'proposalHash' -and $functionalText -match 'confirmacion')
 Assert-Check 'skill documents audited skips and critical gates' ($functionalText -match 'skip-check' -and $functionalText -match 'dependency-tree' -and $functionalText -match 'build' -and $functionalText -match 'status=skipped')
+Assert-Check 'skill requires discovery before start and batch skips' ($functionalText -match 'discover' -and $functionalText -match 'approve-runtime-install' -and $functionalText -match 'skip-checks' -and $functionalText -match 'skips.json')
 Assert-Check 'skill announces autonomous execution' ($functionalText -match 'trabajare\s+autonomamente')
+Assert-Check 'functional files document controller-owned repair history' ($functionalText -match 'repair-history' -and $functionalText -match 'verification-passed' -and $functionalText -match 'entrySha256')
+Assert-Check 'policy denies repair history mutation' ($policyText -match 'repair-history' -and $policyText -match '(?i)deny|denied' -and $policyText -match '(?i)edit|create|move|delete')
 Assert-MarkdownLinks -Path (Join-Path $repositoryRoot 'README.md')
 Assert-MarkdownLinks -Path (Join-Path $repositoryRoot 'docs/README.md')
 
@@ -138,7 +187,16 @@ try {
     $nodeFixtureSource = 'public class NodeFixture { public static void Main() { System.Console.WriteLine("v20.11.0"); } }'
     Add-Type -TypeDefinition $nodeFixtureSource -OutputAssembly (Join-Path $toolDirectory 'node.exe') -OutputType ConsoleApplication
     "@echo off`r`necho 10.2.4" | Set-Content -LiteralPath (Join-Path $toolDirectory 'npm.cmd') -Encoding ASCII
+    Copy-Item -LiteralPath (Join-Path $fixtureTools 'fnm.cmd') -Destination $toolDirectory -Force
+    Copy-Item -LiteralPath (Join-Path $fixtureTools 'fnm-fixture.ps1') -Destination $toolDirectory -Force
+    $env:MIGRATION_FIXTURE_FNM_SCRIPT = Join-Path $toolDirectory 'fnm-fixture.ps1'
+    New-FnmFixtureExecutable -ScriptPath $env:MIGRATION_FIXTURE_FNM_SCRIPT -OutputPath (Join-Path $toolDirectory 'fnm.exe')
     $env:PATH = $toolDirectory + [IO.Path]::PathSeparator + $originalPath
+    $env:MIGRATION_REGISTRY_FIXTURE = $registryFixture
+    $env:FNM_FIXTURE_INSTALLED = '20.11.1'
+    $env:FNM_FIXTURE_REMOTE = '20.11.1,16.20.2'
+    $env:FNM_FIXTURE_NPM_VERSION = '10.2.4'
+    $env:FNM_FIXTURE_STATE_PATH = Join-Path $temporaryRoot 'fnm-installed.txt'
 
     Import-Module (Resolve-Path $coreModulePath) -DisableNameChecking -Force
     Import-Module (Resolve-Path $projectModulePath) -DisableNameChecking -Force
@@ -243,8 +301,10 @@ try {
         Assert-Check 'marks e2e as not-configured' (($inspection.data.checks | Where-Object id -eq 'e2e').status -eq 'not-configured')
 
         Write-Host '2. sequential target and run creation' -ForegroundColor Cyan
+        $discovery = Invoke-Facade -ProjectRoot $tmp -Arguments @('-Command', 'discover', '-TargetMajor', '8')
+        Assert-Check 'discover creates a ready runtime plan' ($discovery.ok -eq $true -and $discovery.status -eq 'ready' -and $discovery.data.status -eq 'ready' -and $discovery.data.toolchain.fnm.available)
         $jump = Invoke-Facade -ProjectRoot $tmp -Arguments @('-Command', 'start', '-TargetMajor', '9') -ExpectedExitCode 2
-        Assert-Check 'rejects N to N+2 before creating a run' ($jump.status -eq 'blocked' -and $jump.error.code -eq 'non_sequential_target' -and -not (Test-Path (Join-Path $tmp '.angular-migration')))
+        Assert-Check 'rejects a start that does not match discovery' ($jump.status -eq 'blocked' -and $jump.error.code -eq 'discovery_context_mismatch')
 
         $concurrentOutputs = @(
             (Join-Path $temporaryRoot ("angular-migration-start-" + [guid]::NewGuid().ToString('N') + '-1.json'))
@@ -313,6 +373,12 @@ try {
 }
 finally {
     $env:PATH = $originalPath
+    if ($null -eq $originalRegistry) { Remove-Item Env:MIGRATION_REGISTRY_FIXTURE -ErrorAction SilentlyContinue } else { $env:MIGRATION_REGISTRY_FIXTURE = $originalRegistry }
+    if ($null -eq $originalInstalled) { Remove-Item Env:FNM_FIXTURE_INSTALLED -ErrorAction SilentlyContinue } else { $env:FNM_FIXTURE_INSTALLED = $originalInstalled }
+    if ($null -eq $originalRemote) { Remove-Item Env:FNM_FIXTURE_REMOTE -ErrorAction SilentlyContinue } else { $env:FNM_FIXTURE_REMOTE = $originalRemote }
+    if ($null -eq $originalNpm) { Remove-Item Env:FNM_FIXTURE_NPM_VERSION -ErrorAction SilentlyContinue } else { $env:FNM_FIXTURE_NPM_VERSION = $originalNpm }
+    if ($null -eq $originalStatePath) { Remove-Item Env:FNM_FIXTURE_STATE_PATH -ErrorAction SilentlyContinue } else { $env:FNM_FIXTURE_STATE_PATH = $originalStatePath }
+    if ($null -eq $originalFnmScript) { Remove-Item Env:MIGRATION_FIXTURE_FNM_SCRIPT -ErrorAction SilentlyContinue } else { $env:MIGRATION_FIXTURE_FNM_SCRIPT = $originalFnmScript }
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $toolDirectory -Recurse -Force -ErrorAction SilentlyContinue
 }

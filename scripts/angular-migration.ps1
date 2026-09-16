@@ -56,18 +56,21 @@ try {
     $result = switch ($commandName) {
         'inspect' { Invoke-InspectMigration -ProjectRoot $projectRoot }
         'preflight' { Invoke-MigrationPreflight -ProjectRoot $projectRoot }
+        'discover' { Invoke-MigrationDiscover -ProjectRoot $projectRoot -TargetMajor $TargetMajor }
+        'approve-runtime-install' { Invoke-ApproveMigrationRuntimeInstall -ProjectRoot $projectRoot -TargetMajor $TargetMajor -ProposalHash $ProposalHash -Confirmed:$Confirmed }
         'start' { Invoke-StartMigration -ProjectRoot $projectRoot -TargetMajor $TargetMajor }
         'status' { Invoke-MigrationStatus -ProjectRoot $projectRoot -RunId $RunId }
         'run' { Invoke-MigrationRun -ProjectRoot $projectRoot -RunId $RunId }
         'baseline-dependency-context' { Invoke-MigrationBaselineDependencyContext -ProjectRoot $projectRoot -RunId $RunId }
         'approve-baseline-dependencies' { Invoke-ApproveMigrationBaselineDependencies -ProjectRoot $projectRoot -RunId $RunId -ProposalHash $ProposalHash -Confirmed:$Confirmed }
         'skip-check' { Invoke-MigrationSkipCheck -ProjectRoot $projectRoot -RunId $RunId -CheckId $CheckId -Reason $Reason -Confirmed:$Confirmed }
+        'skip-checks' { Invoke-MigrationSkipChecks -ProjectRoot $projectRoot -RunId $RunId -InputFile $InputFile -Confirmed:$Confirmed }
         'repair-context' { Invoke-MigrationRepairContext -ProjectRoot $projectRoot -RunId $RunId }
         'record-repair' { Invoke-MigrationRecordRepair -ProjectRoot $projectRoot -RunId $RunId -InputFile $InputFile }
         'documentation-context' { Invoke-DocumentationContext -ProjectRoot $projectRoot -RunId $RunId -Mode $Mode }
         'record-documentation' { Invoke-RecordDocumentation -ProjectRoot $projectRoot -RunId $RunId -Mode $Mode -InputFile $InputFile }
         default {
-            Throw-MigrationError -Code 'unsupported_command' -Message "Unsupported v5 command: $Command" -Status blocked -Details ([PSCustomObject]@{ supported = @('inspect', 'preflight', 'start', 'status', 'baseline-dependency-context', 'approve-baseline-dependencies', 'skip-check', 'run', 'repair-context', 'record-repair', 'documentation-context', 'record-documentation') })
+            Throw-MigrationError -Code 'unsupported_command' -Message "Unsupported v5 command: $Command" -Status blocked -Details ([PSCustomObject]@{ supported = @('inspect', 'preflight', 'discover', 'approve-runtime-install', 'start', 'status', 'baseline-dependency-context', 'approve-baseline-dependencies', 'skip-check', 'skip-checks', 'run', 'repair-context', 'record-repair', 'documentation-context', 'record-documentation') })
         }
     }
 

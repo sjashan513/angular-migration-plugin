@@ -100,6 +100,7 @@ El comando devuelve el envelope común y en `data` este objeto:
   "attempt": 1,
   "maxAttempts": 3,
   "checkpointCommit": "<40-hex>",
+  "historyCheckpointCommit": "<40-hex>",
   "manifestSha256": "<64-hex>",
   "allowedPaths": ["src/**/*.ts", "src/**/*.html", "src/**/*.scss"],
   "forbiddenPaths": [
@@ -115,9 +116,17 @@ El comando devuelve el envelope común y en `data` este objeto:
   "diagnostic": {
     "summary": "TypeScript compilation failed",
     "exitCode": 1,
-    "logFiles": [".angular-migration/runs/<run-id>/logs/validate-build.stderr.log"],
+    "logFiles": [
+      ".angular-migration/runs/<run-id>/logs/validate-build.stderr.log"
+    ],
     "relatedFiles": ["src/app/example.component.ts"],
     "warnings": []
+  },
+  "history": {
+    "path": ".angular-migration/runs/<run-id>/repair-history/<fingerprint-sin-prefijo>/repair.jsonl",
+    "entryCount": 1,
+    "previousAttempts": 0,
+    "lastOutcome": null
   },
   "submissionPath": ".angular-migration/runs/<run-id>/inbox/repair.json"
 }
@@ -137,11 +146,12 @@ Reglas de construcción:
 
 Perímetros por gate:
 
-| Gate | Rutas modificables |
-| --- | --- |
-| `ng-update` | Solo archivos que el log relaciona dentro de `src/`, más `angular.json` únicamente si el controlador marca `configRepairAllowed=true`. |
-| `typecheck`, `build`, `test`, `lint` | `src/**/*` y ficheros de configuración que el diagnóstico identifique explícitamente. |
-| `npm-install`, integridad, Git, Node o manifest | Ninguna; son bloqueos deterministas y no deben invocar al agente. |
+- `ng-update`: solo archivos que el log relaciona dentro de `src/`, más `angular.json`
+  únicamente si el controlador marca `configRepairAllowed=true`.
+- `typecheck`, `build`, `test` y `lint`: `src/**/*` y ficheros de configuración que
+  el diagnóstico identifique explícitamente.
+- `npm-install`, integridad, Git, Node y manifest: ninguna ruta; son bloqueos
+  deterministas y no deben invocar al agente.
 
 `package.json` y el lockfile nunca son reparables por el agente. Si fallan, hay que
 corregir el resolver o detener el run.
@@ -204,7 +214,7 @@ Aplicar todas estas comprobaciones, en este orden:
 Si falla cualquiera, revertir únicamente archivos tracked modificados desde el
 checkpoint y eliminar únicamente untracked creados durante este intento que estén
 inventariados en el contexto. No usar `git clean`, no tocar cambios previos del usuario.
-Registrar `repair-rejected` y mantener `needs-repair` salvo violación de perímetro, que
+Registrar `submission-rejected` en el historial local y mantener `needs-repair` salvo violación de perímetro, que
 deja el run `failed / repair_scope_violation`.
 
 Si pasa:
@@ -212,14 +222,20 @@ Si pasa:
 1. mover `repair.json` a `repairs/<fingerprint>-attempt-<n>.json`;
 2. crear commit con mensaje fijo `chore(angular-migration): repair <check> attempt <n>`;
 3. guardar commit y hash del informe;
-4. registrar `repair-accepted`;
+4. registrar `submission-accepted` en el historial local y el hito global
+   `repair-accepted`;
 5. cambiar a `running` sin avanzar stage;
 6. devolver `nextAction: rerun-failed-check`.
 
-El controlador reejecuta solo el check fallido. Si pasa, continúa los gates restantes.
-Si vuelve a fallar con el mismo fingerprint, incrementa attempt. Con tres rechazos o
-fallos equivalentes: `blocked / repair_attempts_exhausted`. Un fingerprint nuevo inicia
-attempt uno, pero el run admite como máximo cinco reparaciones totales.
+El controlador reejecuta solo el check fallido. Una submission accepted permanece
+pendiente hasta que ese gate registre `verification-passed`; solo entonces se considera
+efectiva y puede aparecer en `result.json` o en documentación como reparación aplicada.
+Si vuelve a fallar con el mismo fingerprint, registra `verification-failed`, incrementa
+attempt y entrega el siguiente contexto con el mismo historial y
+`historyCheckpointCommit`. Un fingerprint nuevo inicia attempt uno y su propio
+`repair.jsonl`, pero el run admite como máximo cinco reparaciones totales. Con tres
+intentos del mismo fingerprint o cinco reparaciones del run: `blocked /
+repair_attempts_exhausted`.
 
 ## 8. Definición del agente
 
@@ -398,6 +414,10 @@ Cubrir al menos:
 - [ ] No se registran secretos ni resultados completos de herramientas.
 - [ ] Los reintentos están limitados y son trazables.
 - [ ] Una reparación aceptada no se considera válida hasta que pase el gate.
+- [ ] El implementer puede leer solo el `repair.jsonl` exacto del contexto y nunca
+      puede escribirlo, truncarlo, moverlo o borrarlo.
+- [ ] Un historial corrupto o una interrupción ambigua bloquea sin repetir una
+      mutación a ciegas.
 - [ ] Está documentado que v5 soporta Copilot CLI en Windows, no cloud agent.
 
 ## 12. Referencias normativas

@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 
 $modules = Join-Path $PSScriptRoot '../../scripts/modules'
 $fixtureDirectory = (Resolve-Path (Join-Path $PSScriptRoot '../fixtures/registry')).Path
+$fixtureTools = (Resolve-Path (Join-Path $PSScriptRoot '../fixtures/tools')).Path
 $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('migration-resolution-' + [guid]::NewGuid().ToString('N'))
 $toolDirectory = Join-Path $temporaryRoot 'tools'
 $originalPath = $env:PATH
@@ -88,11 +89,15 @@ function Invoke-ResolutionRun {
 
     $packageHash = (Get-FileHash (Join-Path $ProjectRoot 'package.json')).Hash
     $lockHash = (Get-FileHash (Join-Path $ProjectRoot 'package-lock.json')).Hash
+    $discovery = Invoke-MigrationDiscover -ProjectRoot $ProjectRoot -TargetMajor 8
+    if (-not $discovery.ok -or $discovery.status -ne 'ready') { throw ('Integration discovery failed: ' + ($discovery | ConvertTo-Json -Depth 20 -Compress)) }
     $started = Invoke-StartMigration -ProjectRoot $ProjectRoot -TargetMajor 8
     $runId = $started.data.runId
     $baseline = Invoke-MigrationBaseline -ProjectRoot $ProjectRoot -RunId $runId
     if ($baseline.status -ne 'passed') { throw "Integration baseline failed: $($baseline | ConvertTo-Json -Depth 20 -Compress)" }
-    $resolved = Invoke-MigrationResolution -ProjectRoot $ProjectRoot -RunId $runId
+    $metadataProfile = @($discovery.data.runtimePlan.profiles | Where-Object id -ceq 'metadata' | Select-Object -First 1)
+    if ($metadataProfile.Count -ne 1 -or -not $metadataProfile[0].selectedNodeVersion) { throw 'Discovery did not select a metadata runtime' }
+    $resolved = Invoke-MigrationResolution -ProjectRoot $ProjectRoot -RunId $runId -FnmPath $discovery.data.toolchain.fnm.executable -NodeVersion $metadataProfile[0].selectedNodeVersion
     if ($resolved.status -ne 'resolved') { throw "Integration resolution failed: $($resolved | ConvertTo-Json -Depth 20 -Compress)" }
     if ((Get-FileHash (Join-Path $ProjectRoot 'package.json')).Hash -ne $packageHash -or (Get-FileHash (Join-Path $ProjectRoot 'package-lock.json')).Hash -ne $lockHash) { throw 'Resolution modified dependency files' }
     $paths = Get-MigrationRunPaths -ProjectRoot $ProjectRoot -RunId $runId
@@ -101,7 +106,7 @@ function Invoke-ResolutionRun {
     if ($state.manifestSha256 -ne $manifest.manifestSha256 -or $manifest.manifestSha256 -notmatch '^[0-9a-f]{64}$') { throw 'Published manifest hash was not recorded in state' }
     $events = @(Get-Content -LiteralPath $paths.events | ForEach-Object { $_ | ConvertFrom-Json })
     if (@($events | Where-Object type -eq 'manifest-resolved').Count -ne 1 -or @($events | Where-Object type -eq 'registry-metadata-queried').Count -eq 0) { throw 'Resolution events are incomplete' }
-    $second = Invoke-MigrationResolution -ProjectRoot $ProjectRoot -RunId $runId
+    $second = Invoke-MigrationResolution -ProjectRoot $ProjectRoot -RunId $runId -FnmPath $discovery.data.toolchain.fnm.executable -NodeVersion $metadataProfile[0].selectedNodeVersion
     if ($second.status -ne 'blocked' -or $second.diagnostic.code -ne 'manifest_already_resolved') { throw 'Resolved manifest was accepted twice by the pipeline' }
     return [PSCustomObject]@{ manifest = $manifest; state = $state; paths = $paths }
 }
@@ -127,12 +132,31 @@ function Invoke-ResolutionRun {
     }
   }
 
-Import-Module (Join-Path $modules 'Migration.Pipeline.psm1') -Force -DisableNameChecking
-Import-Module (Join-Path $modules 'Migration.State.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $modules 'Migration.Core.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $modules 'Migration.State.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $modules 'Migration.Project.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $modules 'Migration.Dependencies.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $modules 'Migration.Pipeline.psm1') -Force -DisableNameChecking
+foreach ($moduleName in @('Migration.Project', 'Migration.Dependencies', 'Migration.Pipeline')) {
+  $module = Get-Module $moduleName
+  & $module {
+    param([string]$Tools)
+    $script:FixtureTools = $Tools
+    function script:Find-MigrationExecutable {
+      param([Parameter(Mandatory = $true)][string[]]$Names)
+      if ($Names -contains 'git.exe' -or $Names -contains 'git') { return (Get-Command git.exe -ErrorAction Stop).Source }
+      if ($Names -contains 'node.exe' -or $Names -contains 'node') { return (Join-Path $script:FixtureTools 'node.cmd') }
+      if ($Names -contains 'npm.cmd' -or $Names -contains 'npm.exe' -or $Names -contains 'npm') { return (Join-Path $script:FixtureTools 'npm.cmd') }
+      if ($Names -contains 'fnm.exe' -or $Names -contains 'fnm') { return (Join-Path $script:FixtureTools 'fnm.cmd') }
+      return $null
+    }
+  } $fixtureTools
+}
 $responsePath = Join-Path $temporaryRoot 'responses.json'
 New-RegistryResponses -Path $responsePath
 Copy-Item (Join-Path $fixtureDirectory 'respond.ps1') $toolDirectory
+Copy-Item (Join-Path $fixtureTools 'fnm.cmd') $toolDirectory
+Copy-Item (Join-Path $fixtureTools 'fnm-fixture.ps1') $toolDirectory
 @'
 @echo off
 if "%~1"=="--version" echo 10.2.4&exit /b 0

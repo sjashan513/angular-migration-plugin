@@ -22,27 +22,43 @@ try {
     if ($first.PSObject.Properties.Name -contains 'token' -or $first.PSObject.Properties.Name -contains 'environment') { throw 'Metadata leaked sensitive context' }
     Write-Host 'PASS npm view metadata normalization, cache and argument contract'
 
+    $arrayResponses = [ordered]@{
+        '@angular/cli@10' = @(
+            [ordered]@{ version = '10.1.0'; peerDependencies = [ordered]@{ '@angular-devkit/build-angular' = '^0.1001.0' }; peerDependenciesMeta = [ordered]@{}; engines = [ordered]@{ node = '>= 10.13.0' }; 'ng-update' = [ordered]@{ migrations = 'migrations-10.1.json' }; deprecated = $false; 'dist-tags' = [ordered]@{ latest = '10.3.0' } }
+            '10.2.0'
+            [ordered]@{ version = '10.4.0-beta.1'; peerDependencies = [ordered]@{}; peerDependenciesMeta = [ordered]@{}; engines = [ordered]@{}; deprecated = $false; 'dist-tags' = [ordered]@{} }
+            [ordered]@{ version = '10.3.0'; peerDependencies = [ordered]@{ '@angular-devkit/build-angular' = '^0.1003.0' }; peerDependenciesMeta = [ordered]@{}; engines = [ordered]@{ node = '>= 10.13.0' }; 'ng-update' = [ordered]@{ migrations = 'migrations-10.3.json' }; deprecated = $false; 'dist-tags' = [ordered]@{ latest = '10.3.0' } }
+        )
+    }
+    $arrayResponsePath = Join-Path $temporaryRoot 'responses-array.json'
+    $arrayResponses | ConvertTo-Json -Depth 50 | Set-Content -LiteralPath $arrayResponsePath -Encoding UTF8
+    $env:MIGRATION_REGISTRY_FIXTURE = $arrayResponsePath
+    $arrayMetadata = Get-DependencyMetadata -PackageName '@angular/cli' -VersionSelector '10' -ProjectRoot $temporaryRoot
+    if ($arrayMetadata.version -ne '10.3.0' -or $arrayMetadata.engines.node -ne '>= 10.13.0' -or $arrayMetadata.peerDependencies.'@angular-devkit/build-angular' -ne '^0.1003.0' -or $arrayMetadata.ngUpdate.migrations -ne 'migrations-10.3.json' -or $arrayMetadata.distTags.latest -ne '10.3.0' -or @($arrayMetadata.candidates).Count -ne 3 -or $arrayMetadata.candidates[0].version -ne '10.3.0' -or $arrayMetadata.candidates[1].version -ne '10.2.0') { throw 'Array metadata normalization did not select and preserve stable candidates' }
+    Write-Host 'PASS array metadata selects highest stable candidate and preserves metadata'
+
     $responses = [ordered]@{
-        '@angular/core@8' = [ordered]@{ version = '8.2.14'; peerDependencies = [ordered]@{ rxjs = '^6.4.0'; 'zone.js' = '~0.9.0' }; peerDependenciesMeta = @{}; engines = @{ node = '>=10.9.0' }; 'ng-update' = @{ migrations = 'migrations.json'; packageGroup = 'angular' }; deprecated = $false; 'dist-tags' = @{ latest = '20.0.0' } }
-        '@angular/common@8' = [ordered]@{ version = '8.2.14'; peerDependencies = @{ '@angular/core' = '^8.0.0' }; peerDependenciesMeta = @{}; engines = @{}; deprecated = $false; 'dist-tags' = @{} }
-        '@angular/compiler@8' = [ordered]@{ version = '8.2.14'; peerDependencies = @{ '@angular/core' = '^8.0.0' }; peerDependenciesMeta = @{}; engines = @{}; deprecated = $false; 'dist-tags' = @{} }
-        '@angular/cli@8' = [ordered]@{ version = '8.3.29'; peerDependencies = @{}; peerDependenciesMeta = @{}; engines = @{ node = '>=10.9.0' }; deprecated = $false; 'dist-tags' = @{} }
+        '@angular/core@8'         = [ordered]@{ version = '8.2.14'; peerDependencies = [ordered]@{ rxjs = '^6.4.0'; 'zone.js' = '~0.9.0' }; peerDependenciesMeta = @{}; engines = @{ node = '>=10.9.0' }; 'ng-update' = @{ migrations = 'migrations.json'; packageGroup = 'angular' }; deprecated = $false; 'dist-tags' = @{ latest = '20.0.0' } }
+        '@angular/common@8'       = [ordered]@{ version = '8.2.14'; peerDependencies = @{ '@angular/core' = '^8.0.0' }; peerDependenciesMeta = @{}; engines = @{}; deprecated = $false; 'dist-tags' = @{} }
+        '@angular/compiler@8'     = [ordered]@{ version = '8.2.14'; peerDependencies = @{ '@angular/core' = '^8.0.0' }; peerDependenciesMeta = @{}; engines = @{}; deprecated = $false; 'dist-tags' = @{} }
+        '@angular/cli@8'          = [ordered]@{ version = '8.3.29'; peerDependencies = @{}; peerDependenciesMeta = @{}; engines = @{ node = '>=10.9.0' }; deprecated = $false; 'dist-tags' = @{} }
         '@angular/compiler-cli@8' = [ordered]@{ version = '8.2.14'; peerDependencies = @{ typescript = '>=3.4.0 <3.6.0' }; peerDependenciesMeta = @{}; engines = @{ node = '>=10.9.0' }; deprecated = $false; 'dist-tags' = @{} }
-        'rxjs@6' = [ordered]@{ version = '6.5.5'; peerDependencies = @{}; peerDependenciesMeta = @{}; engines = @{}; deprecated = $false; 'dist-tags' = @{} }
-        'zone.js@0' = [ordered]@{ version = '0.9.1'; peerDependencies = @{}; peerDependenciesMeta = @{}; engines = @{}; deprecated = $false; 'dist-tags' = @{} }
-        'typescript@3' = [ordered]@{ version = '3.5.3'; peerDependencies = @{}; peerDependenciesMeta = @{}; engines = @{}; deprecated = $false; 'dist-tags' = @{} }
-        'ordinary@1' = [ordered]@{ version = '1.5.0-beta.1'; candidates = @(@{ version = '1.5.0-beta.1'; deprecated = $false }, @{ version = '1.4.0'; deprecated = $false }, @{ version = '1.3.0'; deprecated = $true }); peerDependencies = @{}; peerDependenciesMeta = @{}; engines = @{}; deprecated = $false; 'dist-tags' = @{} }
-        'angular-aware@1' = [ordered]@{ version = '1.5.0'; peerDependencies = @{ '@angular/core' = '^7.0.0' }; peerDependenciesMeta = @{}; engines = @{}; deprecated = $false; 'dist-tags' = @{} }
-        'angular-aware@2' = [ordered]@{ version = '2.1.0'; peerDependencies = @{ '@angular/core' = '^8.0.0' }; peerDependenciesMeta = @{}; engines = @{}; deprecated = $false; 'dist-tags' = @{} }
+        'rxjs@6'                  = [ordered]@{ version = '6.5.5'; peerDependencies = @{}; peerDependenciesMeta = @{}; engines = @{}; deprecated = $false; 'dist-tags' = @{} }
+        'zone.js@0'               = [ordered]@{ version = '0.9.1'; peerDependencies = @{}; peerDependenciesMeta = @{}; engines = @{}; deprecated = $false; 'dist-tags' = @{} }
+        'typescript@3'            = [ordered]@{ version = '3.5.3'; peerDependencies = @{}; peerDependenciesMeta = @{}; engines = @{}; deprecated = $false; 'dist-tags' = @{} }
+        'ordinary@1'              = [ordered]@{ version = '1.5.0-beta.1'; candidates = @(@{ version = '1.5.0-beta.1'; deprecated = $false }, @{ version = '1.4.0'; deprecated = $false }, @{ version = '1.3.0'; deprecated = $true }); peerDependencies = @{}; peerDependenciesMeta = @{}; engines = @{}; deprecated = $false; 'dist-tags' = @{} }
+        'angular-aware@1'         = [ordered]@{ version = '1.5.0'; peerDependencies = @{ '@angular/core' = '^7.0.0' }; peerDependenciesMeta = @{}; engines = @{}; deprecated = $false; 'dist-tags' = @{} }
+        'angular-aware@2'         = [ordered]@{ version = '2.1.0'; peerDependencies = @{ '@angular/core' = '^8.0.0' }; peerDependenciesMeta = @{}; engines = @{}; deprecated = $false; 'dist-tags' = @{} }
     }
     $responsePath = Join-Path $temporaryRoot 'responses-complete.json'
     $responses | ConvertTo-Json -Depth 50 | Set-Content -LiteralPath $responsePath -Encoding UTF8
     $env:MIGRATION_REGISTRY_FIXTURE = $responsePath
     Remove-Item -LiteralPath $tracePath -Force -ErrorAction SilentlyContinue
     $lock = [ordered]@{ lockfileVersion = 1; dependencies = [ordered]@{
-        '@angular/core' = @{ version = '7.2.16' }; '@angular/common' = @{ version = '7.2.16' }; '@angular/compiler' = @{ version = '7.2.16' }; '@angular/cli' = @{ version = '7.3.10' }
-        rxjs = @{ version = '6.3.3' }; 'zone.js' = @{ version = '0.8.26' }; typescript = @{ version = '3.2.2' }; ordinary = @{ version = '1.2.0' }; 'angular-aware' = @{ version = '1.0.0' }
-    } }
+            '@angular/core' = @{ version = '7.2.16' }; '@angular/common' = @{ version = '7.2.16' }; '@angular/compiler' = @{ version = '7.2.16' }; '@angular/cli' = @{ version = '7.3.10' }
+            rxjs = @{ version = '6.3.3' }; 'zone.js' = @{ version = '0.8.26' }; typescript = @{ version = '3.2.2' }; ordinary = @{ version = '1.2.0' }; 'angular-aware' = @{ version = '1.0.0' }
+        } 
+    }
     $lock | ConvertTo-Json -Depth 50 | Set-Content -LiteralPath (Join-Path $temporaryRoot 'package-lock.json') -Encoding UTF8
     $pending = [PSCustomObject][ordered]@{
         schemaVersion = 5; manifestType = 'migration'; runId = 'angular-7-to-8-test'; sourceMajor = 7; targetMajor = 8; resolutionStatus = 'pending'
@@ -172,7 +188,8 @@ try {
     try { Get-DependencyMetadata -PackageName 'ordinary' -VersionSelector '--forbidden' -ProjectRoot $temporaryRoot | Out-Null; throw 'Forbidden npm selector was accepted' }
     catch { if ($_.Exception.Data['code'] -ne 'registry_metadata_invalid') { throw } }
     Write-Host 'PASS Angular 7 to 8 resolution, alignment, peers, writeSpec and canonical hash'
-} finally {
+}
+finally {
     $env:PATH = $originalPath
     if ($null -eq $originalFixture) { Remove-Item Env:MIGRATION_REGISTRY_FIXTURE -ErrorAction SilentlyContinue } else { $env:MIGRATION_REGISTRY_FIXTURE = $originalFixture }
     if ($null -eq $originalTrace) { Remove-Item Env:MIGRATION_REGISTRY_TRACE -ErrorAction SilentlyContinue } else { $env:MIGRATION_REGISTRY_TRACE = $originalTrace }

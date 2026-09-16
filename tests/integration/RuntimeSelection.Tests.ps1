@@ -80,6 +80,8 @@ try {
     Set-RuntimeFixture -Installed '16.20.2,20.11.1' -Remote '16.20.2,20.11.1' -Npm '10.2.4'
     $selectedRoot = Join-Path $temporaryRoot 'selected'
     New-RuntimeProject -Path $selectedRoot -NodeVersion '16.20.2'
+    $identity = Get-MigrationNodeIdentity -FnmPath (Join-Path $toolDirectory 'fnm.cmd') -NodeVersion '16.20.2' -WorkingDirectory $selectedRoot
+    Assert-Runtime 'Windows fnm identity accepts npm.cmd' ($identity.status -eq 'usable' -and $identity.nodeVersion -ceq '16.20.2' -and $identity.npmVersion -ceq '10.2.4')
     $selected = Invoke-MigrationDiscover -ProjectRoot $selectedRoot -TargetMajor 8
     $baselineProfile = @($selected.data.runtimePlan.profiles | Where-Object id -ceq 'baseline:install' | Select-Object -First 1)
     $metadataProfile = @($selected.data.runtimePlan.profiles | Where-Object id -ceq 'metadata' | Select-Object -First 1)

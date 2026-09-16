@@ -268,6 +268,7 @@ function Test-DiscoveryRangeSupported {
 
     if ([string]::IsNullOrWhiteSpace($Range)) { return $false }
     if ($Range -notmatch '^[0-9A-Za-z.*xX~^<>=|+() \-]+$') { return $false }
+    $Range = $Range -replace '(?<!\S)(>=|<=|>|<|\||\^|~)\s+(?=\d)', '$1'
     foreach ($alternative in @($Range -split '\|\|')) {
         $text = $alternative.Trim()
         if ($text -in @('', '*', 'x', 'X')) { continue }

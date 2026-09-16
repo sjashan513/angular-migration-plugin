@@ -86,31 +86,56 @@ function ConvertTo-DependencyMetadataRecord {
         [Parameter(Mandatory = $true)][string]$RetrievedAt
     )
 
-    $version = [string](Get-DependencyObjectValue -Object $Value -Name 'version')
-    $candidatesValue = Get-DependencyObjectValue -Object $Value -Name 'candidates'
+    $rootArray = $Value -is [array]
+    $version = if ($rootArray) { $null } else { [string](Get-DependencyObjectValue -Object $Value -Name 'version') }
+    $candidatesValue = if ($rootArray) { @($Value) } else { Get-DependencyObjectValue -Object $Value -Name 'candidates' }
     $candidates = @()
     if ($null -ne $candidatesValue) {
         foreach ($candidate in @($candidatesValue)) {
-            $candidateVersion = [string](Get-DependencyObjectValue -Object $candidate -Name 'version')
-            if ($candidateVersion) {
+            $candidateVersion = if ($candidate -is [string]) { [string]$candidate } else { [string](Get-DependencyObjectValue -Object $candidate -Name 'version') }
+            if ($candidateVersion -and (-not $rootArray -or $candidateVersion -match '^\d+\.\d+\.\d+$')) {
                 $candidateNgUpdate = Get-DependencyObjectValue -Object $candidate -Name 'ng-update'
                 if ($null -eq $candidateNgUpdate) { $candidateNgUpdate = Get-DependencyObjectValue -Object $candidate -Name 'ngUpdate' }
-                $candidates += [ordered]@{
+                $candidateDistTags = Get-DependencyObjectValue -Object $candidate -Name 'dist-tags'
+                if ($null -eq $candidateDistTags) { $candidateDistTags = Get-DependencyObjectValue -Object $candidate -Name 'distTags' }
+                $candidates += [PSCustomObject][ordered]@{
                     version = $candidateVersion
                     deprecated = [bool](Get-DependencyObjectValue -Object $candidate -Name 'deprecated')
                     peerDependencies = ConvertTo-DependencyMap (Get-DependencyObjectValue -Object $candidate -Name 'peerDependencies')
                     peerDependenciesMeta = ConvertTo-DependencyMap (Get-DependencyObjectValue -Object $candidate -Name 'peerDependenciesMeta')
                     engines = ConvertTo-DependencyMap (Get-DependencyObjectValue -Object $candidate -Name 'engines')
                     ngUpdate = $candidateNgUpdate
+                    distTags = ConvertTo-DependencyMap $candidateDistTags
                 }
             }
         }
+        if ($rootArray) {
+            $candidates = @($candidates | Sort-Object { Get-DependencyVersionSortKey -Version $_.version } -Descending)
+        }
+    }
+    if ($rootArray -and $candidates.Count -gt 0) {
+        $primary = $candidates[0]
+        $version = [string]$primary.version
+        $deprecatedValue = $primary.deprecated
+        $peerDependencies = $primary.peerDependencies
+        $peerDependenciesMeta = $primary.peerDependenciesMeta
+        $engines = $primary.engines
+        $ngUpdate = $primary.ngUpdate
+        $distTags = $primary.distTags
+    }
+    else {
+        $deprecatedValue = Get-DependencyObjectValue -Object $Value -Name 'deprecated'
+        $peerDependencies = ConvertTo-DependencyMap (Get-DependencyObjectValue -Object $Value -Name 'peerDependencies')
+        $peerDependenciesMeta = ConvertTo-DependencyMap (Get-DependencyObjectValue -Object $Value -Name 'peerDependenciesMeta')
+        $engines = ConvertTo-DependencyMap (Get-DependencyObjectValue -Object $Value -Name 'engines')
+        $ngUpdate = Get-DependencyObjectValue -Object $Value -Name 'ng-update'
+        if ($null -eq $ngUpdate) { $ngUpdate = Get-DependencyObjectValue -Object $Value -Name 'ngUpdate' }
+        $distTags = ConvertTo-DependencyMap (Get-DependencyObjectValue -Object $Value -Name 'dist-tags')
     }
     if (-not $version -and $candidates.Count -gt 0) { $version = [string]$candidates[0].version }
     if (-not $version) {
         Throw-MigrationError -Code 'registry_metadata_invalid' -Message "Registry metadata for $PackageName has no exact version." -Status blocked
     }
-    $deprecatedValue = Get-DependencyObjectValue -Object $Value -Name 'deprecated'
     $deprecated = if ($deprecatedValue -is [bool]) { [bool]$deprecatedValue } else { -not [string]::IsNullOrWhiteSpace([string]$deprecatedValue) }
     $record = [ordered]@{
         version = $version
@@ -118,13 +143,12 @@ function ConvertTo-DependencyMetadataRecord {
         selector = $VersionSelector
         retrievedAt = $RetrievedAt
         deprecated = $deprecated
-        peerDependencies = ConvertTo-DependencyMap (Get-DependencyObjectValue -Object $Value -Name 'peerDependencies')
-        peerDependenciesMeta = ConvertTo-DependencyMap (Get-DependencyObjectValue -Object $Value -Name 'peerDependenciesMeta')
-        engines = ConvertTo-DependencyMap (Get-DependencyObjectValue -Object $Value -Name 'engines')
-        ngUpdate = Get-DependencyObjectValue -Object $Value -Name 'ng-update'
-        distTags = ConvertTo-DependencyMap (Get-DependencyObjectValue -Object $Value -Name 'dist-tags')
+        peerDependencies = $peerDependencies
+        peerDependenciesMeta = $peerDependenciesMeta
+        engines = $engines
+        ngUpdate = $ngUpdate
+        distTags = $distTags
     }
-    if ($null -eq $record.ngUpdate) { $record.ngUpdate = Get-DependencyObjectValue -Object $Value -Name 'ngUpdate' }
     if ($candidates.Count -gt 0) { $record.candidates = @($candidates) }
     return [PSCustomObject]$record
 }

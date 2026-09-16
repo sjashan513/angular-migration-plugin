@@ -40,12 +40,12 @@ if ($arguments.Count -ge 5 -and $arguments[0] -eq 'exec' -and $arguments[1] -eq 
         [Console]::Out.WriteLine('v' + $usingVersion)
         exit 0
     }
-    if ($executable -eq 'npm' -and $childArguments.Count -eq 1 -and $childArguments[0] -eq '--version') {
+    if (@('npm', 'npm.cmd') -contains $executable -and $childArguments.Count -eq 1 -and $childArguments[0] -eq '--version') {
         $npmVersion = if ($env:FNM_FIXTURE_NPM_VERSION) { $env:FNM_FIXTURE_NPM_VERSION } else { '10.2.4' }
         [Console]::Out.WriteLine($npmVersion)
         exit 0
     }
-    if ($executable -eq 'npm' -and $childArguments.Count -ge 2 -and $childArguments[0] -eq 'view') {
+    if (@('npm', 'npm.cmd') -contains $executable -and $childArguments.Count -ge 2 -and $childArguments[0] -eq 'view') {
         $selector = [string]$childArguments[1]
         $separator = $selector.LastIndexOf('@')
         $packageName = if ($separator -gt 0) { $selector.Substring(0, $separator) } else { $selector }
@@ -69,12 +69,12 @@ if ($arguments.Count -ge 5 -and $arguments[0] -eq 'exec' -and $arguments[1] -eq 
             'rxjs' = '6.5.5'; 'zone.js' = '0.9.1'; 'typescript' = '3.5.3'
         }
         $metadata = [ordered]@{
-            version = if ($versions.ContainsKey($packageName) -and $requested -match '^\d+$') { $versions[$packageName] } elseif ($requested -match '^\d+\.\d+\.\d+$') { $requested } else { '8.2.14' }
-            peerDependencies = [ordered]@{}
+            version              = if ($versions.ContainsKey($packageName) -and $requested -match '^\d+$') { $versions[$packageName] } elseif ($requested -match '^\d+\.\d+\.\d+$') { $requested } else { '8.2.14' }
+            peerDependencies     = [ordered]@{}
             peerDependenciesMeta = [ordered]@{}
-            engines = [ordered]@{ node = '>=10.9.0' }
-            deprecated = $false
-            'dist-tags' = [ordered]@{}
+            engines              = [ordered]@{ node = '>=10.9.0' }
+            deprecated           = $false
+            'dist-tags'          = [ordered]@{}
         }
         if ($packageName -eq '@angular/core') {
             $metadata.peerDependencies = [ordered]@{ rxjs = '^6.4.0'; 'zone.js' = '~0.9.0' }
@@ -88,7 +88,7 @@ if ($arguments.Count -ge 5 -and $arguments[0] -eq 'exec' -and $arguments[1] -eq 
         [Console]::Out.Write(($metadata | ConvertTo-Json -Depth 20 -Compress))
         exit 0
     }
-    $target = if (Test-Path -LiteralPath $executable -PathType Leaf) { $executable } else { Join-Path $PSScriptRoot (([IO.Path]::GetFileName($executable)) + $(if ([IO.Path]::GetExtension($executable) -eq '.cmd') { '' } else { '.cmd' })) }
+    $target = if (Test-Path -LiteralPath $executable -PathType Leaf) { (Resolve-Path -LiteralPath $executable).Path } else { Join-Path $PSScriptRoot (([IO.Path]::GetFileName($executable)) + $(if ([IO.Path]::GetExtension($executable) -eq '.cmd') { '' } else { '.cmd' })) }
     if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
         [Console]::Error.WriteLine("fixture executable not found: $executable")
         exit 1

@@ -238,6 +238,7 @@ function Test-MigrationVersionRange {
 
     $versionTuple = Get-MigrationVersionTuple -Version $Version
     if ($null -eq $versionTuple -or [string]::IsNullOrWhiteSpace($Range)) { return $false }
+    $Range = $Range -replace '(?<!\S)(>=|<=|>|<|\||\^|~)\s+(?=\d)', '$1'
     $Range = $Range -replace '(^|\s)v(?=\d)', '$1'
     foreach ($alternative in ($Range -split '\|\|')) {
         $alternativeText = $alternative.Trim()
@@ -322,7 +323,11 @@ function Invoke-MigrationNodeProcess {
     if (-not $resolvedFnm) {
         Throw-MigrationError -Code 'fnm_missing' -Message 'fnm is required for Node-managed processes.' -Status blocked
     }
-    $fnmArguments = @('exec', '--using', $NodeVersion, '--', $Executable) + @($Arguments)
+    $nodeManagedExecutable = $Executable
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT -and $nodeManagedExecutable -ieq 'npm') {
+        $nodeManagedExecutable = 'npm.cmd'
+    }
+    $fnmArguments = @('exec', '--using', $NodeVersion, '--', $nodeManagedExecutable) + @($Arguments)
     return Invoke-MigrationProcess -FilePath $resolvedFnm -Arguments $fnmArguments -WorkingDirectory $WorkingDirectory -TimeoutSeconds $TimeoutSeconds -StandardInput $StandardInput
 }
 

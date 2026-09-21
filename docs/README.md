@@ -54,23 +54,23 @@ Todas las fases deben respetar estas reglas:
 
 Las fases se implementan en este orden:
 
-1. [03-inspeccion-y-baseline.md](phases/03-inspeccion-y-baseline.md): los checks del
+1. `03-inspeccion-y-baseline.md`: los checks del
    proyecto se ejecutan de forma normalizada y la baseline impide migrar un proyecto
    ya roto.
-2. [04-resolucion-de-dependencias.md](phases/04-resolucion-de-dependencias.md): existe
+2. `04-resolucion-de-dependencias.md`: existe
    un manifest exacto, completo, auditable e inmutable.
-3. [05-ejecucion-determinista.md](phases/05-ejecucion-determinista.md): `run` lleva el
+3. `05-ejecucion-determinista.md`: `run` lleva el
    proyecto hasta `verified`, `needs-repair`, `blocked` o `failed` y puede reanudarse.
-4. [06-migration-implementer.md](phases/06-migration-implementer.md): el Implementer
+4. `06-migration-implementer.md`: el Implementer
    solo repara archivos autorizados y no controla la pipeline.
-5. [07-migration-documenter.md](phases/07-migration-documenter.md): el Documenter
+5. `07-migration-documenter.md`: el Documenter
    investiga en paralelo y publica únicamente después de `verified`.
-6. [08-integracion-y-release.md](phases/08-integracion-y-release.md): un piloto
+6. `08-integracion-y-release.md`: un piloto
    Angular 7 -> 8 completa el flujo y el plugin queda preparado para uso interno.
-7. [09-discovery-runtimes-y-skips-batch.md](phases/09-discovery-runtimes-y-skips-batch.md):
+7. `09-discovery-runtimes-y-skips-batch.md`:
    Discovery persiste el repositorio, resuelve runtimes Node por operación y permite
    aprobar skips en batch.
-8. [10-historial-de-reparacion.md](phases/10-historial-de-reparacion.md): cada
+8. `10-historial-de-reparacion.md`: cada
    fingerprint dispone de un `repair.jsonl` local como contrato documental para
    evitar reparaciones repetidas sin saturar state o events.
 

@@ -193,6 +193,15 @@
           "type": ["string", "null"],
           "pattern": "^[0-9a-f]{64}$"
         },
+        "step": { "type": "string", "minLength": 1 },
+        "operationIndex": { "type": "integer", "minimum": 0 },
+        "operationCount": { "type": "integer", "minimum": 0 },
+        "currentFile": { "type": ["string", "null"] },
+        "lastActivityAt": { "type": "string", "format": "date-time" },
+        "health": {
+          "type": "string",
+          "enum": ["healthy", "stalled", "unknown"]
+        },
         "preexistingFiles": {
           "type": "array",
           "items": {

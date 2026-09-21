@@ -30,6 +30,15 @@ try {
     if (($checks.timeoutSeconds -join ',') -ne '900,300,600,600,900,1200,1800') { throw 'Invalid check timeouts' }
     if ($checks[2].arguments[1] -ne 'typecheck' -or $checks[4].arguments[1] -ne 'test:unit' -or $checks[6].arguments[1] -ne 'test:e2e') { throw 'Script priority mismatch' }
     if ($checks[3].status -ne 'not-configured' -or $checks[5].displayCommand -ne 'npm run build' -or $checks[5].phase -ne 'baseline' -or -not $checks[5].blocking) { throw 'Invalid structured check contract' }
+    $policyPackage = Get-ProjectPackage -ProjectRoot $root
+    $policyPackage | Add-Member -NotePropertyName angularMigration -NotePropertyValue ([PSCustomObject]@{
+            peerExceptions = @([PSCustomObject]@{ package = '@internal/ui'; version = '1.0.0'; ignoredPeers = @('@angular/core'); reason = 'Validated internally'; scope = 'run' })
+            transitivePeerPromotions = @([PSCustomObject]@{ package = 'tslib'; section = 'dependencies'; reason = 'Required by the Angular compiler' })
+        })
+    $policyPackage | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $root 'package.json') -Encoding UTF8
+    $inspection = Get-ProjectInspection -ProjectRoot $root
+    if (@($inspection.policies.peerExceptions).Count -ne 1 -or $inspection.policies.peerExceptions[0].ignoredPeers[0] -ne '@angular/core' -or
+        @($inspection.policies.transitivePeerPromotions).Count -ne 1 -or $inspection.policies.transitivePeerPromotions[0].package -ne 'tslib') { throw 'Angular migration policies were not discovered' }
     $preflightFiles = $inspection.preflight.requiredFiles
     if (($preflightFiles | Where-Object id -eq 'typescript-config').status -ne 'missing' -or
         ($preflightFiles | Where-Object id -eq 'application-typescript-config').status -ne 'missing' -or
@@ -37,6 +46,17 @@ try {
         ($preflightFiles | Where-Object id -eq 'lint-configuration').status -ne 'not-found') { throw 'Preflight did not detect missing check files' }
     if (($inspection.preflight.optionalChecks | Where-Object id -eq 'unit-test').canSkip -ne $true -or
         ($inspection.preflight.criticalChecks | Where-Object id -eq 'build').canSkip -ne $false) { throw 'Preflight check policy is incomplete' }
+    @'
+{"projects":{"app":{"projectType":"application","architect":{"build":{"builder":"@angular-devkit/build-angular:browser","options":{"tsConfig":"configs/app.tsconfig.json"}}}}}}
+'@ | Set-Content (Join-Path $root 'angular.json') -Encoding UTF8
+    $inspection = Get-ProjectInspection -ProjectRoot $root
+    $referencedConfig = @($inspection.preflight.requiredFiles | Where-Object id -eq 'angular-referenced-tsconfig')
+    if ($referencedConfig.Count -ne 1 -or $referencedConfig[0].candidates[0] -ne 'configs/app.tsconfig.json' -or $referencedConfig[0].status -ne 'missing') { throw 'Angular-referenced tsconfig was not classified as missing' }
+    New-Item -ItemType Directory -Path (Join-Path $root 'configs') -Force | Out-Null
+    '{}' | Set-Content (Join-Path $root 'configs/app.tsconfig.json') -Encoding UTF8
+    $inspection = Get-ProjectInspection -ProjectRoot $root
+    $referencedConfig = @($inspection.preflight.requiredFiles | Where-Object id -eq 'angular-referenced-tsconfig')
+    if ($referencedConfig.Count -ne 1 -or $referencedConfig[0].status -ne 'present') { throw 'Angular-referenced tsconfig was not classified as present' }
     '{"dependencies":{"@angular/core":"^8.0.0"}}' | Set-Content (Join-Path $root 'package.json')
     $inspection = Get-ProjectInspection -ProjectRoot $root
     if ($inspection.blockers.code -notcontains 'angular_core_major_mismatch') { throw 'Major mismatch was not blocked' }

@@ -9,7 +9,7 @@ $script:CriticalCheckIds = @('install', 'dependency-tree', 'build')
 $script:SkippableCheckIds = @('typecheck', 'lint', 'unit-test', 'e2e')
 $script:AllowedTransitions = @{
     'running|baseline'            = @('running|resolve', 'blocked|baseline', 'failed|baseline')
-    'blocked|baseline'            = @('running|baseline')
+    'blocked|baseline'            = @('running|baseline', 'blocked|baseline')
     'running|resolve'             = @('running|update-angular', 'blocked|resolve', 'failed|resolve')
     'running|update-angular'      = @('running|update-dependencies', 'needs-repair|update-angular', 'blocked|update-angular', 'failed|update-angular')
     'running|update-dependencies' = @('running|install', 'blocked|update-dependencies', 'failed|update-dependencies')
@@ -17,6 +17,11 @@ $script:AllowedTransitions = @{
     'running|validate'            = @('verified|document', 'needs-repair|validate', 'blocked|validate', 'failed|validate')
     'needs-repair|update-angular' = @('running|update-angular', 'blocked|update-angular', 'failed|update-angular')
     'needs-repair|validate'       = @('running|validate', 'blocked|validate', 'failed|validate')
+    'blocked|resolve'             = @('running|resolve', 'blocked|resolve')
+    'blocked|update-angular'      = @('running|update-angular', 'blocked|update-angular')
+    'blocked|update-dependencies' = @('running|update-dependencies', 'blocked|update-dependencies')
+    'blocked|install'             = @('running|install', 'blocked|install')
+    'blocked|validate'            = @('running|validate', 'blocked|validate')
     'verified|document'           = @('verified|document', 'completed|done')
 }
 $script:CompletedOperationIds = @('baseline', 'resolve-manifest', 'create-branch', 'update-angular', 'update-dependencies', 'install', 'validate', 'technical-result')
@@ -449,6 +454,22 @@ function Read-MigrationRunState {
     if (-not $state.PSObject.Properties['runtimeFnmPath']) {
         $state | Add-Member -NotePropertyName runtimeFnmPath -NotePropertyValue $null
     }
+    if ($state.PSObject.Properties['activeOperation'] -and $null -ne $state.activeOperation) {
+        $operation = $state.activeOperation
+        $defaults = [ordered]@{
+            step           = 'starting'
+            operationIndex = 0
+            operationCount = 0
+            currentFile    = $null
+            lastActivityAt = if ($operation.PSObject.Properties['startedAt']) { [string]$operation.startedAt } else { Get-MigrationUtcNow }
+            health         = 'unknown'
+        }
+        foreach ($name in $defaults.Keys) {
+            if (-not $operation.PSObject.Properties[$name]) {
+                $operation | Add-Member -NotePropertyName $name -NotePropertyValue $defaults[$name]
+            }
+        }
+    }
     Assert-MigrationRunState -State $state -ExpectedRunId $RunId
     return $state
 }
@@ -496,6 +517,43 @@ function Assert-MigrationRunState {
     $attemptValid = $attemptProperty.exists -and [int]$attemptProperty.value -ge 1 -and [int]$attemptProperty.value -le 3
     $repairTotalValid = $repairTotalProperty.exists -and [int]$repairTotalProperty.value -ge 0 -and [int]$repairTotalProperty.value -le 5
     $repairsValid = $repairsProperty.exists -and $null -ne $repairsProperty.value -and $repairsProperty.value -is [array]
+    $activeOperationValid = $activeOperationProperty.exists
+    if ($null -ne $activeOperationProperty.value) {
+        $operation = $activeOperationProperty.value
+        $operationNames = if ($operation -is [Collections.IDictionary]) { @($operation.Keys | ForEach-Object { [string]$_ }) } else { @($operation.PSObject.Properties | Select-Object -ExpandProperty Name) }
+        $allowedOperationNames = @('id', 'stage', 'startedAt', 'checkpointCommit', 'expectedManifestSha256', 'preexistingFiles', 'step', 'operationIndex', 'operationCount', 'currentFile', 'lastActivityAt', 'health')
+        $operationId = Get-MigrationMember -Object $operation -Name 'id'
+        $operationStage = Get-MigrationMember -Object $operation -Name 'stage'
+        $operationStarted = Get-MigrationMember -Object $operation -Name 'startedAt'
+        $operationCheckpoint = Get-MigrationMember -Object $operation -Name 'checkpointCommit'
+        $operationManifest = Get-MigrationMember -Object $operation -Name 'expectedManifestSha256'
+        $operationFiles = Get-MigrationMember -Object $operation -Name 'preexistingFiles'
+        $operationStep = Get-MigrationMember -Object $operation -Name 'step'
+        $operationIndex = Get-MigrationMember -Object $operation -Name 'operationIndex'
+        $operationCount = Get-MigrationMember -Object $operation -Name 'operationCount'
+        $operationFile = Get-MigrationMember -Object $operation -Name 'currentFile'
+        $operationActivity = Get-MigrationMember -Object $operation -Name 'lastActivityAt'
+        $operationHealth = Get-MigrationMember -Object $operation -Name 'health'
+        $startedValid = $false
+        $activityValid = $false
+        if ($operationStarted.exists) { try { [DateTimeOffset]::Parse([string]$operationStarted.value) | Out-Null; $startedValid = $true } catch { } }
+        if ($operationActivity.exists) { try { [DateTimeOffset]::Parse([string]$operationActivity.value) | Out-Null; $activityValid = $true } catch { } }
+        $activeOperationValid = $null -ne $operation -and
+        (($operation -is [Collections.IDictionary]) -or ($operation -is [PSCustomObject])) -and
+        @($operationNames | Where-Object { $_ -notin $allowedOperationNames }).Count -eq 0 -and
+        $operationNames.Count -ge 6 -and $operationId.exists -and -not [string]::IsNullOrWhiteSpace([string]$operationId.value) -and
+        $operationStage.exists -and -not [string]::IsNullOrWhiteSpace([string]$operationStage.value) -and
+        $startedValid -and $operationCheckpoint.exists -and [string]$operationCheckpoint.value -match '^[a-fA-F0-9]{40}$' -and
+        $operationManifest.exists -and ($null -eq $operationManifest.value -or [string]$operationManifest.value -match '^[0-9a-f]{64}$') -and
+        $operationFiles.exists -and $operationFiles.value -is [array]
+        if ($operationStep.exists) { $activeOperationValid = $activeOperationValid -and -not [string]::IsNullOrWhiteSpace([string]$operationStep.value) }
+        if ($operationIndex.exists) { $activeOperationValid = $activeOperationValid -and ([int]$operationIndex.value -ge 0) }
+        if ($operationCount.exists) { $activeOperationValid = $activeOperationValid -and ([int]$operationCount.value -ge 0) }
+        if ($operationIndex.exists -and $operationCount.exists) { $activeOperationValid = $activeOperationValid -and ([int]$operationIndex.value -le [int]$operationCount.value) }
+        if ($operationFile.exists) { $activeOperationValid = $activeOperationValid -and ($null -eq $operationFile.value -or $operationFile.value -is [string]) }
+        if ($operationActivity.exists) { $activeOperationValid = $activeOperationValid -and $activityValid }
+        if ($operationHealth.exists) { $activeOperationValid = $activeOperationValid -and ([string]$operationHealth.value -in @('healthy', 'stalled', 'unknown')) }
+    }
     $repairSummaryKeys = @{}
     foreach ($repairSummary in @($repairsProperty.value)) {
         if ($null -eq $repairSummary -or $repairSummary -isnot [PSCustomObject]) { $repairsValid = $false; continue }
@@ -560,51 +618,51 @@ function Assert-MigrationRunState {
         }
         if ($repairContext.exists -and $null -ne $repairContext.value -and $repairContext.value -is [PSCustomObject] -and
             $repairHistory.exists -and $null -ne $repairHistory.value -and $repairHistory.value -is [PSCustomObject]) {
-        $context = $repairContext.value
-                $history = $repairHistory.value
-                $contextRunId = Get-MigrationMember -Object $context -Name 'runId'
-                    $contextStatus = Get-MigrationMember -Object $context -Name 'status'
-                    $contextStage = Get-MigrationMember -Object $context -Name 'stage'
-                    $contextFailedCheck = Get-MigrationMember -Object $context -Name 'failedCheck'
-                    $contextFingerprint = Get-MigrationMember -Object $context -Name 'fingerprint'
-                    $contextAttempt = Get-MigrationMember -Object $context -Name 'attempt'
-                    $contextCheckpoint = Get-MigrationMember -Object $context -Name 'checkpointCommit'
-                    $historyCheckpoint = Get-MigrationMember -Object $context -Name 'historyCheckpointCommit'
-                    $contextManifest = Get-MigrationMember -Object $context -Name 'manifestSha256'
-                    $historyPath = Get-MigrationMember -Object $history -Name 'path'
-                    $historyEntryCount = Get-MigrationMember -Object $history -Name 'entryCount'
-                    $historyPreviousAttempts = Get-MigrationMember -Object $history -Name 'previousAttempts'
-                    $historyLastOutcome = Get-MigrationMember -Object $history -Name 'lastOutcome'
-                    $expectedHistoryPrefix = '.angular-migration/runs/' + $ExpectedRunId + '/repair-history/'
-                    $historyOutcomeValues = @('submission-rejected', 'submission-accepted', 'verification-failed', 'verification-passed', 'attempts-exhausted')
-                    $contextAllowedPaths = Get-MigrationMember -Object $context -Name 'allowedPaths'
-                    $contextForbiddenPaths = Get-MigrationMember -Object $context -Name 'forbiddenPaths'
-                    $contextDiagnostic = Get-MigrationMember -Object $context -Name 'diagnostic'
-                    $contextSubmissionPath = Get-MigrationMember -Object $context -Name 'submissionPath'
-                    $expectedHistoryPath = if ($contextFingerprint.exists -and [string]$contextFingerprint.value -match '^sha256:([0-9a-f]{64})$') { $expectedHistoryPrefix + $Matches[1] + '/repair.jsonl' } else { '' }
-                    if (-not $contextRunId.exists -or $contextRunId.value -cne $ExpectedRunId -or
-                        -not $contextStatus.exists -or $contextStatus.value -cne 'needs-repair' -or
-                        -not $contextStage.exists -or $contextStage.value -notin @('validate', 'update-angular') -or
-                        $contextStage.value -cne $stageProperty.value -or
-                        -not $contextFailedCheck.exists -or [string]::IsNullOrWhiteSpace([string]$contextFailedCheck.value) -or
-                        -not $contextFingerprint.exists -or [string]$contextFingerprint.value -notmatch '^sha256:[0-9a-f]{64}$' -or
-                        -not $contextAttempt.exists -or [int]$contextAttempt.value -lt 1 -or [int]$contextAttempt.value -gt 3 -or [int]$contextAttempt.value -ne [int]$attemptProperty.value -or
-                        -not $contextCheckpoint.exists -or [string]$contextCheckpoint.value -notmatch '^[a-fA-F0-9]{40}$' -or
-                        -not $historyCheckpoint.exists -or [string]$historyCheckpoint.value -notmatch '^[a-fA-F0-9]{40}$' -or
-                        -not $contextManifest.exists -or [string]$contextManifest.value -notmatch '^[0-9a-f]{64}$' -or
-                        -not $contextAllowedPaths.exists -or $contextAllowedPaths.value -isnot [array] -or
-                        -not $contextForbiddenPaths.exists -or $contextForbiddenPaths.value -isnot [array] -or
-                        -not $contextDiagnostic.exists -or $contextDiagnostic.value -isnot [PSCustomObject] -or
-                        -not $contextSubmissionPath.exists -or [string]$contextSubmissionPath.value -cne ('.angular-migration/runs/' + $ExpectedRunId + '/inbox/repair.json') -or
-                        -not $historyPath.exists -or [string]$historyPath.value -cne $expectedHistoryPath -or
-                        -not $historyEntryCount.exists -or [int]$historyEntryCount.value -lt 1 -or
-                        -not $historyPreviousAttempts.exists -or [int]$historyPreviousAttempts.value -lt 0 -or [int]$historyPreviousAttempts.value -gt 3 -or
-                        -not $historyLastOutcome.exists -or ($null -ne $historyLastOutcome.value -and $historyOutcomeValues -notcontains [string]$historyLastOutcome.value)) {
-                        $repairValid = $false
-                    }
-        if ($repairAccepted.value -ne $null) {
-            if ([string]$repairAccepted.value.fingerprint -cne [string]$contextFingerprint.value -or [int]$repairAccepted.value.attempt -ne [int]$contextAttempt.value) { $repairValid = $false }
-        }
+            $context = $repairContext.value
+            $history = $repairHistory.value
+            $contextRunId = Get-MigrationMember -Object $context -Name 'runId'
+            $contextStatus = Get-MigrationMember -Object $context -Name 'status'
+            $contextStage = Get-MigrationMember -Object $context -Name 'stage'
+            $contextFailedCheck = Get-MigrationMember -Object $context -Name 'failedCheck'
+            $contextFingerprint = Get-MigrationMember -Object $context -Name 'fingerprint'
+            $contextAttempt = Get-MigrationMember -Object $context -Name 'attempt'
+            $contextCheckpoint = Get-MigrationMember -Object $context -Name 'checkpointCommit'
+            $historyCheckpoint = Get-MigrationMember -Object $context -Name 'historyCheckpointCommit'
+            $contextManifest = Get-MigrationMember -Object $context -Name 'manifestSha256'
+            $historyPath = Get-MigrationMember -Object $history -Name 'path'
+            $historyEntryCount = Get-MigrationMember -Object $history -Name 'entryCount'
+            $historyPreviousAttempts = Get-MigrationMember -Object $history -Name 'previousAttempts'
+            $historyLastOutcome = Get-MigrationMember -Object $history -Name 'lastOutcome'
+            $expectedHistoryPrefix = '.angular-migration/runs/' + $ExpectedRunId + '/repair-history/'
+            $historyOutcomeValues = @('submission-rejected', 'submission-accepted', 'verification-failed', 'verification-passed', 'attempts-exhausted')
+            $contextAllowedPaths = Get-MigrationMember -Object $context -Name 'allowedPaths'
+            $contextForbiddenPaths = Get-MigrationMember -Object $context -Name 'forbiddenPaths'
+            $contextDiagnostic = Get-MigrationMember -Object $context -Name 'diagnostic'
+            $contextSubmissionPath = Get-MigrationMember -Object $context -Name 'submissionPath'
+            $expectedHistoryPath = if ($contextFingerprint.exists -and [string]$contextFingerprint.value -match '^sha256:([0-9a-f]{64})$') { $expectedHistoryPrefix + $Matches[1] + '/repair.jsonl' } else { '' }
+            if (-not $contextRunId.exists -or $contextRunId.value -cne $ExpectedRunId -or
+                -not $contextStatus.exists -or $contextStatus.value -cne 'needs-repair' -or
+                -not $contextStage.exists -or $contextStage.value -notin @('validate', 'update-angular') -or
+                $contextStage.value -cne $stageProperty.value -or
+                -not $contextFailedCheck.exists -or [string]::IsNullOrWhiteSpace([string]$contextFailedCheck.value) -or
+                -not $contextFingerprint.exists -or [string]$contextFingerprint.value -notmatch '^sha256:[0-9a-f]{64}$' -or
+                -not $contextAttempt.exists -or [int]$contextAttempt.value -lt 1 -or [int]$contextAttempt.value -gt 3 -or [int]$contextAttempt.value -ne [int]$attemptProperty.value -or
+                -not $contextCheckpoint.exists -or [string]$contextCheckpoint.value -notmatch '^[a-fA-F0-9]{40}$' -or
+                -not $historyCheckpoint.exists -or [string]$historyCheckpoint.value -notmatch '^[a-fA-F0-9]{40}$' -or
+                -not $contextManifest.exists -or [string]$contextManifest.value -notmatch '^[0-9a-f]{64}$' -or
+                -not $contextAllowedPaths.exists -or $contextAllowedPaths.value -isnot [array] -or $contextAllowedPaths.value.Count -lt 1 -or
+                -not $contextForbiddenPaths.exists -or $contextForbiddenPaths.value -isnot [array] -or
+                -not $contextDiagnostic.exists -or $contextDiagnostic.value -isnot [PSCustomObject] -or
+                -not $contextSubmissionPath.exists -or [string]$contextSubmissionPath.value -cne ('.angular-migration/runs/' + $ExpectedRunId + '/inbox/repair.json') -or
+                -not $historyPath.exists -or [string]$historyPath.value -cne $expectedHistoryPath -or
+                -not $historyEntryCount.exists -or [int]$historyEntryCount.value -lt 1 -or
+                -not $historyPreviousAttempts.exists -or [int]$historyPreviousAttempts.value -lt 0 -or [int]$historyPreviousAttempts.value -gt 3 -or
+                -not $historyLastOutcome.exists -or ($null -ne $historyLastOutcome.value -and $historyOutcomeValues -notcontains [string]$historyLastOutcome.value)) {
+                $repairValid = $false
+            }
+            if ($repairAccepted.value -ne $null) {
+                if ([string]$repairAccepted.value.fingerprint -cne [string]$contextFingerprint.value -or [int]$repairAccepted.value.attempt -ne [int]$contextAttempt.value) { $repairValid = $false }
+            }
         }
         else { $repairValid = $false }
     }
@@ -653,7 +711,7 @@ function Assert-MigrationRunState {
         -not $discoveryHashProperty.exists -or -not $discoveryHashValid -or
         -not $inputFingerprintProperty.exists -or -not $inputFingerprintValid -or
         -not $runtimePlanProperty.exists -or -not $runtimeFnmPathProperty.exists -or
-        -not $activeOperationProperty.exists -or -not $completedValid -or -not $skippedValid -or -not $branchesValid) {
+        -not $activeOperationProperty.exists -or -not $activeOperationValid -or -not $completedValid -or -not $skippedValid -or -not $branchesValid) {
         Throw-MigrationError -Code 'invalid_run_state' -Message "Migration state is invalid for run: $ExpectedRunId" -Status failed
     }
 

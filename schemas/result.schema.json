@@ -135,6 +135,32 @@
               "toMajor": { "type": "integer", "minimum": 0 }
             },
             "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["code", "package", "version", "reason"],
+            "properties": {
+              "code": { "const": "deprecated_ordinary_dependency" },
+              "package": { "type": "string", "minLength": 1 },
+              "version": {
+                "type": "string",
+                "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+              },
+              "reason": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["code", "package", "peer", "range", "reason"],
+            "properties": {
+              "code": { "const": "ignored_peer_dependency" },
+              "package": { "type": "string", "minLength": 1 },
+              "peer": { "type": "string", "minLength": 1 },
+              "range": { "type": "string", "minLength": 1 },
+              "reason": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
           }
         ]
       }

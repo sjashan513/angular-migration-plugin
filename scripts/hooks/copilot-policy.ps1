@@ -249,6 +249,15 @@ try {
         [Console]::Out.Write((@{ permissionDecision = $decision; permissionDecisionReason = $reason } | ConvertTo-Json -Compress))
         exit 0
     }
+    if ($agentName -notin @('migration-implementer', 'migration-documenter')) {
+        if ($Event -eq 'preToolUse' -and ([string]::IsNullOrWhiteSpace($agentName) -or $agentName -in @('controller', 'migration-controller', 'angular-migration-controller'))) {
+            [Console]::Out.Write('{"permissionDecision":"allow","permissionDecisionReason":"angular-migration-v5: controller operations are outside the implementer contract"}')
+        }
+        else {
+            [Console]::Out.Write('{}')
+        }
+        exit 0
+    }
     if ($Event -eq 'subagentStop') {
         $accepted = $state.PSObject.Properties['repair'] -and $state.repair -and $state.repair.accepted
         if ($accepted) {

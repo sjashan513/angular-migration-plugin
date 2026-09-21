@@ -41,6 +41,11 @@
     },
     "exitCode": { "type": ["integer", "null"] },
     "timedOut": { "type": "boolean" },
+    "processStalled": { "type": "boolean" },
+    "terminationReason": {
+      "type": ["string", "null"],
+      "enum": ["completed", "timeout", "process_stalled", "external", null]
+    },
     "startedAt": { "type": ["string", "null"], "format": "date-time" },
     "finishedAt": { "type": ["string", "null"], "format": "date-time" },
     "durationMs": { "type": "integer", "minimum": 0 },

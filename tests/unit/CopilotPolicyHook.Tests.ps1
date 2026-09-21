@@ -14,6 +14,11 @@ function Assert-Hook {
 
 function Invoke-HookFixture {
     param($Payload, [string]$Event = 'preToolUse')
+    $hasAgentName = if ($Payload -is [Collections.IDictionary]) { $Payload.Contains('agentName') } else { [bool]$Payload.PSObject.Properties['agentName'] }
+    if (-not $hasAgentName) {
+        if ($Payload -is [Collections.IDictionary]) { $Payload['agentName'] = 'migration-implementer' }
+        else { $Payload | Add-Member -NotePropertyName agentName -NotePropertyValue 'migration-implementer' }
+    }
     $result = Invoke-MigrationProcess -FilePath $shell -Arguments @('-NoProfile', '-File', $source, '-Event', $Event) -WorkingDirectory $temporary -StandardInput (ConvertTo-Json -InputObject $Payload -Depth 20 -Compress) -TimeoutSeconds 10
     $json = $result.stdout | ConvertFrom-Json
     Assert-Hook 'stdout is a single JSON object' ($json -is [PSCustomObject])
@@ -49,6 +54,10 @@ try {
         $result = Invoke-HookFixture ([PSCustomObject]@{ toolName = $case.toolName; toolArgs = $case.toolArgs })
         Assert-Hook $case.name ($result.exitCode -eq 0 -and $result.json.permissionDecision -ceq $case.decision)
     }
+    $result = Invoke-HookFixture @{ agentName = 'migration-controller'; toolName = 'powershell'; toolArgs = @{ command = "& '$facade' status -RunId $runId" } }
+    Assert-Hook 'controller remains available during repair' ($result.json.permissionDecision -ceq 'allow')
+    $result = Invoke-HookFixture @{ agentName = 'independent-task'; toolName = 'edit'; toolArgs = @{ path = 'src/app.ts'; old_str = 'old'; new_str = 'new' } }
+    Assert-Hook 'independent task is not bound to repair scope' (@($result.json.PSObject.Properties).Count -eq 0)
     $result = Invoke-HookFixture @{ toolName = 'grep'; toolArgs = @{ path = 'src'; pattern = 'old' } }
     Assert-Hook 'search of safe source directory allowed' ($result.json.permissionDecision -eq 'allow')
     $external = Join-Path $temporary 'external'

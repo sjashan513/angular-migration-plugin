@@ -255,7 +255,71 @@ function Get-DependencyVersionSortKey {
 
 function Test-DependencyVersionRange {
     param([string]$Version, [string]$Range)
-    return Test-MigrationVersionRange -Version $Version -Range $Range
+    $evaluation = Test-MigrationVersionRange -Version $Version -Range $Range -Detailed
+    if (-not $evaluation.supported) {
+        Throw-MigrationError -Code 'semver_range_unsupported' -Message "Unsupported semver range: $Range" -Status blocked -Details ([PSCustomObject]@{ version = $Version; range = $Range })
+    }
+    return [bool]$evaluation.matches
+}
+
+function Get-DependencyRangeDiagnosticEvaluation {
+    param(
+        [Parameter(Mandatory = $true)][string]$Version,
+        [Parameter(Mandatory = $true)][string]$Range
+    )
+
+    $evaluation = Test-MigrationVersionRange -Version $Version -Range $Range -Detailed
+    return [PSCustomObject]@{
+        supported = [bool]$evaluation.supported
+        matches   = [bool]$evaluation.matches
+        version   = $Version
+        range     = $Range
+    }
+}
+
+function Get-DependencyAngularDiagnosticCompatibility {
+    param(
+        [Parameter(Mandatory = $true)]$Metadata,
+        [Parameter(Mandatory = $true)][hashtable]$TargetVersions
+    )
+
+    $missing = @()
+    $incompatible = @()
+    $unsupported = @()
+    $peers = Get-DependencyObjectValue -Object $Metadata -Name 'peerDependencies'
+    foreach ($peerName in @(Get-DependencyObjectNames -Object $peers | Where-Object { $_ -in @('@angular/core', '@angular/common', '@angular/compiler') })) {
+        $range = [string](Get-DependencyObjectValue -Object $peers -Name $peerName)
+        if (-not $TargetVersions.ContainsKey($peerName)) {
+            $missing += [PSCustomObject]@{ peer = $peerName; range = $range }
+            continue
+        }
+        $evaluation = Get-DependencyRangeDiagnosticEvaluation -Version ([string]$TargetVersions[$peerName]) -Range $range
+        if (-not $evaluation.supported) {
+            $unsupported += [PSCustomObject]@{ peer = $peerName; range = $range; version = [string]$TargetVersions[$peerName] }
+        }
+        elseif (-not $evaluation.matches) {
+            $incompatible += [PSCustomObject]@{ peer = $peerName; range = $range; version = [string]$TargetVersions[$peerName] }
+        }
+    }
+    return [PSCustomObject]@{
+        compatible   = $missing.Count -eq 0 -and $incompatible.Count -eq 0 -and $unsupported.Count -eq 0
+        missing      = @($missing)
+        incompatible = @($incompatible)
+        unsupported  = @($unsupported)
+    }
+}
+
+function Get-DependencyDiagnosticQueryEvents {
+    param([AllowNull()][object[]]$Events)
+
+    return @($Events | ForEach-Object {
+            [PSCustomObject][ordered]@{
+                packageName = [string](Get-DependencyObjectValue -Object $_ -Name 'packageName')
+                selector    = [string](Get-DependencyObjectValue -Object $_ -Name 'selector')
+                exitCode    = [int](Get-DependencyObjectValue -Object $_ -Name 'exitCode')
+                timedOut    = [bool](Get-DependencyObjectValue -Object $_ -Name 'timedOut')
+            }
+        })
 }
 
 function Get-DependencyCandidateList {
@@ -307,13 +371,14 @@ function Select-DependencyCandidate {
         [string]$RequiredRange,
         [string]$ExactVersion,
         [switch]$AllowLtsDeprecated,
+        [switch]$AllowDeprecated,
         [string]$FailureCode = 'registry_metadata_invalid'
     )
 
     $valid = @()
     foreach ($candidate in @(Get-DependencyCandidateList -Metadata $Metadata)) {
         $tuple = Get-DependencyVersionTuple -Version ([string]$candidate.version)
-        $deprecatedAllowed = $AllowLtsDeprecated -and $Major -ge 0 -and (Test-DependencyLtsCandidate -Candidate $candidate -Major $Major)
+        $deprecatedAllowed = $AllowDeprecated -or ($AllowLtsDeprecated -and $Major -ge 0 -and (Test-DependencyLtsCandidate -Candidate $candidate -Major $Major))
         if ($null -eq $tuple -or ([bool]$candidate.deprecated -and -not $deprecatedAllowed)) { continue }
         if ($Major -ge 0 -and $tuple[0] -ne $Major) { continue }
         if ($ExactVersion -and $candidate.version -cne $ExactVersion) { continue }
@@ -323,6 +388,8 @@ function Select-DependencyCandidate {
     if ($valid.Count -eq 0) {
         Throw-MigrationError -Code $FailureCode -Message 'No stable, non-deprecated compatible registry candidate exists.' -Status blocked
     }
+    $stable = @($valid | Where-Object { -not [bool](Get-DependencyObjectValue -Object $_ -Name 'deprecated') })
+    if ($stable.Count -gt 0) { $valid = $stable }
     return @($valid | Sort-Object { Get-DependencyVersionSortKey -Version $_.version } -Descending | Select-Object -First 1)
 }
 
@@ -347,6 +414,79 @@ function Get-DependencyRole {
     if ($PackageName -eq '@angular/cli' -or $PackageName -eq '@angular/compiler-cli' -or $PackageName -like '@angular-devkit/*' -or $PackageName -like '@ngtools/*') { return 'angular-tooling' }
     if ($PackageName -in @('typescript', 'rxjs', 'zone.js')) { return 'toolchain-related' }
     return 'registry-ordinary'
+}
+
+function Get-DependencyPeerException {
+    param(
+        $Policies,
+        [Parameter(Mandatory = $true)][string]$PackageName,
+        [Parameter(Mandatory = $true)][string]$Version
+    )
+
+    foreach ($exception in @(Get-DependencyObjectValue -Object $Policies -Name 'peerExceptions')) {
+        $package = [string](Get-DependencyObjectValue -Object $exception -Name 'package')
+        $exceptionVersion = [string](Get-DependencyObjectValue -Object $exception -Name 'version')
+        if ($package -ceq $PackageName -and $exceptionVersion -ceq $Version) { return $exception }
+    }
+    return $null
+}
+
+function Get-DependencyPeerPromotion {
+    param(
+        $Policies,
+        [Parameter(Mandatory = $true)][string]$PackageName
+    )
+
+    foreach ($promotion in @(Get-DependencyObjectValue -Object $Policies -Name 'transitivePeerPromotions')) {
+        if ([string](Get-DependencyObjectValue -Object $promotion -Name 'package') -eq $PackageName) { return $promotion }
+    }
+    return $null
+}
+
+function Assert-DependencyPolicies {
+    param($Policies)
+
+    if ($null -eq $Policies) { return }
+    $exceptions = Get-DependencyObjectValue -Object $Policies -Name 'peerExceptions'
+    if ($null -ne $exceptions -and $exceptions -isnot [array] -and $exceptions -isnot [Collections.IDictionary] -and $exceptions -isnot [PSCustomObject]) {
+        Throw-MigrationError -Code 'policy_invalid' -Message 'peerExceptions must be an array.' -Status blocked
+    }
+    $exceptionKeys = @()
+    foreach ($exception in $(if ($null -eq $exceptions) { @() } else { @($exceptions) })) {
+        $package = [string](Get-DependencyObjectValue -Object $exception -Name 'package')
+        $version = [string](Get-DependencyObjectValue -Object $exception -Name 'version')
+        $ignoredPeers = Get-DependencyObjectValue -Object $exception -Name 'ignoredPeers'
+        [array]$normalizedIgnoredPeers = if ($null -eq $ignoredPeers) { @() } else { @($ignoredPeers) }
+        $reason = [string](Get-DependencyObjectValue -Object $exception -Name 'reason')
+        $scope = [string](Get-DependencyObjectValue -Object $exception -Name 'scope')
+        if ($package -notmatch '^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$' -or
+            $version -notmatch '^\d+\.\d+\.\d+$' -or $normalizedIgnoredPeers.Count -eq 0 -or
+            @($normalizedIgnoredPeers | Where-Object { [string]$_ -notmatch '^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$' }).Count -gt 0 -or
+            [string]::IsNullOrWhiteSpace($reason) -or $scope -cne 'run') {
+            Throw-MigrationError -Code 'policy_invalid' -Message "Invalid peer exception policy for $package@$version." -Status blocked
+        }
+        $key = $package + '@' + $version
+        if ($key -in $exceptionKeys) { Throw-MigrationError -Code 'policy_invalid' -Message "Duplicate peer exception policy: $key." -Status blocked }
+        $exceptionKeys += $key
+        if (@($normalizedIgnoredPeers | Sort-Object -Unique).Count -ne $normalizedIgnoredPeers.Count) {
+            Throw-MigrationError -Code 'policy_invalid' -Message "Peer exception contains duplicate peers: $key." -Status blocked
+        }
+    }
+    $promotions = Get-DependencyObjectValue -Object $Policies -Name 'transitivePeerPromotions'
+    if ($null -ne $promotions -and $promotions -isnot [array] -and $promotions -isnot [Collections.IDictionary] -and $promotions -isnot [PSCustomObject]) {
+        Throw-MigrationError -Code 'policy_invalid' -Message 'transitivePeerPromotions must be an array.' -Status blocked
+    }
+    $promotionNames = @()
+    foreach ($promotion in $(if ($null -eq $promotions) { @() } else { @($promotions) })) {
+        $package = [string](Get-DependencyObjectValue -Object $promotion -Name 'package')
+        $section = [string](Get-DependencyObjectValue -Object $promotion -Name 'section')
+        $reason = [string](Get-DependencyObjectValue -Object $promotion -Name 'reason')
+        if ($package -notmatch '^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$' -or $section -notin @('dependencies', 'devDependencies') -or [string]::IsNullOrWhiteSpace($reason)) {
+            Throw-MigrationError -Code 'policy_invalid' -Message "Invalid transitive peer promotion policy for $package." -Status blocked
+        }
+        if ($package -in $promotionNames) { Throw-MigrationError -Code 'policy_invalid' -Message "Duplicate transitive peer promotion policy: $package." -Status blocked }
+        $promotionNames += $package
+    }
 }
 
 function Get-DependencyMinimumMajor {
@@ -412,10 +552,13 @@ function ConvertTo-CanonicalDependencyValue {
 }
 
 function Get-ResolvedManifestHash {
-    param([Parameter(Mandatory = $true)]$Manifest)
+    param(
+        [Parameter(Mandatory = $true)]$Manifest,
+        [string]$ExcludedProperty = 'manifestSha256'
+    )
 
     $value = [ordered]@{}
-    foreach ($name in @(Get-DependencyObjectNames -Object $Manifest | Where-Object { $_ -cne 'manifestSha256' } | Sort-Object)) {
+    foreach ($name in @(Get-DependencyObjectNames -Object $Manifest | Where-Object { $_ -cne $ExcludedProperty } | Sort-Object)) {
         $value[$name] = ConvertTo-CanonicalDependencyValue (Get-DependencyObjectValue -Object $Manifest -Name $name)
     }
     $json = $value | ConvertTo-Json -Depth 100 -Compress
@@ -490,21 +633,33 @@ function Resolve-MigrationManifest {
         $resolvedEntries = @()
         $warnings = @()
         $selected = @{}
+        $policies = Get-DependencyObjectValue -Object $PendingManifest -Name 'policies'
+        Assert-DependencyPolicies -Policies $policies
+        $promotedEntries = @()
+        $promotedNames = @{}
         foreach ($item in $inventory) {
             $name = [string]$item.name
             $currentVersion = [string]$lock.versions[$name]
             $role = Get-DependencyRole -PackageName $name
             $currentMajor = (Get-DependencyVersionTuple $currentVersion)[0]
-            $selectorMajor = if ($role -in @('angular-framework', 'angular-tooling')) { $targetMajor } else { $currentMajor }
-            $metadata = Get-DependencyMetadata -PackageName $name -VersionSelector ([string]$selectorMajor) -ProjectRoot $root -FnmPath $FnmPath -NodeVersion $NodeVersion
+            $versionPolicy = if ($role -in @('angular-framework', 'angular-tooling')) {
+                Get-MigrationAngularToolingVersionPolicy -AngularMajor $targetMajor -PackageName $name
+            }
+            else {
+                [PSCustomObject][ordered]@{ selector = [string]$currentMajor; major = $currentMajor; requiredRange = $null }
+            }
+            $metadata = Get-DependencyMetadata -PackageName $name -VersionSelector ([string]$versionPolicy.selector) -ProjectRoot $root -FnmPath $FnmPath -NodeVersion $NodeVersion
             $candidateFailureCode = if ($role -eq 'angular-framework') { 'angular_framework_unresolvable' } else { 'registry_metadata_invalid' }
-            $candidate = Select-DependencyCandidate -Metadata $metadata -Major $selectorMajor -AllowLtsDeprecated:($role -in @('angular-framework', 'angular-tooling')) -FailureCode $candidateFailureCode
+            $candidate = Select-DependencyCandidate -Metadata $metadata -Major ([int]$versionPolicy.major) -RequiredRange ([string]$versionPolicy.requiredRange) -AllowLtsDeprecated:($role -in @('angular-framework', 'angular-tooling')) -AllowDeprecated:($role -eq 'registry-ordinary') -FailureCode $candidateFailureCode
             $angularPeers = @(Get-DependencyObjectNames (Get-DependencyObjectValue $candidate 'peerDependencies') | Where-Object { $_ -in @('@angular/core', '@angular/common', '@angular/compiler') })
             if ($role -eq 'registry-ordinary' -and $angularPeers.Count -gt 0) {
                 $role = 'angular-aware-external'
             }
             $selected[$name] = $candidate
             $targetVersions[$name] = [string]$candidate.version
+            if ($role -eq 'registry-ordinary' -and [bool](Get-DependencyObjectValue -Object $candidate -Name 'deprecated')) {
+                $warnings += [PSCustomObject]@{ code = 'deprecated_ordinary_dependency'; package = $name; version = [string]$candidate.version; reason = 'An existing ordinary dependency was retained because no non-deprecated compatible candidate was available.' }
+            }
         }
         foreach ($alignedName in @('@angular/common', '@angular/compiler')) {
             if ($selected.ContainsKey('@angular/core') -and $selected.ContainsKey($alignedName) -and $selected[$alignedName].version -cne $selected['@angular/core'].version) {
@@ -514,8 +669,9 @@ function Resolve-MigrationManifest {
             }
         }
         if ($byName.ContainsKey('@angular/cli') -and -not $byName.ContainsKey('@angular/compiler-cli')) {
-            $metadata = Get-DependencyMetadata -PackageName '@angular/compiler-cli' -VersionSelector ([string]$targetMajor) -ProjectRoot $root -FnmPath $FnmPath -NodeVersion $NodeVersion
-            $selected['@angular/compiler-cli'] = Select-DependencyCandidate -Metadata $metadata -Major $targetMajor -AllowLtsDeprecated -FailureCode 'toolchain_unresolvable'
+            $versionPolicy = Get-MigrationAngularToolingVersionPolicy -AngularMajor $targetMajor -PackageName '@angular/compiler-cli'
+            $metadata = Get-DependencyMetadata -PackageName '@angular/compiler-cli' -VersionSelector ([string]$versionPolicy.selector) -ProjectRoot $root -FnmPath $FnmPath -NodeVersion $NodeVersion
+            $selected['@angular/compiler-cli'] = Select-DependencyCandidate -Metadata $metadata -Major ([int]$versionPolicy.major) -RequiredRange ([string]$versionPolicy.requiredRange) -AllowLtsDeprecated -FailureCode 'toolchain_unresolvable'
             $targetVersions['@angular/compiler-cli'] = [string]$selected['@angular/compiler-cli'].version
             $byName['@angular/compiler-cli'] = [PSCustomObject]@{ name = '@angular/compiler-cli'; section = 'devDependencies'; role = 'dev'; spec = $null; kind = 'registry'; added = $true }
         }
@@ -598,23 +754,70 @@ function Resolve-MigrationManifest {
         if (-not $nodeCompatible) {
             Throw-MigrationError -Code 'node_version_incompatible' -Message 'Active Node does not satisfy the selected package engines.' -Status blocked -Details ([PSCustomObject]@{ activeVersion = $activeNode; requiredRange = $requiredRange; packages = $nodePackages })
         }
-        foreach ($name in @($selected.Keys)) {
-            $metadata = $selected[$name]
-            $peers = Get-DependencyObjectValue -Object $metadata -Name 'peerDependencies'
-            $peerMeta = Get-DependencyObjectValue -Object $metadata -Name 'peerDependenciesMeta'
-            foreach ($peerName in @(Get-DependencyObjectNames -Object $peers)) {
-                $range = [string](Get-DependencyObjectValue -Object $peers -Name $peerName)
-                $optionalInfo = Get-DependencyObjectValue -Object $peerMeta -Name $peerName
-                $optional = [bool](Get-DependencyObjectValue -Object $optionalInfo -Name 'optional')
-                if (-not $targetVersions.ContainsKey($peerName)) {
-                    if ($optional) {
-                        $warnings += [PSCustomObject]@{ code = 'optional_peer_missing'; package = $name; peer = $peerName; range = $range }
-                        continue
+        $peerScanChanged = $true
+        $peerScanIteration = 0
+        while ($peerScanChanged) {
+            $peerScanIteration++
+            if ($peerScanIteration -gt 10) { Throw-MigrationError -Code 'dependency_resolution_did_not_converge' -Message 'Dependency peer promotion did not converge.' -Status blocked }
+            $peerScanChanged = $false
+            foreach ($name in @($selected.Keys)) {
+                $metadata = $selected[$name]
+                $version = [string](Get-DependencyObjectValue -Object $metadata -Name 'version')
+                $peers = Get-DependencyObjectValue -Object $metadata -Name 'peerDependencies'
+                $peerMeta = Get-DependencyObjectValue -Object $metadata -Name 'peerDependenciesMeta'
+                $exception = Get-DependencyPeerException -Policies $policies -PackageName $name -Version $version
+                $ignoredPeers = if ($exception) { @(Get-DependencyObjectValue -Object $exception -Name 'ignoredPeers') } else { @() }
+                foreach ($peerName in @(Get-DependencyObjectNames -Object $peers)) {
+                    $range = [string](Get-DependencyObjectValue -Object $peers -Name $peerName)
+                    $optionalInfo = Get-DependencyObjectValue -Object $peerMeta -Name $peerName
+                    $optional = [bool](Get-DependencyObjectValue -Object $optionalInfo -Name 'optional')
+                    if (-not $targetVersions.ContainsKey($peerName)) {
+                        if ($peerName -in $ignoredPeers) {
+                            if (@($warnings | Where-Object { $_.code -eq 'ignored_peer_dependency' -and $_.package -eq $name -and $_.peer -eq $peerName }).Count -eq 0) {
+                                $warnings += [PSCustomObject]@{ code = 'ignored_peer_dependency'; package = $name; peer = $peerName; range = $range; reason = [string](Get-DependencyObjectValue -Object $exception -Name 'reason') }
+                            }
+                            continue
+                        }
+                        if ($optional) {
+                            if (@($warnings | Where-Object { $_.code -eq 'optional_peer_missing' -and $_.package -eq $name -and $_.peer -eq $peerName }).Count -eq 0) {
+                                $warnings += [PSCustomObject]@{ code = 'optional_peer_missing'; package = $name; peer = $peerName; range = $range }
+                            }
+                            continue
+                        }
+                        $promotion = Get-DependencyPeerPromotion -Policies $policies -PackageName $peerName
+                        if ($promotion) {
+                            $promotionSection = [string](Get-DependencyObjectValue -Object $promotion -Name 'section')
+                            $lockedVersion = [string]$lock.versions[$peerName]
+                            if ($promotionSection -notin @('dependencies', 'devDependencies') -or [string]::IsNullOrWhiteSpace($lockedVersion) -or
+                                $null -eq (Get-DependencyVersionTuple -Version $lockedVersion) -or -not (Test-DependencyVersionRange -Version $lockedVersion -Range $range)) {
+                                Throw-MigrationError -Code 'peer_dependency_conflict' -Message "Locked transitive peer $peerName does not satisfy $name." -Status blocked -Details ([PSCustomObject]@{ package = $name; peer = $peerName; range = $range; version = $lockedVersion })
+                            }
+                            if (-not $promotedNames.ContainsKey($peerName)) {
+                                $promotedMetadata = Get-DependencyMetadata -PackageName $peerName -VersionSelector $lockedVersion -ProjectRoot $root -FnmPath $FnmPath -NodeVersion $NodeVersion
+                                $promotedCandidate = Select-DependencyCandidate -Metadata $promotedMetadata -ExactVersion $lockedVersion -FailureCode 'peer_dependency_conflict'
+                                $selected[$peerName] = $promotedCandidate
+                                $targetVersions[$peerName] = [string]$promotedCandidate.version
+                                $promotedNames[$peerName] = $true
+                                $promotedEntries += [PSCustomObject][ordered]@{
+                                    name = $peerName; section = $promotionSection; role = Get-DependencyRole -PackageName $peerName; kind = 'registry'; declaredSpec = $null; currentVersion = $null
+                                    targetVersion = [string]$promotedCandidate.version; writeSpec = [string]$promotedCandidate.version; change = 'added-required-tooling'
+                                    reason = [string](Get-DependencyObjectValue -Object $promotion -Name 'reason'); metadata = ConvertTo-PublishedDependencyMetadata -Metadata $promotedCandidate
+                                }
+                                $peerScanChanged = $true
+                            }
+                            continue
+                        }
+                        Throw-MigrationError -Code 'peer_dependency_conflict' -Message "Required peer $peerName is missing for $name." -Status blocked -Details ([PSCustomObject]@{ package = $name; peer = $peerName; range = $range })
                     }
-                    Throw-MigrationError -Code 'peer_dependency_conflict' -Message "Required peer $peerName is missing for $name." -Status blocked -Details ([PSCustomObject]@{ package = $name; peer = $peerName; range = $range })
-                }
-                if (-not (Test-DependencyVersionRange -Version $targetVersions[$peerName] -Range $range)) {
-                    Throw-MigrationError -Code 'peer_dependency_conflict' -Message "Peer $peerName is incompatible with $name." -Status blocked -Details ([PSCustomObject]@{ package = $name; peer = $peerName; range = $range; version = $targetVersions[$peerName] })
+                    if (-not (Test-DependencyVersionRange -Version $targetVersions[$peerName] -Range $range)) {
+                        if ($peerName -in $ignoredPeers) {
+                            if (@($warnings | Where-Object { $_.code -eq 'ignored_peer_dependency' -and $_.package -eq $name -and $_.peer -eq $peerName }).Count -eq 0) {
+                                $warnings += [PSCustomObject]@{ code = 'ignored_peer_dependency'; package = $name; peer = $peerName; range = $range; reason = [string](Get-DependencyObjectValue -Object $exception -Name 'reason') }
+                            }
+                            continue
+                        }
+                        Throw-MigrationError -Code 'peer_dependency_conflict' -Message "Peer $peerName is incompatible with $name." -Status blocked -Details ([PSCustomObject]@{ package = $name; peer = $peerName; range = $range; version = $targetVersions[$peerName] })
+                    }
                 }
             }
         }
@@ -640,6 +843,7 @@ function Resolve-MigrationManifest {
                 metadata       = ConvertTo-PublishedDependencyMetadata -Metadata $candidate
             }
         }
+        $resolvedEntries += @($promotedEntries)
         if ($byName.ContainsKey('@angular/compiler-cli') -and -not @($inventory | Where-Object name -eq '@angular/compiler-cli')) {
             $candidate = $selected['@angular/compiler-cli']
             $resolvedEntries += [PSCustomObject][ordered]@{
@@ -679,10 +883,375 @@ function Resolve-MigrationManifest {
     }
 }
 
+function Get-MigrationResolveDiagnostics {
+    param(
+        [Parameter(Mandatory = $true)]$PendingManifest,
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [string]$FnmPath = '',
+        [string]$NodeVersion = ''
+    )
+
+    $script:MetadataCache = @{}
+    $script:MetadataQueryEvents = @()
+    $script:ResolutionContext = $null
+    $conflicts = @()
+    $warnings = @()
+    $proposals = @()
+    $selected = @{}
+    $targetVersions = @{}
+    $itemsByName = @{}
+    $processedNames = @{}
+    $roles = @{}
+    $angularAwareFailures = @{}
+    $promotionProposals = @{}
+    try {
+        $root = Resolve-MigrationRoot -Path $ProjectRoot
+        $sourceMajor = [int](Get-DependencyObjectValue -Object $PendingManifest -Name 'sourceMajor')
+        $targetMajor = [int](Get-DependencyObjectValue -Object $PendingManifest -Name 'targetMajor')
+        if ((Get-DependencyObjectValue -Object $PendingManifest -Name 'resolutionStatus') -ne 'pending') {
+            Throw-MigrationError -Code 'manifest_already_resolved' -Message 'Diagnostics require a pending manifest.' -Status blocked
+        }
+        if ((Get-DependencyObjectValue -Object $PendingManifest -Name 'manifestType') -and (Get-DependencyObjectValue -Object $PendingManifest -Name 'manifestType') -cne 'migration') {
+            Throw-MigrationError -Code 'registry_metadata_invalid' -Message 'Invalid migration manifest.' -Status blocked
+        }
+        if ($sourceMajor + 1 -ne $targetMajor) {
+            Throw-MigrationError -Code 'non_sequential_target' -Message 'Manifest target major must be source major plus one.' -Status blocked
+        }
+        $policies = Get-DependencyObjectValue -Object $PendingManifest -Name 'policies'
+        Assert-DependencyPolicies -Policies $policies
+        $lock = Get-ProjectLockfile -ProjectRoot $root -FnmPath $FnmPath -NodeVersion $NodeVersion
+        $inventory = @((Get-DependencyObjectValue -Object $PendingManifest -Name 'dependencies'))
+        foreach ($item in $inventory) {
+            $name = [string](Get-DependencyObjectValue -Object $item -Name 'name')
+            if ($itemsByName.ContainsKey($name)) {
+                $conflicts += [PSCustomObject][ordered]@{
+                    package = $name; stage = 'inventory'; code = 'duplicate_dependency_declaration'
+                    message = "Dependency is declared more than once: $name."; details = $null
+                }
+                continue
+            }
+            $itemsByName[$name] = $item
+        }
+        foreach ($item in $inventory) {
+            $name = [string](Get-DependencyObjectValue -Object $item -Name 'name')
+            if ($processedNames.ContainsKey($name)) { continue }
+            $processedNames[$name] = $true
+            $record = [ordered]@{ package = $name; stage = 'candidate'; code = $null; message = $null; details = $null }
+            try {
+                if ([string]::IsNullOrWhiteSpace($name)) { Throw-MigrationError -Code 'registry_metadata_invalid' -Message 'Dependency name is required.' -Status blocked }
+                if ((Get-DependencyObjectValue -Object $item -Name 'kind') -ne 'registry') {
+                    Throw-MigrationError -Code 'unsupported_dependency_spec' -Message "Dependency requires an explicit policy: $name" -Status blocked
+                }
+                $currentVersion = [string](Get-DependencyObjectValue -Object $lock.versions -Name $name)
+                if ([string]::IsNullOrWhiteSpace($currentVersion)) {
+                    Throw-MigrationError -Code 'dependency_not_locked' -Message "Dependency is not present in package-lock.json: $name" -Status blocked
+                }
+                $currentTuple = Get-DependencyVersionTuple -Version $currentVersion
+                if ($null -eq $currentTuple) {
+                    Throw-MigrationError -Code 'dependency_version_invalid' -Message "Locked dependency version is not exact: $name@$currentVersion" -Status blocked
+                }
+                $role = Get-DependencyRole -PackageName $name
+                $roles[$name] = $role
+                $versionPolicy = if ($role -in @('angular-framework', 'angular-tooling')) {
+                    Get-MigrationAngularToolingVersionPolicy -AngularMajor $targetMajor -PackageName $name
+                }
+                else {
+                    [PSCustomObject][ordered]@{ selector = [string]$currentTuple[0]; major = $currentTuple[0]; requiredRange = $null }
+                }
+                $metadata = Get-DependencyMetadata -PackageName $name -VersionSelector ([string]$versionPolicy.selector) -ProjectRoot $root -FnmPath $FnmPath -NodeVersion $NodeVersion
+                $failureCode = if ($role -eq 'angular-framework') { 'angular_framework_unresolvable' } else { 'registry_metadata_invalid' }
+                $candidate = Select-DependencyCandidate -Metadata $metadata -Major ([int]$versionPolicy.major) -RequiredRange ([string]$versionPolicy.requiredRange) -AllowLtsDeprecated:($role -in @('angular-framework', 'angular-tooling')) -AllowDeprecated:($role -eq 'registry-ordinary') -FailureCode $failureCode
+                $selected[$name] = $candidate
+                $targetVersions[$name] = [string](Get-DependencyObjectValue -Object $candidate -Name 'version')
+                $angularPeerNames = @(Get-DependencyObjectNames -Object (Get-DependencyObjectValue -Object $candidate -Name 'peerDependencies') | Where-Object { $_ -in @('@angular/core', '@angular/common', '@angular/compiler') })
+                if ($role -eq 'registry-ordinary' -and $angularPeerNames.Count -gt 0) { $roles[$name] = 'angular-aware-external' }
+                if ($role -eq 'registry-ordinary' -and [bool](Get-DependencyObjectValue -Object $candidate -Name 'deprecated')) {
+                    $warnings += [PSCustomObject][ordered]@{ code = 'deprecated_ordinary_dependency'; package = $name; version = [string](Get-DependencyObjectValue -Object $candidate -Name 'version'); reason = 'An existing ordinary dependency was retained because no non-deprecated compatible candidate was available.' }
+                }
+            }
+            catch {
+                $record.code = if ($_.Exception.Data['code']) { [string]$_.Exception.Data['code'] } else { 'resolver_internal_error' }
+                $record.message = $_.Exception.Message
+                $record.details = $_.Exception.Data['details']
+                $conflicts += [PSCustomObject]$record
+            }
+        }
+
+        if ($selected.ContainsKey('@angular/core')) {
+            foreach ($alignedName in @('@angular/common', '@angular/compiler')) {
+                if (-not $selected.ContainsKey($alignedName)) { continue }
+                if ([string](Get-DependencyObjectValue -Object $selected[$alignedName] -Name 'version') -ceq [string]$targetVersions['@angular/core']) { continue }
+                try {
+                    $alignedMetadata = Get-DependencyMetadata -PackageName $alignedName -VersionSelector ([string]$targetVersions['@angular/core']) -ProjectRoot $root -FnmPath $FnmPath -NodeVersion $NodeVersion
+                    $alignedCandidate = Select-DependencyCandidate -Metadata $alignedMetadata -ExactVersion ([string]$targetVersions['@angular/core']) -AllowLtsDeprecated -FailureCode 'angular_framework_unresolvable'
+                    $selected[$alignedName] = $alignedCandidate
+                    $targetVersions[$alignedName] = [string](Get-DependencyObjectValue -Object $alignedCandidate -Name 'version')
+                }
+                catch {
+                    $conflicts += [PSCustomObject][ordered]@{
+                        package = $alignedName; stage = 'alignment'; code = if ($_.Exception.Data['code']) { [string]$_.Exception.Data['code'] } else { 'angular_framework_unresolvable' }
+                        message = $_.Exception.Message; details = $_.Exception.Data['details']
+                    }
+                }
+            }
+        }
+
+        if ($itemsByName.ContainsKey('@angular/cli') -and -not $itemsByName.ContainsKey('@angular/compiler-cli') -and $selected.ContainsKey('@angular/cli')) {
+            try {
+                $toolingPolicy = Get-MigrationAngularToolingVersionPolicy -AngularMajor $targetMajor -PackageName '@angular/compiler-cli'
+                $toolingMetadata = Get-DependencyMetadata -PackageName '@angular/compiler-cli' -VersionSelector ([string]$toolingPolicy.selector) -ProjectRoot $root -FnmPath $FnmPath -NodeVersion $NodeVersion
+                $toolingCandidate = Select-DependencyCandidate -Metadata $toolingMetadata -Major ([int]$toolingPolicy.major) -RequiredRange ([string]$toolingPolicy.requiredRange) -AllowLtsDeprecated -FailureCode 'toolchain_unresolvable'
+                $selected['@angular/compiler-cli'] = $toolingCandidate
+                $targetVersions['@angular/compiler-cli'] = [string](Get-DependencyObjectValue -Object $toolingCandidate -Name 'version')
+                $roles['@angular/compiler-cli'] = 'angular-tooling'
+                $proposals += [PSCustomObject][ordered]@{
+                    code = 'add-required-tooling'; package = '@angular/compiler-cli'; section = 'devDependencies'; version = $targetVersions['@angular/compiler-cli']
+                    reason = 'Angular application requires compiler-cli for the target framework.'
+                }
+            }
+            catch {
+                $conflicts += [PSCustomObject][ordered]@{
+                    package = '@angular/compiler-cli'; stage = 'toolchain'; code = if ($_.Exception.Data['code']) { [string]$_.Exception.Data['code'] } else { 'toolchain_unresolvable' }
+                    message = $_.Exception.Message; details = $_.Exception.Data['details']
+                }
+            }
+        }
+
+        foreach ($name in @($selected.Keys | Sort-Object)) {
+            if ($roles[$name] -notin @('angular-aware-external', 'registry-ordinary')) { continue }
+            $compatibility = Get-DependencyAngularDiagnosticCompatibility -Metadata $selected[$name] -TargetVersions $targetVersions
+            foreach ($unsupported in @($compatibility.unsupported)) {
+                $conflicts += [PSCustomObject][ordered]@{ package = $name; stage = 'angular-aware'; code = 'semver_range_unsupported'; message = "Unsupported Angular peer range for $name."; details = $unsupported }
+            }
+            if ($compatibility.compatible -or $compatibility.unsupported.Count -gt 0) { continue }
+            $currentVersion = [string](Get-DependencyObjectValue -Object $lock.versions -Name $name)
+            $currentTuple = Get-DependencyVersionTuple -Version $currentVersion
+            $found = $false
+            if ($compatibility.missing.Count -eq 0 -and $null -ne $currentTuple) {
+                for ($candidateMajor = $currentTuple[0] + 1; $candidateMajor -le $currentTuple[0] + 10; $candidateMajor++) {
+                    try {
+                        $nextMetadata = Get-DependencyMetadata -PackageName $name -VersionSelector ([string]$candidateMajor) -ProjectRoot $root -FnmPath $FnmPath -NodeVersion $NodeVersion
+                        $nextCandidate = Select-DependencyCandidate -Metadata $nextMetadata -Major $candidateMajor -FailureCode 'peer_dependency_conflict'
+                        $nextCompatibility = Get-DependencyAngularDiagnosticCompatibility -Metadata $nextCandidate -TargetVersions $targetVersions
+                        foreach ($unsupported in @($nextCompatibility.unsupported)) {
+                            $conflicts += [PSCustomObject][ordered]@{ package = $name; stage = 'angular-aware'; code = 'semver_range_unsupported'; message = "Unsupported Angular peer range for $name."; details = $unsupported }
+                        }
+                        if ($nextCompatibility.compatible) {
+                            $selected[$name] = $nextCandidate
+                            $targetVersions[$name] = [string](Get-DependencyObjectValue -Object $nextCandidate -Name 'version')
+                            $found = $true
+                            $warnings += [PSCustomObject][ordered]@{ code = 'package_major_changed_for_angular'; package = $name; fromMajor = $currentTuple[0]; toMajor = (Get-DependencyVersionTuple -Version $targetVersions[$name])[0] }
+                            break
+                        }
+                    }
+                    catch { }
+                }
+            }
+            if (-not $found) {
+                $angularAwareFailures[$name] = $true
+                $conflicts += [PSCustomObject][ordered]@{
+                    package = $name; stage = 'angular-aware'; code = 'peer_dependency_conflict'; message = "No Angular-compatible candidate exists for $name."
+                    details = [PSCustomObject]@{ missing = @($compatibility.missing); incompatible = @($compatibility.incompatible) }
+                }
+            }
+        }
+
+        $toolchainIteration = 0
+        $toolchainChanged = $true
+        while ($toolchainChanged -and $toolchainIteration -lt 10) {
+            $toolchainIteration++
+            $toolchainChanged = $false
+            foreach ($toolName in @('typescript', 'rxjs', 'zone.js')) {
+                if (-not $selected.ContainsKey($toolName)) { continue }
+                foreach ($sourceName in @('@angular/core', '@angular/compiler-cli', '@angular/cli')) {
+                    if (-not $selected.ContainsKey($sourceName)) { continue }
+                    $range = [string](Get-DependencyObjectValue -Object (Get-DependencyObjectValue -Object $selected[$sourceName] -Name 'peerDependencies') -Name $toolName)
+                    if ([string]::IsNullOrWhiteSpace($range)) { continue }
+                    $evaluation = Get-DependencyRangeDiagnosticEvaluation -Version ([string]$targetVersions[$toolName] -as [string]) -Range $range
+                    if (-not $evaluation.supported) {
+                        $conflicts += [PSCustomObject][ordered]@{ package = $sourceName; stage = 'toolchain'; code = 'semver_range_unsupported'; message = "Unsupported toolchain peer range for $sourceName."; details = [PSCustomObject]@{ peer = $toolName; range = $range; version = $targetVersions[$toolName] } }
+                        continue
+                    }
+                    if ($evaluation.matches) { continue }
+                    $minimumMajor = Get-DependencyMinimumMajor -Range $range
+                    if ($null -eq $minimumMajor) {
+                        $conflicts += [PSCustomObject][ordered]@{ package = $sourceName; stage = 'toolchain'; code = 'toolchain_unresolvable'; message = "No compatible $toolName version exists."; details = $evaluation }
+                        continue
+                    }
+                    try {
+                        $toolingMetadata = Get-DependencyMetadata -PackageName $toolName -VersionSelector ([string]$minimumMajor) -ProjectRoot $root -FnmPath $FnmPath -NodeVersion $NodeVersion
+                        $replacement = Select-DependencyCandidate -Metadata $toolingMetadata -Major $minimumMajor -RequiredRange $range -FailureCode 'toolchain_unresolvable'
+                        $replacementVersion = [string](Get-DependencyObjectValue -Object $replacement -Name 'version')
+                        if ($replacementVersion -cne [string]$targetVersions[$toolName]) {
+                            $selected[$toolName] = $replacement
+                            $targetVersions[$toolName] = $replacementVersion
+                            $toolchainChanged = $true
+                        }
+                    }
+                    catch {
+                        $conflicts += [PSCustomObject][ordered]@{ package = $sourceName; stage = 'toolchain'; code = if ($_.Exception.Data['code']) { [string]$_.Exception.Data['code'] } else { 'toolchain_unresolvable' }; message = $_.Exception.Message; details = $_.Exception.Data['details'] }
+                    }
+                }
+            }
+        }
+        if ($toolchainChanged) {
+            $conflicts += [PSCustomObject][ordered]@{ package = 'toolchain'; stage = 'toolchain'; code = 'dependency_resolution_did_not_converge'; message = 'Toolchain peer diagnostics did not converge.'; details = [PSCustomObject]@{ iterations = $toolchainIteration } }
+        }
+
+        $activeNode = [string]$NodeVersion
+        if ([string]::IsNullOrWhiteSpace($activeNode)) {
+            $nodeDeclaration = Get-DependencyObjectValue -Object (Get-DependencyObjectValue -Object (Get-DependencyObjectValue -Object $PendingManifest -Name 'project') -Name 'toolchain') -Name 'node'
+            $activeNode = if ($nodeDeclaration -is [string]) { [string]$nodeDeclaration } else { [string](Get-DependencyObjectValue -Object $nodeDeclaration -Name 'version') }
+        }
+        $activeNode = $activeNode -replace '^v', ''
+        $nodeRanges = @()
+        $nodePackages = @()
+        foreach ($name in @($selected.Keys | Sort-Object)) {
+            if ($name -ne '@angular/cli' -and $name -ne '@angular/compiler-cli' -and $name -notlike '@angular-devkit/*' -and $name -notlike '@ngtools/*') { continue }
+            $nodeRange = [string](Get-DependencyObjectValue -Object (Get-DependencyObjectValue -Object $selected[$name] -Name 'engines') -Name 'node')
+            if ([string]::IsNullOrWhiteSpace($nodeRange)) { continue }
+            $nodeRanges += $nodeRange
+            $nodePackages += $name
+            if ([string]::IsNullOrWhiteSpace($activeNode)) {
+                $conflicts += [PSCustomObject][ordered]@{ package = $name; stage = 'node'; code = 'node_version_unavailable'; message = 'No active Node version was supplied for engine validation.'; details = [PSCustomObject]@{ requiredRange = $nodeRange } }
+                continue
+            }
+            $nodeEvaluation = Get-DependencyRangeDiagnosticEvaluation -Version $activeNode -Range $nodeRange
+            if (-not $nodeEvaluation.supported) {
+                $conflicts += [PSCustomObject][ordered]@{ package = $name; stage = 'node'; code = 'semver_range_unsupported'; message = "Unsupported Node engine range for $name."; details = $nodeEvaluation }
+            }
+            elseif (-not $nodeEvaluation.matches) {
+                $conflicts += [PSCustomObject][ordered]@{ package = $name; stage = 'node'; code = 'node_version_incompatible'; message = "Node $activeNode does not satisfy $name engine range $nodeRange."; details = $nodeEvaluation }
+            }
+        }
+
+        $peerQueue = @($selected.Keys | Sort-Object)
+        $peerQueueIndex = 0
+        while ($peerQueueIndex -lt $peerQueue.Count) {
+            $name = [string]$peerQueue[$peerQueueIndex]
+            $peerQueueIndex++
+            if (-not $selected.ContainsKey($name)) { continue }
+            $metadata = $selected[$name]
+            $version = [string](Get-DependencyObjectValue -Object $metadata -Name 'version')
+            $exception = Get-DependencyPeerException -Policies $policies -PackageName $name -Version $version
+            [array]$ignoredPeers = if ($exception) { @(Get-DependencyObjectValue -Object $exception -Name 'ignoredPeers') } else { @() }
+            $peers = Get-DependencyObjectValue -Object $metadata -Name 'peerDependencies'
+            $peerMeta = Get-DependencyObjectValue -Object $metadata -Name 'peerDependenciesMeta'
+            foreach ($peerName in @(Get-DependencyObjectNames -Object $peers | Sort-Object)) {
+                if ($name -in $angularAwareFailures.Keys -and $peerName -in @('@angular/core', '@angular/common', '@angular/compiler')) { continue }
+                $range = [string](Get-DependencyObjectValue -Object $peers -Name $peerName)
+                $optionalInfo = Get-DependencyObjectValue -Object $peerMeta -Name $peerName
+                $optional = [bool](Get-DependencyObjectValue -Object $optionalInfo -Name 'optional')
+                if (-not $targetVersions.ContainsKey($peerName)) {
+                    if ($peerName -in $ignoredPeers) {
+                        $warnings += [PSCustomObject][ordered]@{ code = 'ignored_peer_dependency'; package = $name; peer = $peerName; range = $range; reason = [string](Get-DependencyObjectValue -Object $exception -Name 'reason') }
+                        continue
+                    }
+                    if ($optional) {
+                        $warnings += [PSCustomObject][ordered]@{ code = 'optional_peer_missing'; package = $name; peer = $peerName; range = $range }
+                        continue
+                    }
+                    $promotion = Get-DependencyPeerPromotion -Policies $policies -PackageName $peerName
+                    $lockedVersion = [string](Get-DependencyObjectValue -Object $lock.versions -Name $peerName)
+                    if ($promotion -and $lockedVersion) {
+                        $promotionEvaluation = Get-DependencyRangeDiagnosticEvaluation -Version $lockedVersion -Range $range
+                        if (-not $promotionEvaluation.supported) {
+                            $conflicts += [PSCustomObject][ordered]@{ package = $name; stage = 'promotion'; code = 'semver_range_unsupported'; message = "Unsupported promoted peer range for $name."; details = [PSCustomObject]@{ peer = $peerName; range = $range; version = $lockedVersion } }
+                            continue
+                        }
+                        if ($null -eq (Get-DependencyVersionTuple -Version $lockedVersion) -or -not $promotionEvaluation.matches) {
+                            $conflicts += [PSCustomObject][ordered]@{ package = $name; stage = 'promotion'; code = 'peer_dependency_conflict'; message = "Locked transitive peer $peerName does not satisfy $name."; details = [PSCustomObject]@{ package = $name; peer = $peerName; range = $range; version = $lockedVersion } }
+                            continue
+                        }
+                        if (-not $promotionProposals.ContainsKey($peerName)) {
+                            try {
+                                $promotedMetadata = Get-DependencyMetadata -PackageName $peerName -VersionSelector $lockedVersion -ProjectRoot $root -FnmPath $FnmPath -NodeVersion $NodeVersion
+                                $promotedCandidate = Select-DependencyCandidate -Metadata $promotedMetadata -ExactVersion $lockedVersion -FailureCode 'peer_dependency_conflict'
+                                $selected[$peerName] = $promotedCandidate
+                                $targetVersions[$peerName] = $lockedVersion
+                                $peerQueue += $peerName
+                                $proposal = [PSCustomObject][ordered]@{
+                                    code = 'promote-transitive-peer'; package = $peerName; section = [string](Get-DependencyObjectValue -Object $promotion -Name 'section'); version = $lockedVersion
+                                    source = $name; sources = @($name); reason = [string](Get-DependencyObjectValue -Object $promotion -Name 'reason')
+                                }
+                                $promotionProposals[$peerName] = $proposal
+                                $proposals += $proposal
+                            }
+                            catch {
+                                $conflicts += [PSCustomObject][ordered]@{ package = $name; stage = 'promotion'; code = if ($_.Exception.Data['code']) { [string]$_.Exception.Data['code'] } else { 'peer_dependency_conflict' }; message = $_.Exception.Message; details = $_.Exception.Data['details'] }
+                            }
+                        }
+                        elseif ($name -notin @($promotionProposals[$peerName].sources)) {
+                            $promotionProposals[$peerName].sources = @($promotionProposals[$peerName].sources + $name | Sort-Object -Unique)
+                        }
+                        continue
+                    }
+                    $conflicts += [PSCustomObject][ordered]@{ package = $name; stage = 'peer'; code = 'peer_dependency_conflict'; message = "Required peer $peerName is missing for $name."; details = [PSCustomObject]@{ package = $name; peer = $peerName; range = $range } }
+                    continue
+                }
+                $peerEvaluation = Get-DependencyRangeDiagnosticEvaluation -Version ([string]$targetVersions[$peerName]) -Range $range
+                if (-not $peerEvaluation.supported) {
+                    $conflicts += [PSCustomObject][ordered]@{ package = $name; stage = 'peer'; code = 'semver_range_unsupported'; message = "Unsupported peer range for $name."; details = $peerEvaluation }
+                }
+                elseif (-not $peerEvaluation.matches) {
+                    if ($peerName -in $ignoredPeers) {
+                        $warnings += [PSCustomObject][ordered]@{ code = 'ignored_peer_dependency'; package = $name; peer = $peerName; range = $range; version = $targetVersions[$peerName]; reason = [string](Get-DependencyObjectValue -Object $exception -Name 'reason') }
+                    }
+                    else {
+                        $conflicts += [PSCustomObject][ordered]@{ package = $name; stage = 'peer'; code = 'peer_dependency_conflict'; message = "Peer $peerName is incompatible with $name."; details = [PSCustomObject]@{ package = $name; peer = $peerName; range = $range; version = $targetVersions[$peerName] } }
+                    }
+                }
+            }
+        }
+
+        $queryEvents = @(Get-DependencyDiagnosticQueryEvents -Events @($script:MetadataQueryEvents) | Sort-Object packageName, selector, exitCode, timedOut -Unique)
+        $fingerprint = [string](Get-DependencyObjectValue -Object $PendingManifest -Name 'inputFingerprint')
+        $diagnostic = [ordered]@{
+            schemaVersion    = 1
+            diagnosticType   = 'angular-migration-resolve'
+            projectRoot      = $root
+            sourceMajor      = $sourceMajor
+            targetMajor      = $targetMajor
+            inputFingerprint = $fingerprint
+            selected         = @($selected.Keys | Sort-Object | ForEach-Object { [PSCustomObject][ordered]@{ package = [string]$_; version = [string](Get-DependencyObjectValue -Object $selected[$_] -Name 'version') } })
+            node             = [PSCustomObject][ordered]@{
+                activeVersion = if ($activeNode) { $activeNode } else { $null }
+                requiredRange = if (@($nodeRanges | Select-Object -Unique).Count -gt 0) { (@($nodeRanges | Select-Object -Unique) -join ' && ') } else { '*' }
+                compatible    = @($conflicts | Where-Object { $_.stage -eq 'node' -and $_.code -in @('node_version_incompatible', 'node_version_unavailable', 'semver_range_unsupported') }).Count -eq 0
+                packages      = @($nodePackages | Sort-Object -Unique)
+            }
+            conflicts        = @($conflicts | Sort-Object package, stage, code, message -Unique)
+            warnings         = @($warnings | Sort-Object code, package, peer, version -Unique)
+            proposals        = @($proposals | Sort-Object package, source, code -Unique)
+            queryEvents      = $queryEvents
+            diagnosticSha256 = $null
+        }
+        $diagnostic.diagnosticSha256 = Get-ResolvedManifestHash -Manifest ([PSCustomObject]$diagnostic) -ExcludedProperty 'diagnosticSha256'
+        return [PSCustomObject]@{
+            status      = if (@($diagnostic.conflicts).Count -gt 0) { 'blocked' } else { 'ready' }
+            diagnostic  = [PSCustomObject]$diagnostic
+            queryEvents = $queryEvents
+            error       = $null
+        }
+    }
+    catch {
+        return [PSCustomObject]@{
+            status      = if ($_.Exception.Data['status'] -eq 'blocked') { 'blocked' } else { 'failed' }
+            diagnostic  = $null
+            queryEvents = @(Get-DependencyDiagnosticQueryEvents -Events @($script:MetadataQueryEvents))
+            error       = [PSCustomObject]@{ code = if ($_.Exception.Data['code']) { [string]$_.Exception.Data['code'] } else { 'resolver_internal_error' }; message = $_.Exception.Message; details = $_.Exception.Data['details'] }
+        }
+    }
+    finally {
+        $script:ResolutionContext = $null
+    }
+}
+
 Export-ModuleMember -Function @(
     'Get-DependencyMetadata',
     'Resolve-MigrationManifest',
     'Test-ResolvedManifest',
     'Get-ResolvedManifestHash',
-    'Test-DependencyVersionRange'
+    'Test-DependencyVersionRange',
+    'Get-MigrationResolveDiagnostics'
 )

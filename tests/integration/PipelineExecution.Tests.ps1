@@ -160,6 +160,24 @@ try {
     $baselineRun = Invoke-MigrationRun -ProjectRoot $baselineRoot -RunId $baselineStart.data.runId
     Assert-Integration 'baseline failure blocks before branch creation' ($baselineRun.status -eq 'blocked' -and $baselineRun.error.code -eq 'baseline_check_failed' -and (Get-CurrentBranch -ProjectRoot $baselineRoot) -eq 'master' -and -not (Test-Path -LiteralPath (Join-Path $baselineRoot 'src/migrated-by-ng.ts')))
     Assert-Integration 'baseline failure releases ownership' (-not (Test-Path -LiteralPath (Join-Path $baselineRoot '.angular-migration/active.lock')))
+    $baselineEvents = Invoke-MigrationEvents -ProjectRoot $baselineRoot -RunId $baselineStart.data.runId
+    $baselineDiagnosis = Invoke-MigrationDiagnose -ProjectRoot $baselineRoot -RunId $baselineStart.data.runId
+    Assert-Integration 'events and diagnose are read-only recovery surfaces' ($baselineEvents.ok -and $baselineEvents.data.count -gt 0 -and $baselineDiagnosis.ok -and $baselineDiagnosis.data.status -eq 'blocked' -and $baselineDiagnosis.data.lastDiagnostic.code -eq 'baseline_check_failed' -and -not (Test-Path -LiteralPath (Join-Path $baselineRoot '.angular-migration/active.lock')))
+    try { Invoke-MigrationRetryStage -ProjectRoot $baselineRoot -RunId $baselineStart.data.runId -Stage 'baseline' | Out-Null; throw 'Expected confirmation_required' }
+    catch { Assert-Integration 'retry-stage requires explicit confirmation' ($_.Exception.Data['code'] -eq 'confirmation_required') }
+    Remove-Item -LiteralPath (Join-Path $baselineRoot '.fixture-fail-build') -Force
+    $baselineRetry = Invoke-MigrationRetryStage -ProjectRoot $baselineRoot -RunId $baselineStart.data.runId -Stage 'baseline' -Confirmed
+    Assert-Integration 'confirmed retry-stage resumes a blocked baseline' ($baselineRetry.status -eq 'verified' -and (Read-MigrationRunState -ProjectRoot $baselineRoot -RunId $baselineStart.data.runId).status -eq 'verified')
+
+    $abortRoot = Join-Path $temporaryRoot 'abort-blocked'
+    New-PipelineProject -Path $abortRoot
+    New-Item -ItemType File -Path (Join-Path $abortRoot '.fixture-fail-build') | Out-Null
+    $abortStart = Start-TestMigration -ProjectRoot $abortRoot
+    $abortInitial = Invoke-MigrationRun -ProjectRoot $abortRoot -RunId $abortStart.data.runId
+    $aborted = Invoke-MigrationAbort -ProjectRoot $abortRoot -RunId $abortStart.data.runId -Confirmed
+    $abortedState = Read-MigrationRunState -ProjectRoot $abortRoot -RunId $abortStart.data.runId
+    $abortedEvents = Invoke-MigrationEvents -ProjectRoot $abortRoot -RunId $abortStart.data.runId
+    Assert-Integration 'abort records a terminal recovery decision without discarding files' ($abortInitial.status -eq 'blocked' -and $aborted.status -eq 'blocked' -and $aborted.error.code -eq 'run_aborted' -and $abortedState.lastDiagnostic.code -eq 'run_aborted' -and @($abortedEvents.data.events | Where-Object type -eq 'run-aborted').Count -eq 1 -and -not (Test-Path -LiteralPath (Join-Path $abortRoot '.angular-migration/active.lock')))
 
     $branchRoot = Join-Path $temporaryRoot 'branch-exists'
     New-PipelineProject -Path $branchRoot
@@ -205,6 +223,8 @@ try {
     Remove-Item -LiteralPath (Join-Path $repairRoot '.fixture-fail-second-build') -Force
     $unregistered = Invoke-MigrationRun -ProjectRoot $repairRoot -RunId $repairStart.data.runId
     Assert-Integration 'run cannot resume without record-repair' ($unregistered.status -eq 'needs-repair')
+    try { Invoke-MigrationRetryStage -ProjectRoot $repairRoot -RunId $repairStart.data.runId -Stage 'validate' -Confirmed | Out-Null; throw 'Expected repair_required' }
+    catch { Assert-Integration 'retry-stage cannot bypass an active repair contract' ($_.Exception.Data['code'] -eq 'repair_required') }
     $context = (Invoke-MigrationRepairContext -ProjectRoot $repairRoot -RunId $repairStart.data.runId).data
     Add-Content -LiteralPath (Join-Path $repairRoot 'src/app.component.ts') -Value 'export const repaired = true;'
     $submission = [PSCustomObject]@{
@@ -254,6 +274,30 @@ try {
     [IO.File]::WriteAllText((Join-Path $recoveryRoot 'src/interrupted.ts'), 'interrupted')
     $recoveryRun = Invoke-MigrationRun -ProjectRoot $recoveryRoot -RunId $recoveryStart.data.runId
     Assert-Integration 'interrupted mutating operation rolls back and blocks' ($recoveryRun.status -eq 'blocked' -and $recoveryRun.error.code -eq 'interrupted_operation_rolled_back' -and -not (Test-Path -LiteralPath (Join-Path $recoveryRoot 'src/interrupted.ts')))
+
+    $publicRollbackRoot = Join-Path $temporaryRoot 'public-rollback'
+    New-PipelineProject -Path $publicRollbackRoot
+    $publicRollbackStart = Start-TestMigration -ProjectRoot $publicRollbackRoot
+    $publicRollbackState = Read-MigrationRunState -ProjectRoot $publicRollbackRoot -RunId $publicRollbackStart.data.runId
+    $publicRollbackBranch = 'migration/angular-7-to-8-' + $publicRollbackStart.data.runId.Substring($publicRollbackStart.data.runId.Length - 8)
+    & git -C $publicRollbackRoot switch -c $publicRollbackBranch $publicRollbackState.initialCommit | Out-Null
+    $publicRollbackState.stage = 'update-angular'
+    $publicRollbackState.stageRevision = 2
+    $publicRollbackState.baselineStatus = 'passed'
+    $publicRollbackState.resolutionStatus = 'resolved'
+    $publicRollbackState.migrationBranch = $publicRollbackBranch
+    $publicRollbackState.completedOperations = @('baseline', 'resolve-manifest', 'create-branch')
+    $publicRollbackState.activeOperation = [PSCustomObject]@{
+        id = 'update-angular'; stage = 'update-angular'; startedAt = Get-MigrationUtcNow
+        checkpointCommit = $publicRollbackState.initialCommit; expectedManifestSha256 = $null; preexistingFiles = @()
+    }
+    Write-MigrationRunState -ProjectRoot $publicRollbackRoot -RunId $publicRollbackStart.data.runId -State $publicRollbackState
+    [IO.File]::WriteAllText((Join-Path $publicRollbackRoot 'src/public-interrupted.ts'), 'interrupted')
+    $publicRollback = Invoke-MigrationRollback -ProjectRoot $publicRollbackRoot -RunId $publicRollbackStart.data.runId -Confirmed
+    $publicRollbackAfter = Read-MigrationRunState -ProjectRoot $publicRollbackRoot -RunId $publicRollbackStart.data.runId
+    $publicRollbackEvents = Invoke-MigrationEvents -ProjectRoot $publicRollbackRoot -RunId $publicRollbackStart.data.runId
+    $rollbackEvent = @($publicRollbackEvents.data.events | Where-Object type -eq 'rollback-verified' | Select-Object -Last 1)
+    Assert-Integration 'public rollback verifies inventory and emits rollback-verified' ($publicRollback.status -eq 'blocked' -and $publicRollback.error.code -eq 'rollback_verified' -and $publicRollbackAfter.activeOperation -eq $null -and -not (Test-Path -LiteralPath (Join-Path $publicRollbackRoot 'src/public-interrupted.ts')) -and $rollbackEvent.Count -eq 1 -and $rollbackEvent[0].data.headAfterRollback -eq $publicRollbackState.initialCommit -and $rollbackEvent[0].data.gitInventoryVerified -eq $true)
 
     $rollbackRoot = Join-Path $temporaryRoot 'rollback-inventory'
     New-PipelineProject -Path $rollbackRoot

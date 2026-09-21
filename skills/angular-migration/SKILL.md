@@ -23,6 +23,27 @@ y no ejecuta gates por su cuenta.
 
 ## Secuencia
 
+### Diagnostico previo read-only
+
+Antes de crear un run, puedes ejecutar el diagnostico exhaustivo para obtener todos
+los bloqueos de dependencias en una sola pasada:
+
+```powershell
+powershell -NoProfile -File <plugin-root>\scripts\angular-migration.ps1 resolve-diagnostics -TargetMajor <target> -ProjectRoot <ProjectRoot>
+```
+
+`resolve-diagnostics` no crea run, rama, estado, discovery persistente ni manifest;
+tampoco modifica `package.json`, el lockfile o el proyecto. Si devuelve
+`status=blocked` con `data.diagnostic`, presenta conjuntamente `conflicts`,
+`warnings` y `proposals`; cada elemento conserva su `package`, `stage`, `code` y
+`details` cuando corresponda. El informe incluye `inputFingerprint`,
+`discoverySha256`, `diagnosticSha256` y `queryEvents` para reproducir y verificar la
+consulta. Los conflictos se acumulan y se ordenan de forma determinista, por lo que
+no debes relanzar el comando para descubrir el siguiente bloqueo. Si el fingerprint
+cambia, vuelve a ejecutar el diagnostico antes de usar sus decisiones. Un resultado
+`status=ready` solo indica que la propuesta read-only no encontro conflictos; aun asi
+debes ejecutar `discover` antes de `start`.
+
 1. Determina la major objetivo. Si la peticion no la incluye, ejecuta `inspect` solo
    para leer `data.angular.currentMajor` y usa exactamente la major siguiente; `inspect`
    no sustituye a `discover`. Ejecuta despues `discover` antes de crear cualquier run:

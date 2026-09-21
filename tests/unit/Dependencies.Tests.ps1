@@ -2,6 +2,16 @@
 $ErrorActionPreference = 'Stop'
 $modulePath = Join-Path $PSScriptRoot '../../scripts/modules/Migration.Dependencies.psm1'
 Import-Module $modulePath -Force -DisableNameChecking
+
+try {
+    Test-DependencyVersionRange -Version '1.0.0' -Range 'workspace:*' | Out-Null
+    throw 'Unsupported semver range was accepted'
+}
+catch {
+    if ($_.Exception.Data['code'] -ne 'semver_range_unsupported') { throw }
+}
+Write-Host 'PASS unsupported semver ranges are classified explicitly'
+
 $fixtureRoot = (Resolve-Path (Join-Path $PSScriptRoot '../fixtures/registry')).Path
 $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('migration-dependencies-' + [guid]::NewGuid().ToString('N'))
 $tracePath = Join-Path $temporaryRoot 'trace.log'
@@ -131,6 +141,24 @@ try {
     Save-CompleteResponses
     $requiredResolved = Resolve-MigrationManifest -PendingManifest $requiredPending -ProjectRoot $temporaryRoot
     if ($requiredResolved.status -ne 'blocked' -or $requiredResolved.diagnostic.code -ne 'peer_dependency_conflict') { throw 'Missing mandatory peer did not block' }
+    $ignoredPending = Get-PendingCopy -Value $requiredPending
+    $ignoredPending.policies = [PSCustomObject]@{ peerExceptions = @([PSCustomObject]@{ package = 'mandatory-package'; version = '1.0.0'; ignoredPeers = @('required-peer'); reason = 'Internal package compatibility is validated separately'; scope = 'run' }) }
+    $ignoredResolved = Resolve-MigrationManifest -PendingManifest $ignoredPending -ProjectRoot $temporaryRoot
+    if ($ignoredResolved.status -ne 'resolved' -or @($ignoredResolved.manifest.warnings | Where-Object { $_.code -eq 'ignored_peer_dependency' -and $_.peer -eq 'required-peer' }).Count -ne 1) { throw 'Named peer exception did not preserve other peer checks' }
+    $promotionPending = Get-PendingCopy -Value $requiredPending
+    $promotionPending.policies = [PSCustomObject]@{ transitivePeerPromotions = @([PSCustomObject]@{ package = 'required-peer'; section = 'dependencies'; reason = 'Required locked peer promotion' }) }
+    $responses['required-peer@1.0.0'] = [ordered]@{ version = '1.0.0'; peerDependencies = @{}; peerDependenciesMeta = @{}; engines = @{}; deprecated = $false; 'dist-tags' = @{} }
+    $lock.dependencies['required-peer'] = @{ version = '1.0.0' }
+    $lock | ConvertTo-Json -Depth 50 | Set-Content -LiteralPath (Join-Path $temporaryRoot 'package-lock.json') -Encoding UTF8
+    Save-CompleteResponses
+    $promotionResolved = Resolve-MigrationManifest -PendingManifest $promotionPending -ProjectRoot $temporaryRoot
+    $promoted = @($promotionResolved.manifest.dependencies | Where-Object name -eq 'required-peer')
+    if ($promotionResolved.status -ne 'resolved' -or $promoted.Count -ne 1 -or $promoted[0].change -ne 'added-required-tooling' -or $promoted[0].targetVersion -ne '1.0.0') { throw 'Compatible locked transitive peer was not promoted' }
+    $deprecatedMetadata = [ordered]@{ version = '1.4.0'; candidates = @([ordered]@{ version = '1.4.0'; deprecated = $true; peerDependencies = @{}; peerDependenciesMeta = @{}; engines = @{}; 'dist-tags' = @{} }); peerDependencies = @{}; peerDependenciesMeta = @{}; engines = @{}; deprecated = $true; 'dist-tags' = @{} }
+    $deprecatedPending = Add-DependencyCase -Name 'deprecated-ordinary' -Spec '^1.0.0' -CurrentVersion '1.0.0' -Metadata $deprecatedMetadata
+    Save-CompleteResponses
+    $deprecatedResolved = Resolve-MigrationManifest -PendingManifest $deprecatedPending -ProjectRoot $temporaryRoot
+    if ($deprecatedResolved.status -ne 'resolved' -or @($deprecatedResolved.manifest.warnings | Where-Object code -eq 'deprecated_ordinary_dependency').Count -ne 1) { throw 'Existing deprecated ordinary dependency did not produce a warning' }
 
     $unsupportedPending = Get-PendingCopy -Value $pending
     $unsupportedPending.dependencies = @($unsupportedPending.dependencies + [PSCustomObject]@{ name = 'git-package'; section = 'dependencies'; role = 'runtime'; spec = 'git+https://example.invalid/repo.git'; kind = 'git' })
@@ -187,6 +215,38 @@ try {
 
     try { Get-DependencyMetadata -PackageName 'ordinary' -VersionSelector '--forbidden' -ProjectRoot $temporaryRoot | Out-Null; throw 'Forbidden npm selector was accepted' }
     catch { if ($_.Exception.Data['code'] -ne 'registry_metadata_invalid') { throw } }
+
+    $diagnosticPending = Get-PendingCopy -Value $pending
+    $diagnosticPending | Add-Member -NotePropertyName inputFingerprint -NotePropertyValue ('sha256:' + (('a' * 64) -join ''))
+    $diagnosticPending.dependencies = @($diagnosticPending.dependencies +
+        [PSCustomObject]@{ name = 'missing-diagnostic'; section = 'dependencies'; role = 'runtime'; spec = '^1.0.0'; kind = 'registry' } +
+        [PSCustomObject]@{ name = 'unsupported-diagnostic'; section = 'dependencies'; role = 'runtime'; spec = 'git+https://example.invalid/repo.git'; kind = 'git' })
+    $responses['@angular/cli@8'].engines = [ordered]@{ node = 'workspace:*' }
+    Save-CompleteResponses
+    $lockPath = Join-Path $temporaryRoot 'package-lock.json'
+    $packagePath = Join-Path $temporaryRoot 'package.json'
+    $lockHashBefore = (Get-FileHash -LiteralPath $lockPath -Algorithm SHA256).Hash
+    $packageBefore = if (Test-Path -LiteralPath $packagePath -PathType Leaf) { (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash } else { $null }
+    $migrationBefore = Test-Path -LiteralPath (Join-Path $temporaryRoot '.angular-migration')
+    $diagnosticFirst = Get-MigrationResolveDiagnostics -PendingManifest $diagnosticPending -ProjectRoot $temporaryRoot
+    $diagnosticSecond = Get-MigrationResolveDiagnostics -PendingManifest $diagnosticPending -ProjectRoot $temporaryRoot
+    if ($diagnosticFirst.status -ne 'blocked' -or $null -eq $diagnosticFirst.diagnostic) { throw 'Exhaustive diagnostics did not return its accumulated report' }
+    $diagnosticCodes = @($diagnosticFirst.diagnostic.conflicts | Select-Object -ExpandProperty code)
+    if ($diagnosticCodes -notcontains 'dependency_not_locked' -or $diagnosticCodes -notcontains 'unsupported_dependency_spec' -or $diagnosticCodes -notcontains 'semver_range_unsupported') { throw 'Independent diagnostic conflicts were not accumulated' }
+    $diagnosticPackages = @($diagnosticFirst.diagnostic.conflicts | Select-Object -ExpandProperty package)
+    if ((($diagnosticPackages | Sort-Object) -join '|') -cne (($diagnosticFirst.diagnostic.conflicts | Sort-Object package, stage, code, message | Select-Object -ExpandProperty package) -join '|')) { throw 'Diagnostic conflicts were not deterministically sorted' }
+    if ($diagnosticFirst.diagnostic.inputFingerprint -cne $diagnosticPending.inputFingerprint) { throw 'Diagnostic input fingerprint was not preserved' }
+    if ($diagnosticFirst.diagnostic.diagnosticSha256 -cne (Get-ResolvedManifestHash -Manifest $diagnosticFirst.diagnostic -ExcludedProperty 'diagnosticSha256')) { throw 'Diagnostic hash is not self-consistent' }
+    if (($diagnosticFirst.diagnostic | ConvertTo-Json -Depth 100 -Compress) -cne ($diagnosticSecond.diagnostic | ConvertTo-Json -Depth 100 -Compress)) { throw 'Diagnostic output was not deterministic' }
+    $packageHashAfter = if (Test-Path -LiteralPath $packagePath -PathType Leaf) { (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash } else { $null }
+    if ((Get-FileHash -LiteralPath $lockPath -Algorithm SHA256).Hash -cne $lockHashBefore -or
+        $packageHashAfter -cne $packageBefore -or
+        (Test-Path -LiteralPath (Join-Path $temporaryRoot '.angular-migration')) -ne $migrationBefore) { throw 'Read-only diagnostics mutated project or migration artifacts' }
+    $malformedPending = Get-PendingCopy -Value $diagnosticPending
+    $malformedPending.policies = [PSCustomObject]@{ peerExceptions = [PSCustomObject]@{ package = 'broken' } }
+    $malformedDiagnostic = Get-MigrationResolveDiagnostics -PendingManifest $malformedPending -ProjectRoot $temporaryRoot
+    if ($malformedDiagnostic.status -ne 'blocked' -or $malformedDiagnostic.error.code -ne 'policy_invalid') { throw 'Malformed diagnostic policy did not fail closed' }
+    Write-Host 'PASS exhaustive diagnostics accumulation, determinism, hash and read-only contract'
     Write-Host 'PASS Angular 7 to 8 resolution, alignment, peers, writeSpec and canonical hash'
 }
 finally {

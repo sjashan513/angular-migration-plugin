@@ -3,6 +3,7 @@ Set-StrictMode -Version 2.0
 Import-Module (Join-Path $PSScriptRoot 'Migration.Core.psm1') -DisableNameChecking
 
 $script:CheckTimeouts = [ordered]@{ install = 900; 'dependency-tree' = 300; typecheck = 600; lint = 600; 'unit-test' = 900; build = 1200; e2e = 1800 }
+$script:CheckInactivityTimeoutSeconds = 300
 
 function Get-ProjectProperty {
     param(
@@ -171,6 +172,13 @@ function Get-DependencyInventory {
         $policy = Get-ProjectProperty -Object $Package -Name $policyName
         if ($null -ne $policy) { $policies[$policyName] = $policy }
     }
+    $migrationPolicy = Get-ProjectProperty -Object $Package -Name 'angularMigration'
+    if ($migrationPolicy) {
+        foreach ($policyName in @('peerExceptions', 'transitivePeerPromotions')) {
+            $policy = Get-ProjectProperty -Object $migrationPolicy -Name $policyName
+            if ($null -ne $policy) { $policies[$policyName] = $policy }
+        }
+    }
 
     return [PSCustomObject]@{
         items    = @($items)
@@ -322,7 +330,7 @@ function Invoke-ProjectCheck {
 
     $context = Assert-ProjectCheck -Check $Check -LogDirectory $LogDirectory
     $result = [PSCustomObject]@{
-        id = $Check.id; status = $Check.status; exitCode = $null; timedOut = $false
+        id = $Check.id; status = $Check.status; exitCode = $null; timedOut = $false; processStalled = $false; terminationReason = $null
         startedAt = $null; finishedAt = $null; durationMs = 0
         stdoutLog = $null; stderrLog = $null; diagnosticSummary = $Check.reason
         executable = $null
@@ -343,17 +351,20 @@ function Invoke-ProjectCheck {
     $timer = [Diagnostics.Stopwatch]::StartNew()
     try {
         if ($FnmPath -and $NodeVersion) {
-            $process = Invoke-MigrationNodeProcess -FnmPath $FnmPath -NodeVersion $NodeVersion -Executable 'npm' -Arguments $Check.arguments -WorkingDirectory $context.projectRoot -TimeoutSeconds $Check.timeoutSeconds
+            $process = Invoke-MigrationNodeProcess -FnmPath $FnmPath -NodeVersion $NodeVersion -Executable 'npm' -Arguments $Check.arguments -WorkingDirectory $context.projectRoot -TimeoutSeconds $Check.timeoutSeconds -InactivityTimeoutSeconds $script:CheckInactivityTimeoutSeconds
         }
         else {
-            $process = Invoke-MigrationProcess -FilePath $npm -Arguments $Check.arguments -WorkingDirectory $context.projectRoot -TimeoutSeconds $Check.timeoutSeconds
+            $process = Invoke-MigrationProcess -FilePath $npm -Arguments $Check.arguments -WorkingDirectory $context.projectRoot -TimeoutSeconds $Check.timeoutSeconds -InactivityTimeoutSeconds $script:CheckInactivityTimeoutSeconds
         }
         [IO.File]::WriteAllText((Join-Path $context.runRoot $result.stdoutLog), [string]$process.stdout, (New-Object Text.UTF8Encoding($false)))
         [IO.File]::WriteAllText((Join-Path $context.runRoot $result.stderrLog), [string]$process.stderr, (New-Object Text.UTF8Encoding($false)))
         $result.exitCode = $process.exitCode
         $result.timedOut = [bool]$process.timedOut
+        $result.processStalled = [bool]$process.processStalled
+        $result.terminationReason = [string]$process.terminationReason
         $result.status = if ($process.timedOut) { 'timed-out' } elseif ($process.exitCode -eq 0) { 'passed' } else { 'failed' }
-        if ($result.status -ne 'passed') { $result.diagnosticSummary = "Check $($Check.id) ended with status $($result.status); see the check logs." }
+        if ($result.processStalled) { $result.diagnosticSummary = "Check $($Check.id) stalled due to inactivity; see the check logs." }
+        elseif ($result.status -ne 'passed') { $result.diagnosticSummary = "Check $($Check.id) ended with status $($result.status); see the check logs." }
     }
     finally {
         $timer.Stop()
@@ -682,6 +693,72 @@ function Test-ProjectRelativeFile {
     return Test-Path -LiteralPath (Join-Path $ProjectRoot ($normalized -replace '/', [IO.Path]::DirectorySeparatorChar)) -PathType Leaf
 }
 
+function Get-ProjectAngularTsConfigPaths {
+    param([AllowNull()]$AngularProjects)
+
+    $paths = New-Object 'System.Collections.Generic.List[string]'
+    $walk = $null
+    $walk = {
+        param($Value)
+        if ($null -eq $Value -or $Value -is [string] -or $Value -is [ValueType]) { return }
+        if ($Value -is [Collections.IEnumerable] -and $Value -isnot [Collections.IDictionary]) {
+            foreach ($item in @($Value)) { & $walk $item }
+            return
+        }
+        foreach ($entry in @(Get-ProjectObjectEntries -Object $Value)) {
+            if ([string]$entry.Name -ieq 'tsConfig') {
+                $values = if ($entry.Value -is [Collections.IEnumerable] -and $entry.Value -isnot [string]) { @($entry.Value) } else { @($entry.Value) }
+                foreach ($candidate in $values) {
+                    if ($candidate -isnot [string]) { continue }
+                    $path = ([string]$candidate).Replace('\', '/')
+                    while ($path.StartsWith('./')) { $path = $path.Substring(2) }
+                    if (-not [string]::IsNullOrWhiteSpace($path) -and $path -notmatch '^(?:[A-Za-z]:/|/)' -and $path -notmatch '(^|/)\.\.(?:/|$)' -and -not $paths.Contains($path)) {
+                        [void]$paths.Add($path)
+                    }
+                }
+            }
+            & $walk $entry.Value
+        }
+    }
+    & $walk $AngularProjects
+    return @($paths | Sort-Object)
+}
+
+function Get-ProjectTsConfigChain {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$Paths
+    )
+
+    $root = Resolve-MigrationRoot -Path $ProjectRoot
+    $queue = New-Object 'System.Collections.Generic.Queue[string]'
+    $seen = @{}
+    $result = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($relative in @($Paths)) {
+        if (-not [string]::IsNullOrWhiteSpace($relative)) { $queue.Enqueue(([string]$relative).Replace('\', '/')) }
+    }
+    while ($queue.Count -gt 0) {
+        $relative = $queue.Dequeue()
+        if ($seen.ContainsKey($relative)) { continue }
+        $seen[$relative] = $true
+        [void]$result.Add($relative)
+        $path = Join-Path $root ($relative -replace '/', [IO.Path]::DirectorySeparatorChar)
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+        try { $config = Read-MigrationJson -Path $path -Required } catch { continue }
+        $extends = Get-ProjectProperty -Object $config -Name 'extends'
+        if ($extends -isnot [string]) { continue }
+        $base = [string]$extends
+        if (-not $base.StartsWith('.')) { continue }
+        $basePath = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $path) ($base -replace '/', [IO.Path]::DirectorySeparatorChar)))
+        if ([IO.Path]::GetExtension($basePath) -eq '') { $basePath += '.json' }
+        $rootPrefix = $root.TrimEnd([char[]]@('\', '/')) + [IO.Path]::DirectorySeparatorChar
+        if (-not $basePath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        $baseRelative = $basePath.Substring($rootPrefix.Length).Replace('\', '/')
+        if (-not $seen.ContainsKey($baseRelative)) { $queue.Enqueue($baseRelative) }
+    }
+    return @($result | Sort-Object)
+}
+
 function New-ProjectPreflightFileFinding {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
@@ -753,6 +830,12 @@ function Get-ProjectPreflightFiles {
             present    = $detected.Count -gt 0
             status     = if ($detected.Count -gt 0) { 'present' } elseif ($configured) { 'missing' } else { 'not-found' }
         }
+    }
+    $angularTsConfigs = @(Get-ProjectAngularTsConfigPaths -AngularProjects $AngularProjects)
+    $referencedTsConfigs = @(Get-ProjectTsConfigChain -ProjectRoot $ProjectRoot -Paths $angularTsConfigs)
+    $knownPaths = @($findings | ForEach-Object { $_.candidates } | ForEach-Object { [string]$_ })
+    foreach ($relative in @($referencedTsConfigs | Where-Object { $_ -notin $knownPaths })) {
+        $findings += New-ProjectPreflightFileFinding -ProjectRoot $ProjectRoot -Id $(if ($relative -in $angularTsConfigs) { 'angular-referenced-tsconfig' } else { 'typescript-extends-config' }) -Purpose $(if ($relative -in $angularTsConfigs) { 'Angular workspace TypeScript configuration' } else { 'TypeScript extends configuration' }) -Candidates @([string]$relative) -Required $true
     }
     return @($findings)
 }
@@ -894,6 +977,8 @@ function Get-ProjectInspection {
     $configurations = @(Get-ChildItem -LiteralPath $root -File | Where-Object {
             $_.Name -match '^(?:\.eslintrc(?:\..+)?|eslint\.config\..+|tslint\.json|karma\.conf\..+|jest\.config\..+|cypress\.config\..+|cypress\.json)$'
         } | Select-Object -ExpandProperty Name)
+    $referencedTsConfigs = @(Get-ProjectTsConfigChain -ProjectRoot $root -Paths @(Get-ProjectAngularTsConfigPaths -AngularProjects $angularProjects))
+    $configurations = @($configurations + $referencedTsConfigs | Sort-Object -Unique)
     $builders = @()
     if ($angularProjects) {
         foreach ($project in $angularProjects.PSObject.Properties) {

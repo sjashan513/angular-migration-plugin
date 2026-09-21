@@ -5,6 +5,7 @@ param(
     [Parameter(Mandatory = $true, Position = 0)][string]$Command,
     [int]$TargetMajor = 0,
     [string]$RunId,
+    [ValidateSet('baseline', 'resolve', 'update-angular', 'update-dependencies', 'install', 'validate')][string]$Stage,
     [string]$CheckId,
     [string]$Reason,
     [string]$ProposalHash,
@@ -56,10 +57,16 @@ try {
     $result = switch ($commandName) {
         'inspect' { Invoke-InspectMigration -ProjectRoot $projectRoot }
         'preflight' { Invoke-MigrationPreflight -ProjectRoot $projectRoot }
+        'resolve-diagnostics' { Invoke-MigrationResolveDiagnostics -ProjectRoot $projectRoot -TargetMajor $TargetMajor }
         'discover' { Invoke-MigrationDiscover -ProjectRoot $projectRoot -TargetMajor $TargetMajor }
         'approve-runtime-install' { Invoke-ApproveMigrationRuntimeInstall -ProjectRoot $projectRoot -TargetMajor $TargetMajor -ProposalHash $ProposalHash -Confirmed:$Confirmed }
         'start' { Invoke-StartMigration -ProjectRoot $projectRoot -TargetMajor $TargetMajor }
         'status' { Invoke-MigrationStatus -ProjectRoot $projectRoot -RunId $RunId }
+        'events' { Invoke-MigrationEvents -ProjectRoot $projectRoot -RunId $RunId }
+        'diagnose' { Invoke-MigrationDiagnose -ProjectRoot $projectRoot -RunId $RunId }
+        'retry-stage' { Invoke-MigrationRetryStage -ProjectRoot $projectRoot -RunId $RunId -Stage $Stage -Confirmed:$Confirmed }
+        'abort' { Invoke-MigrationAbort -ProjectRoot $projectRoot -RunId $RunId -Confirmed:$Confirmed }
+        'rollback' { Invoke-MigrationRollback -ProjectRoot $projectRoot -RunId $RunId -Confirmed:$Confirmed }
         'run' { Invoke-MigrationRun -ProjectRoot $projectRoot -RunId $RunId }
         'baseline-dependency-context' { Invoke-MigrationBaselineDependencyContext -ProjectRoot $projectRoot -RunId $RunId }
         'approve-baseline-dependencies' { Invoke-ApproveMigrationBaselineDependencies -ProjectRoot $projectRoot -RunId $RunId -ProposalHash $ProposalHash -Confirmed:$Confirmed }
@@ -70,7 +77,7 @@ try {
         'documentation-context' { Invoke-DocumentationContext -ProjectRoot $projectRoot -RunId $RunId -Mode $Mode }
         'record-documentation' { Invoke-RecordDocumentation -ProjectRoot $projectRoot -RunId $RunId -Mode $Mode -InputFile $InputFile }
         default {
-            Throw-MigrationError -Code 'unsupported_command' -Message "Unsupported v5 command: $Command" -Status blocked -Details ([PSCustomObject]@{ supported = @('inspect', 'preflight', 'discover', 'approve-runtime-install', 'start', 'status', 'baseline-dependency-context', 'approve-baseline-dependencies', 'skip-check', 'skip-checks', 'run', 'repair-context', 'record-repair', 'documentation-context', 'record-documentation') })
+            Throw-MigrationError -Code 'unsupported_command' -Message "Unsupported v5 command: $Command" -Status blocked -Details ([PSCustomObject]@{ supported = @('inspect', 'preflight', 'resolve-diagnostics', 'discover', 'approve-runtime-install', 'start', 'status', 'events', 'diagnose', 'retry-stage', 'abort', 'rollback', 'baseline-dependency-context', 'approve-baseline-dependencies', 'skip-check', 'skip-checks', 'run', 'repair-context', 'record-repair', 'documentation-context', 'record-documentation') })
         }
     }
 

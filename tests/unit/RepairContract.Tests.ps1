@@ -39,6 +39,18 @@ $pipeline = Get-Module Migration.Pipeline
     finally { Remove-Item -LiteralPath $secretRoot -Recurse -Force }
     if (-not (Test-RepairGlob 'src/app.ts' 'src/**/*') -or -not (Test-RepairGlob 'src/app/a.ts' 'src/**/*')) { throw 'Recursive glob must include direct children' }
     if (Test-RepairAllowedPath 'package.json' ([PSCustomObject]@{ allowedPaths = @('**'); forbiddenPaths = @('package.json') })) { throw 'Forbidden must prevail' }
+    $schema = Read-MigrationJson -Path (Join-Path $PSScriptRoot '../../schemas/repair-context.schema.json') -Required
+    $invalidContext = [PSCustomObject]@{
+        schemaVersion = 1; runId = 'angular-7-to-8-test'; sourceMajor = 7; targetMajor = 8; status = 'needs-repair'; stage = 'validate'; failedCheck = 'build'
+        fingerprint = 'sha256:' + ('a' * 64); attempt = 1; maxAttempts = 3; checkpointCommit = ('a' * 40); historyCheckpointCommit = ('a' * 40)
+        manifestSha256 = ('b' * 64); allowedPaths = @(); forbiddenPaths = @('package.json')
+        diagnostic = [PSCustomObject]@{ summary = 'Build failed.'; exitCode = 1; logFiles = @(); relatedFiles = @(); warnings = @() }
+        history = [PSCustomObject]@{ path = '.angular-migration/runs/angular-7-to-8-test/repair-history/' + ('a' * 64) + '/repair.jsonl'; entryCount = 1; previousAttempts = 0; lastOutcome = $null }
+        submissionPath = '.angular-migration/runs/angular-7-to-8-test/inbox/repair.json'
+    }
+    $schemaRejected = $false
+    try { & $pipeline { param($Value, $Contract) Assert-MigrationJsonSchemaValue -Value $Value -Schema $Contract -RootSchema $Contract -Path '$' } $invalidContext $schema } catch { $schemaRejected = $true }
+    if (-not $schemaRejected) { throw 'Repair context schema must reject an empty allowedPaths array' }
     foreach ($invalid in @('src/../package.json', 'src/file.ts:stream', 'src/file.ts.', 'src/CON')) {
         $rejected = $false
         try { Resolve-RepairPath $root $invalid | Out-Null } catch { $rejected = $true }

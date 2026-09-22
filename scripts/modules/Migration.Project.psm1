@@ -198,6 +198,15 @@ function Get-NpmScripts {
     return $result
 }
 
+function Get-ProjectRegistryUri {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value) -or $Value -match '[\r\n]') { return $null }
+    try { $uri = [Uri]$Value } catch { return $null }
+    if (-not $uri.IsAbsoluteUri -or $uri.Scheme -cne 'https' -or $uri.UserInfo -or $uri.Query -or $uri.Fragment) { return $null }
+    return $uri
+}
+
 function Find-NpmScript {
     param(
         [Parameter(Mandatory = $true)][hashtable]$Scripts,
@@ -219,13 +228,13 @@ function Get-ProjectChecks {
 
     $scripts = Get-NpmScripts -Package $Package
     $checks = @()
-    $installArguments = @('ci')
+    $installArguments = @('ci') + @(Get-MigrationNpmRegistryArguments)
     $checks += [PSCustomObject]@{
         id             = 'install'
         status         = if ($HasLockfile) { 'configured' } else { 'blocked' }
         executable     = 'npm'
         arguments      = @($installArguments)
-        displayCommand = 'npm ci'
+        displayCommand = 'npm ci --registry https://registry.npmjs.org/'
         cwd            = $ProjectRoot
         reason         = if ($HasLockfile) { $null } else { 'package-lock.json is required for the supported npm workflow' }
     }
@@ -233,8 +242,8 @@ function Get-ProjectChecks {
         id             = 'dependency-tree'
         status         = if ($HasLockfile) { 'configured' } else { 'blocked' }
         executable     = 'npm'
-        arguments      = @('ls', '--all')
-        displayCommand = 'npm ls --all'
+        arguments      = @('ls', '--all') + @(Get-MigrationNpmRegistryArguments)
+        displayCommand = 'npm ls --all --registry https://registry.npmjs.org/'
         cwd            = $ProjectRoot
         reason         = if ($HasLockfile) { $null } else { 'package-lock.json is required for the supported npm workflow' }
     }
@@ -356,12 +365,12 @@ function Invoke-ProjectCheck {
         else {
             $process = Invoke-MigrationProcess -FilePath $npm -Arguments $Check.arguments -WorkingDirectory $context.projectRoot -TimeoutSeconds $Check.timeoutSeconds -InactivityTimeoutSeconds $script:CheckInactivityTimeoutSeconds
         }
-        [IO.File]::WriteAllText((Join-Path $context.runRoot $result.stdoutLog), [string]$process.stdout, (New-Object Text.UTF8Encoding($false)))
-        [IO.File]::WriteAllText((Join-Path $context.runRoot $result.stderrLog), [string]$process.stderr, (New-Object Text.UTF8Encoding($false)))
+        [IO.File]::WriteAllText((Join-Path $context.runRoot $result.stdoutLog), (ConvertTo-MigrationRedactedText $process.stdout), (New-Object Text.UTF8Encoding($false)))
+        [IO.File]::WriteAllText((Join-Path $context.runRoot $result.stderrLog), (ConvertTo-MigrationRedactedText $process.stderr), (New-Object Text.UTF8Encoding($false)))
         $result.exitCode = $process.exitCode
         $result.timedOut = [bool]$process.timedOut
-        $result.processStalled = [bool]$process.processStalled
-        $result.terminationReason = [string]$process.terminationReason
+        $result.processStalled = if ($process.PSObject.Properties['processStalled']) { [bool]$process.processStalled } else { $false }
+        $result.terminationReason = if ($process.PSObject.Properties['terminationReason']) { [string]$process.terminationReason } else { if ($result.timedOut) { 'timeout' } else { 'completed' } }
         $result.status = if ($process.timedOut) { 'timed-out' } elseif ($process.exitCode -eq 0) { 'passed' } else { 'failed' }
         if ($result.processStalled) { $result.diagnosticSummary = "Check $($Check.id) stalled due to inactivity; see the check logs." }
         elseif ($result.status -ne 'passed') { $result.diagnosticSummary = "Check $($Check.id) ended with status $($result.status); see the check logs." }
@@ -881,6 +890,39 @@ function Get-ProjectInspection {
         }
         if ($null -ne (Get-ProjectProperty -Object $package -Name 'workspaces')) {
             $errors += [PSCustomObject]@{ code = 'workspaces_not_supported'; message = 'npm workspaces are not supported by this migration controller' }
+        }
+    }
+    $privateDependencies = @($inventory.items | Where-Object { [string]$_.name -match '^@ips(?:/|$)' })
+    $npmrcPath = Join-Path $root '.npmrc'
+    $npmrcLines = if (Test-Path -LiteralPath $npmrcPath -PathType Leaf) { [IO.File]::ReadAllLines($npmrcPath) } else { @() }
+    $ipsRegistry = $null
+    foreach ($line in @($npmrcLines)) {
+        if ([string]$line -match '^\s*@ips:registry\s*=\s*(\S+)\s*$') { $ipsRegistry = [string]$Matches[1]; break }
+    }
+    $credentialLine = @($npmrcLines | Where-Object {
+            $_ -match '(?i)(?:_authToken|_auth|password)\s*=' -and
+            $_ -notmatch '\$\{[A-Za-z_][A-Za-z0-9_]*\}'
+        })
+    if ($credentialLine.Count -gt 0) {
+        $errors += [PSCustomObject]@{ code = 'npmrc_credentials_present'; message = 'Project .npmrc contains a credential; use an environment-backed token in user/CI configuration.' }
+    }
+    if ($privateDependencies.Count -gt 0) {
+        if ([string]::IsNullOrWhiteSpace($ipsRegistry)) {
+            $errors += [PSCustomObject]@{ code = 'private_registry_scope_missing'; message = 'Dependencies in the @ips scope require an explicit @ips:registry entry in .npmrc.' }
+        }
+        else {
+            $projectRegistry = Get-ProjectRegistryUri -Value $ipsRegistry
+            $trustedRegistryValue = [Environment]::GetEnvironmentVariable('MIGRATION_IPS_REGISTRY')
+            $trustedRegistry = Get-ProjectRegistryUri -Value $trustedRegistryValue
+            if ($null -eq $projectRegistry -or $ipsRegistry -match '(?i)registry\.npmjs\.org') {
+                $errors += [PSCustomObject]@{ code = 'private_registry_scope_invalid'; message = 'The @ips:registry entry must be an HTTPS private registry without embedded credentials.' }
+            }
+            elseif ($null -eq $trustedRegistry) {
+                $errors += [PSCustomObject]@{ code = 'private_registry_trust_missing'; message = 'MIGRATION_IPS_REGISTRY must identify the trusted @ips registry before private dependencies can run.' }
+            }
+            elseif ($projectRegistry.AbsoluteUri.TrimEnd('/') -cne $trustedRegistry.AbsoluteUri.TrimEnd('/')) {
+                $errors += [PSCustomObject]@{ code = 'private_registry_scope_untrusted'; message = 'The project @ips:registry does not match the trusted MIGRATION_IPS_REGISTRY value.' }
+            }
         }
     }
     $coreSpec = $null

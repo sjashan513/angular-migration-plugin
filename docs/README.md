@@ -17,7 +17,10 @@ Se considera ya implementado y fuera del trabajo restante:
 - detección de proyecto Angular CLI npm en la raíz;
 - inventario de dependencias directas;
 - descubrimiento inicial de checks;
-- salto obligatorio `N -> N+1`;
+- transiciones soportadas Angular 7 -> 8, 8 -> 9 y 9 -> 10, siempre un salto
+  `N -> N+1` por run;
+- routing explícito: registry público para paquetes no scoped y `@ips:registry`
+  HTTPS obligatorio para dependencias `@ips/*`, sin fallback;
 - working tree Git limpio;
 - `.angular-migration/` ignorado por Git;
 - lock exclusivo por proyecto;

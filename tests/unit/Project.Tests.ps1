@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot '../../scripts/modules/Migration.Project.psm1') -Force -DisableNameChecking
 $root = Join-Path ([IO.Path]::GetTempPath()) ('migration-project-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $root | Out-Null
+$originalIpsRegistry = $env:MIGRATION_IPS_REGISTRY
 try {
     foreach ($version in @(1, 2, 3)) {
         $lock = if ($version -eq 1) {
@@ -26,10 +27,25 @@ try {
     $inspection = Get-ProjectInspection -ProjectRoot $root
     if ($inspection.angular.resolvedCoreVersion -ne '7.2.16' -or $inspection.angular.declaredCoreSpec -ne '^7.2.0' -or -not $inspection.ready) { throw 'Inspection must preserve declared and resolved versions' }
     $checks = $inspection.checks
+    if (($checks[0].arguments -join ' ') -ne 'ci --registry https://registry.npmjs.org/' -or
+        ($checks[1].arguments -join ' ') -ne 'ls --all --registry https://registry.npmjs.org/') { throw 'Public npm registry routing is not explicit' }
     if (($checks.id -join ',') -ne 'install,dependency-tree,typecheck,lint,unit-test,build,e2e') { throw 'Invalid check order' }
     if (($checks.timeoutSeconds -join ',') -ne '900,300,600,600,900,1200,1800') { throw 'Invalid check timeouts' }
     if ($checks[2].arguments[1] -ne 'typecheck' -or $checks[4].arguments[1] -ne 'test:unit' -or $checks[6].arguments[1] -ne 'test:e2e') { throw 'Script priority mismatch' }
     if ($checks[3].status -ne 'not-configured' -or $checks[5].displayCommand -ne 'npm run build' -or $checks[5].phase -ne 'baseline' -or -not $checks[5].blocking) { throw 'Invalid structured check contract' }
+    '{"dependencies":{"@angular/core":"^7.2.0","@ips/internal-ui":"1.0.0"}}' | Set-Content (Join-Path $root 'package.json')
+    Remove-Item -LiteralPath (Join-Path $root '.npmrc') -Force -ErrorAction SilentlyContinue
+    $inspection = Get-ProjectInspection -ProjectRoot $root
+    if ($inspection.blockers.code -notcontains 'private_registry_scope_missing') { throw 'Missing @ips scoped registry was not blocked' }
+    '@ips:registry=https://packages.example.invalid/' | Set-Content (Join-Path $root '.npmrc')
+    $env:MIGRATION_IPS_REGISTRY = 'https://packages.example.invalid/'
+    $inspection = Get-ProjectInspection -ProjectRoot $root
+    if ($inspection.blockers.code -contains 'private_registry_scope_missing' -or $inspection.blockers.code -contains 'private_registry_scope_invalid') { throw 'Valid @ips scoped registry was blocked' }
+    @('@ips:registry=https://packages.example.invalid/', '//packages.example.invalid/:_authToken=plain-token') | Set-Content (Join-Path $root '.npmrc')
+    $inspection = Get-ProjectInspection -ProjectRoot $root
+    if ($inspection.blockers.code -notcontains 'npmrc_credentials_present') { throw 'Project npm credentials were not blocked' }
+    Remove-Item -LiteralPath (Join-Path $root '.npmrc') -Force
+    '{"dependencies":{"@angular/core":"^7.2.0"},"scripts":{"build":"echo build","type-check":"echo types","typecheck":"echo preferred","test":"echo test","test:unit":"echo preferred","test:e2e":"echo e2e","cy:run":"echo other"}}' | Set-Content (Join-Path $root 'package.json')
     $policyPackage = Get-ProjectPackage -ProjectRoot $root
     $policyPackage | Add-Member -NotePropertyName angularMigration -NotePropertyValue ([PSCustomObject]@{
             peerExceptions = @([PSCustomObject]@{ package = '@internal/ui'; version = '1.0.0'; ignoredPeers = @('@angular/core'); reason = 'Validated internally'; scope = 'run' })
@@ -121,5 +137,6 @@ try {
     Write-Host 'PASS Git blockers and tool detection'
 }
 finally {
+    $env:MIGRATION_IPS_REGISTRY = $originalIpsRegistry
     Remove-Item -LiteralPath $root -Recurse -Force
 }

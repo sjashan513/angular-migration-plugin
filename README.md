@@ -13,8 +13,12 @@ con los contextos que el controlador les entrega.
 - PowerShell 7+ para los hooks de Copilot CLI.
 - Proyectos Angular CLI en la raiz de un repositorio Git no monorepo.
 - npm con `package-lock.json` v1, v2 o v3.
-- Un salto `N -> N+1` seleccionado con `-TargetMajor`; para llegar a una major
-  posterior se ejecutan runs secuenciales.
+- Transiciones soportadas: Angular 7 -> 8, 8 -> 9 y 9 -> 10.
+- Un salto `N -> N+1` por run; para llegar a una major posterior se ejecutan
+  runs secuenciales dentro de esa matriz.
+- Paquetes publicos resueltos desde `https://registry.npmjs.org/`; los paquetes
+  `@ips/*` requieren una entrada `@ips:registry` HTTPS en `.npmrc` que coincida
+  con la URL confiable `MIGRATION_IPS_REGISTRY`.
 
 Quedan fuera de v5 la instalacion de Node sin aprobacion, Yarn, pnpm, workspaces, Nx,
 dependencias no registry sin politica, agentes cloud y cualquier runtime visual.
@@ -25,6 +29,11 @@ Se necesita Windows, Git con identidad local, fnm, npm compatible con el lockfil
 GitHub Copilot CLI instalado y autenticado. El working tree debe estar limpio y
 `.angular-migration/` debe estar ignorado por Git. El plugin selecciona runtimes
 exactos con fnm y solo instala una version ausente despues de una aprobacion explicita.
+La autenticacion del registry privado debe venir de la configuracion del usuario,
+el runner o variables de entorno; nunca se aceptan credenciales embebidas en el
+proyecto ni se usa fallback silencioso entre registries. La URL confiable del
+registry privado debe configurarse fuera del repositorio mediante
+`MIGRATION_IPS_REGISTRY`.
 
 ## 4. Instalacion
 

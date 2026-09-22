@@ -27,7 +27,7 @@ try {
     $second = Get-DependencyMetadata -PackageName '@angular/core' -VersionSelector '8' -ProjectRoot $temporaryRoot
     if ($first.version -ne '8.2.14' -or $first.source -ne 'npm-view' -or $first.selector -ne '8' -or $first.deprecated -or $first.ngUpdate.migrations -ne 'migrations.json') { throw 'Metadata normalization failed' }
     if ((Get-Content -LiteralPath $tracePath).Count -ne 1) { throw 'Metadata cache did not avoid the second query' }
-    $expectedArguments = 'view @angular/core@8 version peerDependencies peerDependenciesMeta engines ng-update deprecated dist-tags --json'
+    $expectedArguments = 'view @angular/core@8 version peerDependencies peerDependenciesMeta engines ng-update deprecated dist-tags --json --registry https://registry.npmjs.org/'
     if ((Get-Content -LiteralPath $tracePath -Raw).Trim() -ne $expectedArguments) { throw 'npm view arguments are not exact' }
     if ($first.PSObject.Properties.Name -contains 'token' -or $first.PSObject.Properties.Name -contains 'environment') { throw 'Metadata leaked sensitive context' }
     Write-Host 'PASS npm view metadata normalization, cache and argument contract'

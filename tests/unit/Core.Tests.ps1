@@ -19,4 +19,8 @@ $completed = Invoke-MigrationProcess -FilePath 'powershell.exe' -Arguments @('-N
 if ($completed.processStalled -or $completed.timedOut -or $completed.terminationReason -ne 'completed' -or $completed.exitCode -ne 0 -or $completed.stdout -notmatch 'heartbeat') { throw 'Active process was incorrectly classified as stalled.' }
 Write-Host 'PASS active process completes with output'
 
+$redacted = ConvertTo-MigrationRedactedText -Text "https://user:password@registry.example.invalid/`n//registry.example.invalid/:_authToken=npm_secret"
+if ($redacted -match 'password|npm_secret|_authToken') { throw 'Process output redaction leaked credentials.' }
+Write-Host 'PASS process output redaction removes registry credentials'
+
 Write-Host 'Migration core process tests OK'

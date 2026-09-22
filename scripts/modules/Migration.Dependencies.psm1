@@ -181,7 +181,7 @@ function Get-DependencyMetadata {
         'deprecated',
         'dist-tags',
         '--json'
-    )
+    ) + @(Get-MigrationNpmRegistryArguments -PackageName $PackageName)
     $logContext = Get-DependencyQueryLogContext -PackageName $PackageName
     $started = Get-Date
     try {
@@ -198,8 +198,8 @@ function Get-DependencyMetadata {
     $finished = Get-Date
     if ($logContext) {
         try {
-            [IO.File]::WriteAllText($logContext.stdoutPath, [string]$process.stdout, (New-Object Text.UTF8Encoding($false)))
-            [IO.File]::WriteAllText($logContext.stderrPath, [string]$process.stderr, (New-Object Text.UTF8Encoding($false)))
+            [IO.File]::WriteAllText($logContext.stdoutPath, (ConvertTo-MigrationRedactedText $process.stdout), (New-Object Text.UTF8Encoding($false)))
+            [IO.File]::WriteAllText($logContext.stderrPath, (ConvertTo-MigrationRedactedText $process.stderr), (New-Object Text.UTF8Encoding($false)))
         }
         catch {
             Throw-MigrationError -Code 'resolver_persistence_failed' -Message "Could not persist registry metadata logs for $PackageName." -Status failed

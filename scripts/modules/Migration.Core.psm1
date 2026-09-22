@@ -209,6 +209,24 @@ function Find-MigrationExecutable {
     return $null
 }
 
+function Get-MigrationNpmRegistryArguments {
+    param([string]$PackageName = '')
+
+    if ($PackageName -match '^@ips(?:/|$)') { return @() }
+    return @('--registry', 'https://registry.npmjs.org/')
+}
+
+function ConvertTo-MigrationRedactedText {
+    param([AllowNull()][AllowEmptyString()][string]$Text)
+
+    if ($null -eq $Text) { return '' }
+    $value = $Text
+    $value = [regex]::Replace($value, '(?im)^.*(?:authorization|proxy-authorization|cookie|set-cookie|_auth|password|token|secret).*$', '[redacted]')
+    $value = [regex]::Replace($value, '(?i)(https?://)[^/\s@]+:[^/\s@]+@', '$1[redacted]@')
+    $value = [regex]::Replace($value, '(?i)\b(?:gh[pousr]_[a-z0-9_]+|github_pat_[a-z0-9_]+|npm_[a-z0-9]+|eyJ[a-z0-9_.-]+)\b', '[redacted]')
+    return $value
+}
+
 function Get-MigrationVersionTuple {
     param([Parameter(Mandatory = $true)][string]$Version)
 
@@ -714,6 +732,8 @@ Export-ModuleMember -Function @(
     'Write-MigrationJsonAtomic',
     'Write-MigrationTextAtomic',
     'Find-MigrationExecutable',
+    'Get-MigrationNpmRegistryArguments',
+    'ConvertTo-MigrationRedactedText',
     'Get-MigrationVersionTuple',
     'Get-MigrationAngularToolingVersionPolicy',
     'Compare-MigrationVersionTuple',

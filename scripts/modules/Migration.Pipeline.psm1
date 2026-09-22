@@ -676,9 +676,15 @@ function Invoke-MigrationDiscover {
     if (-not $inspection.ready) {
         Throw-MigrationError -Code 'project_not_ready' -Message 'Project inspection found blocking preconditions.' -Status blocked -Details $inspection.blockers
     }
+    if ([int]$inspection.angular.currentMajor -notin @(7, 8, 9)) {
+        Throw-MigrationError -Code 'unsupported_angular_source' -Message 'Only Angular 7, 8 and 9 source projects are supported.' -Status blocked
+    }
     $expectedTarget = [int]$inspection.angular.currentMajor + 1
     if ($TargetMajor -ne $expectedTarget) {
         Throw-MigrationError -Code 'non_sequential_target' -Message "Only the next Angular major is allowed. Expected $expectedTarget, received $TargetMajor." -Status blocked
+    }
+    if ($TargetMajor -notin @(8, 9, 10)) {
+        Throw-MigrationError -Code 'unsupported_angular_target' -Message 'Only Angular 8, 9 and 10 target majors are supported.' -Status blocked
     }
     $document = New-MigrationDiscoveryDocument -ProjectRoot $root -TargetMajor $TargetMajor -Inspection $inspection
     Write-MigrationJsonAtomic -Value $document -Path (Get-MigrationDiscoveryPath -ProjectRoot $root)
@@ -764,8 +770,8 @@ function Invoke-ApproveMigrationRuntimeInstall {
         foreach ($item in @($discovery.installProposal.versions)) {
             $version = Assert-MigrationExactNodeVersion -Version ([string]$item.version)
             $install = Invoke-MigrationProcess -FilePath $fnm -Arguments @('install', $version) -WorkingDirectory $root -TimeoutSeconds 1800
-            $stdoutLog = Write-MigrationRuntimeInstallLog -ProjectRoot $root -Version $version -Stream 'stdout' -Text ([string]$install.stdout)
-            $stderrLog = Write-MigrationRuntimeInstallLog -ProjectRoot $root -Version $version -Stream 'stderr' -Text ([string]$install.stderr)
+            $stdoutLog = Write-MigrationRuntimeInstallLog -ProjectRoot $root -Version $version -Stream 'stdout' -Text (ConvertTo-MigrationRedactedText $install.stdout)
+            $stderrLog = Write-MigrationRuntimeInstallLog -ProjectRoot $root -Version $version -Stream 'stderr' -Text (ConvertTo-MigrationRedactedText $install.stderr)
             Add-MigrationRuntimeInstallEvent -ProjectRoot $root -Data ([PSCustomObject]@{
                     proposalHash = $ProposalHash
                     version      = $version
@@ -954,11 +960,20 @@ function Invoke-MigrationBaseline {
 
     $results = @()
     $checks = @()
+    $operationStartedHere = $false
+    $baselineCompleted = $false
     try {
         $root = Resolve-MigrationRoot -Path $ProjectRoot
         Assert-ActiveRunOwnership -ProjectRoot $root -RunId $RunId
         $paths = Get-MigrationRunPaths -ProjectRoot $root -RunId $RunId
         $state = Read-MigrationRunState -ProjectRoot $root -RunId $RunId
+        if (-not $state.activeOperation) {
+            $state = Start-PipelineOperation -ProjectRoot $root -RunId $RunId -Id 'baseline' -Stage 'baseline'
+            $operationStartedHere = $true
+        }
+        elseif ([string]$state.activeOperation.id -cne 'baseline') {
+            Throw-PipelineError -Code 'active_operation_mismatch' -Message 'Baseline requires the active operation to be baseline.' -Status blocked
+        }
         $manifest = Read-MigrationJson -Path $paths.manifest -Required
         if ($manifest.schemaVersion -ne (Get-MigrationSchemaVersion) -or $manifest.runId -cne $RunId -or
             $manifest.manifestType -cne 'migration' -or $manifest.project.root -cne (Resolve-MigrationRoot -Path $ProjectRoot) -or $state.projectRoot -cne $root -or
@@ -1024,9 +1039,12 @@ function Invoke-MigrationBaseline {
                 }
             }
         }
-        Add-MigrationEvent -ProjectRoot $root -RunId $RunId -Type 'baseline-completed' -Stage 'baseline' -Data ([PSCustomObject]@{ checks = $results })
+        if (-not $operationStartedHere) {
+            Add-MigrationEvent -ProjectRoot $root -RunId $RunId -Type 'baseline-completed' -Stage 'baseline' -Data ([PSCustomObject]@{ checks = $results })
+        }
         $state.baselineStatus = 'passed'
         Write-MigrationRunState -ProjectRoot $root -RunId $RunId -State $state
+        $baselineCompleted = $true
         return [PSCustomObject]@{ status = 'passed'; checks = $results; notStarted = @(); diagnostic = $null }
     }
     catch {
@@ -1034,7 +1052,19 @@ function Invoke-MigrationBaseline {
         $code = if ($_.Exception.Data['code']) { $_.Exception.Data['code'] } else { 'baseline_internal_error' }
         return [PSCustomObject]@{
             status = $status; checks = @($results); notStarted = @($checks | Select-Object -Skip @($results).Count)
-            diagnostic = [PSCustomObject]@{ code = $code; message = 'Baseline could not be completed.' }
+            diagnostic = [PSCustomObject]@{ code = $code; message = 'Baseline could not be completed.'; details = if ($_.Exception.Message) { $_.Exception.Message } else { [string]$_.Exception } }
+        }
+    }
+    finally {
+        if ($operationStartedHere) {
+            if ($baselineCompleted) {
+                Finish-PipelineOperation -ProjectRoot $root -RunId $RunId -Stage 'baseline' -Data ([PSCustomObject]@{ status = 'passed'; checks = @($results); logs = @($results | ForEach-Object { $_.stdoutLog; $_.stderrLog }) })
+                Complete-PipelineOperation -ProjectRoot $root -RunId $RunId -Id 'baseline' -Stage 'baseline' | Out-Null
+                Add-MigrationEvent -ProjectRoot $root -RunId $RunId -Type 'baseline-completed' -Stage 'baseline' -Data ([PSCustomObject]@{ checks = $results })
+            }
+            else {
+                Clear-PipelineOperation -ProjectRoot $root -RunId $RunId | Out-Null
+            }
         }
     }
 }
@@ -1096,11 +1126,11 @@ function Get-BaselineDependencyProposal {
         }
         $range = [string]$ranges[0]
         $queryIndex++
-        $query = Invoke-PipelineLoggedProcess -RunPaths $paths -Stage 'baseline-dependency-context' -Prefix ('{0:D2}-npm-view-' -f $queryIndex) -FilePath 'npm' -Arguments @('view', "$name@$range", 'version', '--json') -WorkingDirectory $ProjectRoot -TimeoutSeconds 120 -NodeVersion $metadataRuntime.nodeVersion -FnmPath $metadataRuntime.fnmPath
+        $query = Invoke-PipelineLoggedProcess -RunPaths $paths -Stage 'baseline-dependency-context' -Prefix ('{0:D2}-npm-view-' -f $queryIndex) -FilePath 'npm' -Arguments (@('view', "$name@$range", 'version', '--json') + @(Get-MigrationNpmRegistryArguments -PackageName $name)) -WorkingDirectory $ProjectRoot -TimeoutSeconds 120 -NodeVersion $metadataRuntime.nodeVersion -FnmPath $metadataRuntime.fnmPath -MachineReadable
         if ($query.timedOut -or $query.exitCode -ne 0) {
             Throw-PipelineError -Code 'baseline_dependency_proposal_unavailable' -Message "Registry metadata is unavailable for $name@$range." -Status blocked -Details ([PSCustomObject]@{ package = $name; requiredRange = $range; stdoutLog = $query.stdoutLog; stderrLog = $query.stderrLog })
         }
-        try { $rawVersions = $query.stdout | ConvertFrom-Json } catch { Throw-PipelineError -Code 'baseline_dependency_proposal_unavailable' -Message "Registry metadata for $name is not valid JSON." -Status blocked }
+        try { $rawVersions = $query.machineStdout | ConvertFrom-Json } catch { Throw-PipelineError -Code 'baseline_dependency_proposal_unavailable' -Message "Registry metadata for $name is not valid JSON." -Status blocked }
         $versions = if ($rawVersions -is [array]) { @($rawVersions) } else { @($rawVersions) }
         $candidates = @($versions | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^\d+\.\d+\.\d+$' })
         if ($candidates.Count -eq 0) {
@@ -1176,12 +1206,13 @@ function Invoke-ApproveMigrationBaselineDependencies {
     $lockCreated = $false
     $committed = $false
     $paths = Get-MigrationRunPaths -ProjectRoot $root -RunId $RunId
+    $manifest = Read-MigrationJson -Path $paths.manifest -Required
     try {
         New-ActiveRunLock -ProjectRoot $root -RunId $RunId
         $lockCreated = $true
         Add-MigrationEvent -ProjectRoot $root -RunId $RunId -Type 'baseline-dependencies-approval-started' -Stage 'baseline' -Data ([PSCustomObject]@{ proposalHash = $proposal.proposalHash; packages = @($proposal.packages | ForEach-Object { [PSCustomObject]@{ name = $_.name; version = $_.installVersion; reason = $_.reason } }) })
         $specs = @($proposal.packages | ForEach-Object { "$($_.name)@$($_.installVersion)" })
-        $install = Invoke-PipelineLoggedProcess -RunPaths $paths -Stage 'baseline-dependency-repair' -Prefix '01-npm-install' -FilePath 'npm' -Arguments (@('install', '--save-exact') + $specs) -WorkingDirectory $root -TimeoutSeconds 900 -NodeVersion $baselineRuntime.nodeVersion -FnmPath $baselineRuntime.fnmPath
+        $install = Invoke-PipelineLoggedProcess -RunPaths $paths -Stage 'baseline-dependency-repair' -Prefix '01-npm-install' -FilePath 'npm' -Arguments (@('install', '--save-exact') + $specs + @(Get-MigrationNpmRegistryArguments) + @(Get-PipelineLegacyPeerArguments -Manifest $manifest)) -WorkingDirectory $root -TimeoutSeconds 900 -NodeVersion $baselineRuntime.nodeVersion -FnmPath $baselineRuntime.fnmPath
         if ($install.timedOut -or $install.exitCode -ne 0) {
             Throw-PipelineError -Code 'baseline_dependency_install_failed' -Message 'The approved baseline dependency installation failed.' -Status blocked -Details ([PSCustomObject]@{ stdoutLog = $install.stdoutLog; stderrLog = $install.stderrLog; exitCode = $install.exitCode; timedOut = $install.timedOut })
         }
@@ -1190,7 +1221,7 @@ function Invoke-ApproveMigrationBaselineDependencies {
         if ($unexpected.Count -gt 0) {
             Throw-PipelineError -Code 'baseline_dependency_scope_violation' -Message 'The approved dependency installation changed a path outside package metadata.' -Status blocked -Details ([PSCustomObject]@{ paths = @($unexpected.path) })
         }
-        $tree = Invoke-PipelineLoggedProcess -RunPaths $paths -Stage 'baseline-dependency-repair' -Prefix '02-npm-ls-all' -FilePath 'npm' -Arguments @('ls', '--all') -WorkingDirectory $root -TimeoutSeconds 300 -NodeVersion $baselineRuntime.nodeVersion -FnmPath $baselineRuntime.fnmPath
+        $tree = Invoke-PipelineLoggedProcess -RunPaths $paths -Stage 'baseline-dependency-repair' -Prefix '02-npm-ls-all' -FilePath 'npm' -Arguments (@('ls', '--all') + @(Get-MigrationNpmRegistryArguments)) -WorkingDirectory $root -TimeoutSeconds 300 -NodeVersion $baselineRuntime.nodeVersion -FnmPath $baselineRuntime.fnmPath
         if ($tree.timedOut -or $tree.exitCode -ne 0 -or ([string]$tree.stdout + "`n" + [string]$tree.stderr) -match '(?i)\b(invalid|extraneous|missing)\b') {
             Throw-PipelineError -Code 'baseline_dependency_tree_failed' -Message 'The approved dependencies did not produce a valid npm dependency tree.' -Status blocked -Details ([PSCustomObject]@{ stdoutLog = $tree.stdoutLog; stderrLog = $tree.stderrLog; exitCode = $tree.exitCode; timedOut = $tree.timedOut })
         }
@@ -2153,7 +2184,8 @@ function Invoke-PipelineLoggedProcess {
         [string]$FnmPath = '',
         [string]$RunId = '',
         [string]$OperationId = '',
-        [int]$InactivityTimeoutSeconds = 300
+        [int]$InactivityTimeoutSeconds = 300,
+        [switch]$MachineReadable
     )
 
     $directory = Join-Path $RunPaths.logs $Stage
@@ -2198,8 +2230,8 @@ function Invoke-PipelineLoggedProcess {
         else {
             $process = Invoke-MigrationProcess @parameters
         }
-        [IO.File]::WriteAllText($stdoutPath, [string]$process.stdout, (New-Object Text.UTF8Encoding($false)))
-        [IO.File]::WriteAllText($stderrPath, [string]$process.stderr, (New-Object Text.UTF8Encoding($false)))
+        [IO.File]::WriteAllText($stdoutPath, (ConvertTo-MigrationRedactedText $process.stdout), (New-Object Text.UTF8Encoding($false)))
+        [IO.File]::WriteAllText($stderrPath, (ConvertTo-MigrationRedactedText $process.stderr), (New-Object Text.UTF8Encoding($false)))
         if ($RunId -and $OperationId) {
             if ([bool]$process.processStalled) {
                 Update-PipelineOperationProgress -ProjectRoot $projectRoot -RunId $RunId -OperationId $OperationId -Step ('stalled:' + $Prefix) -CurrentFile $null -Health 'stalled'
@@ -2208,7 +2240,9 @@ function Invoke-PipelineLoggedProcess {
                 Update-PipelineOperationProgress -ProjectRoot $projectRoot -RunId $RunId -OperationId $OperationId -Step ('finished:' + $Prefix) -CurrentFile $null -Health 'healthy'
             }
         }
-        return [PSCustomObject]@{
+        $safeStdout = ConvertTo-MigrationRedactedText $process.stdout
+        $safeStderr = ConvertTo-MigrationRedactedText $process.stderr
+        $result = [ordered]@{
             exitCode          = $process.exitCode
             timedOut          = [bool]$process.timedOut
             processStalled    = [bool]$process.processStalled
@@ -2216,11 +2250,15 @@ function Invoke-PipelineLoggedProcess {
             startedAt         = $started
             finishedAt        = Get-MigrationUtcNow
             durationMs        = $timer.ElapsedMilliseconds
-            stdout            = [string]$process.stdout
-            stderr            = [string]$process.stderr
+            stdout            = $safeStdout
+            stderr            = $safeStderr
             stdoutLog         = Get-PipelineLogRelativePath -RunPaths $RunPaths -Path $stdoutPath
             stderrLog         = Get-PipelineLogRelativePath -RunPaths $RunPaths -Path $stderrPath
         }
+        if ($MachineReadable -and $process.exitCode -eq 0 -and -not $process.timedOut -and -not $process.processStalled) {
+            $result.machineStdout = [string]$process.stdout
+        }
+        return [PSCustomObject]$result
     }
     catch {
         try { [IO.File]::WriteAllText($stderrPath, $_.Exception.Message, (New-Object Text.UTF8Encoding($false))) } catch { }
@@ -2716,11 +2754,11 @@ function Invoke-PipelineRenderer {
     $packageText = [IO.File]::ReadAllText($packagePath)
     $payload = [ordered]@{ mode = $Mode; packageText = $packageText; dependencies = @($Dependencies) }
     $inputText = $payload | ConvertTo-Json -Depth 50 -Compress
-    $result = Invoke-PipelineLoggedProcess -RunPaths $RunPaths -Stage 'update-dependencies' -Prefix ('01-render-' + $Mode) -FilePath 'node' -Arguments @($helper) -WorkingDirectory $ProjectRoot -TimeoutSeconds 30 -StandardInput $inputText -NodeVersion $NodeVersion -FnmPath $FnmPath
+    $result = Invoke-PipelineLoggedProcess -RunPaths $RunPaths -Stage 'update-dependencies' -Prefix ('01-render-' + $Mode) -FilePath 'node' -Arguments @($helper) -WorkingDirectory $ProjectRoot -TimeoutSeconds 30 -StandardInput $inputText -NodeVersion $NodeVersion -FnmPath $FnmPath -MachineReadable
     if ($result.exitCode -ne 0 -or $result.timedOut) {
         Throw-PipelineError -Code 'package_manifest_write_failed' -Message "package.json renderer failed in $Mode mode." -Status blocked -Details ([PSCustomObject]@{ stderrLog = $result.stderrLog; stdoutLog = $result.stdoutLog })
     }
-    return [PSCustomObject]@{ text = $result.stdout; logs = $result }
+    return [PSCustomObject]@{ text = $result.machineStdout; logs = $result }
 }
 
 function Get-PipelineVersionTuple {
@@ -3968,6 +4006,15 @@ function Get-PipelineObjectHash {
     finally { $sha.Dispose() }
 }
 
+function Get-PipelineLegacyPeerArguments {
+    param([Parameter(Mandatory = $true)]$Manifest)
+
+    $policies = if ($Manifest.PSObject.Properties['policies']) { $Manifest.policies } else { $null }
+    $exceptions = if ($policies -and $policies.PSObject.Properties['peerExceptions']) { @($policies.peerExceptions) } else { @() }
+    if (@($exceptions).Count -gt 0) { return @('--legacy-peer-deps') }
+    return @()
+}
+
 function Get-PipelineChangedFiles {
     param([Parameter(Mandatory = $true)][string]$ProjectRoot, [Parameter(Mandatory = $true)][string]$InitialCommit)
     $result = Invoke-PipelineGit -ProjectRoot $ProjectRoot -Arguments @('diff', '--name-only', "$InitialCommit..HEAD")
@@ -4294,7 +4341,7 @@ function Invoke-PipelineDependencyStage {
         $exact = Invoke-PipelineRenderer -ProjectRoot $ProjectRoot -RunPaths $paths -Mode 'exact' -Dependencies $dependencies -FnmPath $runtime.fnmPath -NodeVersion $runtime.nodeVersion
         Write-MigrationTextAtomic -Text $exact.text -Path (Resolve-MigrationPath -ProjectRoot $ProjectRoot -Path 'package.json')
         Update-PipelineOperationProgress -ProjectRoot $ProjectRoot -RunId $RunId -OperationId 'update-dependencies' -Step 'install-lockfile' -OperationIndex 2 -OperationCount 7 -CurrentFile 'package-lock.json' -Health 'healthy'
-        $install = Invoke-PipelineLoggedProcess -RunPaths $paths -Stage 'update-dependencies' -Prefix '02-npm-install-lockfile' -FilePath 'npm' -Arguments @('install', '--package-lock-only') -WorkingDirectory $ProjectRoot -TimeoutSeconds 900 -NodeVersion $runtime.nodeVersion -FnmPath $runtime.fnmPath -RunId $RunId -OperationId 'update-dependencies'
+        $install = Invoke-PipelineLoggedProcess -RunPaths $paths -Stage 'update-dependencies' -Prefix '02-npm-install-lockfile' -FilePath 'npm' -Arguments (@('install', '--package-lock-only') + @(Get-MigrationNpmRegistryArguments) + @(Get-PipelineLegacyPeerArguments -Manifest $manifest)) -WorkingDirectory $ProjectRoot -TimeoutSeconds 900 -NodeVersion $runtime.nodeVersion -FnmPath $runtime.fnmPath -RunId $RunId -OperationId 'update-dependencies'
         if ($install.timedOut -or $install.exitCode -ne 0) {
             Throw-PipelineError -Code 'dependency_install_failed' -Message 'npm install --package-lock-only failed.' -Status blocked -Details $install
         }
@@ -4336,7 +4383,7 @@ function Invoke-PipelineInstallStage {
     $null = Start-PipelineOperation -ProjectRoot $ProjectRoot -RunId $RunId -Id 'install' -Stage 'install'
     Update-PipelineOperationProgress -ProjectRoot $ProjectRoot -RunId $RunId -OperationId 'install' -Step 'npm-ci' -OperationIndex 1 -OperationCount 2 -CurrentFile 'node_modules' -Health 'healthy'
     try {
-        $ci = Invoke-PipelineLoggedProcess -RunPaths $paths -Stage 'install' -Prefix '01-npm-ci' -FilePath 'npm' -Arguments @('ci') -WorkingDirectory $ProjectRoot -TimeoutSeconds 900 -NodeVersion $runtime.nodeVersion -FnmPath $runtime.fnmPath -RunId $RunId -OperationId 'install'
+        $ci = Invoke-PipelineLoggedProcess -RunPaths $paths -Stage 'install' -Prefix '01-npm-ci' -FilePath 'npm' -Arguments (@('ci') + @(Get-MigrationNpmRegistryArguments) + @(Get-PipelineLegacyPeerArguments -Manifest $manifest)) -WorkingDirectory $ProjectRoot -TimeoutSeconds 900 -NodeVersion $runtime.nodeVersion -FnmPath $runtime.fnmPath -RunId $RunId -OperationId 'install'
     }
     catch {
         Invoke-PipelineRollback -ProjectRoot $ProjectRoot -CheckpointCommit $state.checkpointCommit -BeforeItems $before
@@ -4354,7 +4401,7 @@ function Invoke-PipelineInstallStage {
     }
     try {
         Update-PipelineOperationProgress -ProjectRoot $ProjectRoot -RunId $RunId -OperationId 'install' -Step 'verify-dependency-tree' -OperationIndex 2 -OperationCount 2 -CurrentFile 'package-lock.json' -Health 'healthy'
-        $ls = Invoke-PipelineLoggedProcess -RunPaths $paths -Stage 'install' -Prefix '02-npm-ls-all' -FilePath 'npm' -Arguments @('ls', '--all') -WorkingDirectory $ProjectRoot -TimeoutSeconds 300 -NodeVersion $runtime.nodeVersion -FnmPath $runtime.fnmPath -RunId $RunId -OperationId 'install'
+        $ls = Invoke-PipelineLoggedProcess -RunPaths $paths -Stage 'install' -Prefix '02-npm-ls-all' -FilePath 'npm' -Arguments (@('ls', '--all') + @(Get-MigrationNpmRegistryArguments)) -WorkingDirectory $ProjectRoot -TimeoutSeconds 300 -NodeVersion $runtime.nodeVersion -FnmPath $runtime.fnmPath -RunId $RunId -OperationId 'install'
     }
     catch {
         Invoke-PipelineRollback -ProjectRoot $ProjectRoot -CheckpointCommit $state.checkpointCommit -BeforeItems $before

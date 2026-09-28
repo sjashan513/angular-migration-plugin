@@ -11,9 +11,19 @@
   "scripts": {
     "typecheck": "tsc --project tsconfig.json --noEmit",
     "build": "tsc --project tsconfig.json",
-    "test": "tsc --project tsconfig.json && node --test"
+    "test": "tsc --project tsconfig.json && node --test tests/angular-transition.test.mjs tests/domain-contracts.test.mjs tests/semver-constraints.test.mjs tests/runtime-planner.test.mjs tests/discover-project.test.mjs tests/start-run.test.mjs tests/run-project.test.mjs tests/documentation-research.test.mjs tests/foundation.test.mjs tests/approve-runtime-install.test.mjs",
+    "test:fast": "tsc --project tsconfig.json && node --test tests/angular-transition.test.mjs tests/domain-contracts.test.mjs tests/semver-constraints.test.mjs tests/runtime-planner.test.mjs tests/discover-project.test.mjs tests/start-run.test.mjs tests/run-project.test.mjs tests/documentation-research.test.mjs tests/foundation.test.mjs tests/approve-runtime-install.test.mjs",
+    "test:adapters": "tsc --project tsconfig.json && node --test tests/baseline-dependencies.test.mjs tests/discovery-persistence.test.mjs tests/documentation-store.test.mjs tests/fnm-runtime.test.mjs tests/project-discovery-reader.test.mjs tests/project-facts-reader.test.mjs tests/project-files.test.mjs tests/project-lock.test.mjs tests/repair-files.test.mjs tests/run-operation-executor.test.mjs tests/run-record-store.test.mjs tests/runtime-install.test.mjs",
+    "test:process": "tsc --project tsconfig.json && node --test tests/process-runner.test.mjs tests/cli.test.mjs",
+    "test:e2e": "tsc --project tsconfig.json && node --test tests/migration-e2e.test.mjs",
+    "cli": "node dist/entrypoints/main.js"
   },
   "devDependencies": {
+    "@types/node": "22.20.4",
+    "@types/semver": "7.8.0",
     "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "semver": "7.8.5"
   }
 }

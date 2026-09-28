@@ -121,11 +121,12 @@ foreach ($declaredPath in $declaredDirectories) {
 }
 Assert-Check "declared path exists: $($plugin.hooks)" (Test-Path -LiteralPath (Join-Path $repositoryRoot $plugin.hooks) -PathType Leaf)
 $agentFiles = @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot $plugin.agents) -Filter '*.agent.md' -File | Sort-Object Name)
-Assert-Check 'plugin declares exactly two agents' ($agentFiles.Count -eq 2 -and (@($agentFiles.Name | Sort-Object) -join '|') -ceq 'migration-documenter.agent.md|migration-implementer.agent.md')
+Assert-Check 'plugin declares the migration agents and manual Node probe' ($agentFiles.Count -eq 3 -and (@($agentFiles.Name | Sort-Object) -join '|') -ceq 'migration-documenter.agent.md|migration-implementer.agent.md|node-runtime-probe.agent.md')
 $agentTexts = @{}
 foreach ($agentFile in $agentFiles) { $agentTexts[$agentFile.Name] = Get-Content -LiteralPath $agentFile.FullName -Raw }
 $implementerText = $agentTexts['migration-implementer.agent.md']
 $documenterText = $agentTexts['migration-documenter.agent.md']
+$nodeProbeText = $agentTexts['node-runtime-probe.agent.md']
 $skillFiles = @(Get-ChildItem -LiteralPath (Join-Path $repositoryRoot $plugin.skills) -Filter 'SKILL.md' -File -Recurse)
 foreach ($frontMatterFile in @($agentFiles + $skillFiles)) {
     $frontMatterText = Get-Content -LiteralPath $frontMatterFile.FullName -Raw
@@ -134,6 +135,7 @@ foreach ($frontMatterFile in @($agentFiles + $skillFiles)) {
 }
 Assert-Check 'implementer has only the four permitted tools' ($implementerText -match '(?im)^tools:\s*\[read, search, edit, execute\]\s*$')
 Assert-Check 'documenter has no execute tool' ($documenterText -match '(?im)^tools:\s*\[read, search, web, edit\]\s*$' -and $documenterText -notmatch '(?im)^tools:.*execute')
+Assert-Check 'Node probe is user-invocable and execute-only' ($nodeProbeText -match '(?im)^tools:\s*\[execute\]\s*$' -and $nodeProbeText -match '(?im)^user-invocable:\s*true\s*$' -and $nodeProbeText -match 'process\.execPath' -and $nodeProbeText -match 'node_not_on_path')
 
 $hooks = Get-Content -LiteralPath (Join-Path $repositoryRoot 'hooks.json') -Raw | ConvertFrom-Json
 $hookNames = @($hooks.hooks.PSObject.Properties.Name | Sort-Object)

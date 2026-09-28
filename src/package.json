@@ -1,0 +1,19 @@
+{
+  "name": "angular-migration-controller",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TypeScript controller for sequential Angular migrations.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "typecheck": "tsc --project tsconfig.json --noEmit",
+    "build": "tsc --project tsconfig.json",
+    "test": "tsc --project tsconfig.json && node --test"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}

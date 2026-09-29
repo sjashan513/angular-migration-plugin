@@ -1,45 +1,39 @@
-# Prerrequisitos del host
+# Prerrequisitos del host para Angular Migration v6
 
-La fase 8 necesita dos programas instalados en Windows:
+Angular Migration v6 requiere Windows, `pwsh.exe` 7+, `copilot.exe`, `fnm.exe`, Node
+22.19.0 disponible mediante fnm y el bundle `src/dist/entrypoints/main.mjs`.
+`scripts/install-host-prerequisites.ps1` informa el estado; no instala fnm, Node ni
+el bundle.
 
-- `pwsh.exe`: PowerShell 7+, usado por los hooks de Copilot CLI.
-- `copilot.exe`: GitHub Copilot CLI, que carga el plugin, sus agentes, la skill y los hooks.
+## Preparar el controlador
 
-El repositorio no distribuye esos ejecutables ni los crea durante la migracion.
+Desde la raiz del repositorio, confirma que fnm puede seleccionar el runtime fijado y
+prepara el bundle reproducible:
 
-## Comprobar
+```powershell
+fnm exec --using 22.19.0 -- node --version
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\prepare-typescript-controller.ps1 -Prepare
+```
 
-Ejecuta el comprobador desde la raiz del repositorio:
+El preparador usa el `npm-cli.js` junto al Node seleccionado, ejecuta `npm ci
+--ignore-scripts` dentro de `src/` y compila el bundle. Sin `-Prepare` solo verifica
+que el runtime y el bundle existan.
+
+## Comprobar el host
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-host-prerequisites.ps1
 ```
 
-El resultado es JSON. El estado `ready` significa que ambos ejecutables estan en
-`PATH`. El estado `blocked` lista los ejecutables ausentes.
+El JSON solo indica `ready` si estan disponibles PowerShell, Copilot CLI, fnm, Node
+22.19.0 via fnm y el bundle. `-Install` instala, con WinGet, unicamente `pwsh.exe` y
+`copilot.exe`; despues abre una terminal nueva y vuelve a ejecutar el comprobador.
+La autenticacion de Copilot CLI requiere la sesion interactiva del host y no se valida
+por este script.
 
-## Instalar en Windows
+## Aceptacion pendiente
 
-El script usa los identificadores oficiales de WinGet y solo instala cuando se
-indica explicitamente `-Install`:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-host-prerequisites.ps1 -Install
-```
-
-Despues de la instalacion, abre una terminal nueva y ejecuta de nuevo el modo de
-comprobacion. La primera sesion de Copilot CLI puede requerir autenticacion
-interactiva con `/login`; no guardes tokens en este repositorio ni en la evidencia
-de release.
-
-La instalacion oficial de Copilot CLI requiere una suscripcion activa y, en
-Windows, PowerShell 6 o superior. La ruta WinGet evita la dependencia de Node del
-host. La documentacion oficial esta en
-[Installing GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-in-the-cli).
-
-## Continuacion de la release
-
-Cuando el comprobador devuelva `ready`, reinicia la sesion de Copilot CLI y ejecuta
-la instalacion directa, la instalacion desde el marketplace local y el piloto real
-Angular 7 -> 8. Esos pasos son evidencia nueva y no deben sustituirse por un
-fixture local.
+Un resultado `ready` no es un smoke del plugin cargado por Copilot CLI. La instalacion
+en host, el smoke real de Copilot CLI y el piloto Angular con rollback siguen siendo
+gates separados y siguen pendientes de aceptacion. No se han ejecutado como parte de
+la validacion local del bundle; `ready` no los sustituye.

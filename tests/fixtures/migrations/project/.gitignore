@@ -1,7 +1,0 @@
-.angular-migration/
-node_modules/
-.fixture-trace
-.fixture-fail-*
-.fixture-source-fail
-.fixture-build-count
-.fixture-fail-second-build

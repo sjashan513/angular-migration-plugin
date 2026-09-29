@@ -1,3 +1,6 @@
 # Artefactos de pruebas locales del script (nunca commitear)
 .angular-migration/
 release-evidence/
+.github
+src/roadmaps/*.md
+src/evidence/*.md

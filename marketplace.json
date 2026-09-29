@@ -5,14 +5,14 @@
     "email": "noreply@github.com"
   },
   "metadata": {
-    "description": "Controlador auditable de migraciones Angular major por major para proyectos npm limpios.",
-    "version": "5.0.2"
+    "description": "Controlador TypeScript auditable de migraciones Angular major por major para proyectos npm limpios.",
+    "version": "6.0.0"
   },
   "plugins": [
     {
       "name": "angular-migration",
-      "description": "Auditable Angular migration controller for sequential major upgrades on clean npm projects.",
-      "version": "5.0.2",
+      "description": "TypeScript-backed, auditable Angular migration controller for sequential major upgrades on clean npm projects.",
+      "version": "6.0.0",
       "author": {
         "name": "sjashan513",
         "url": "https://github.com/sjashan513"

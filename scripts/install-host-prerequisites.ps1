@@ -14,11 +14,11 @@ function Find-Executable {
 
 function Refresh-ProcessPath {
     $pathParts = @($env:Path) +
-        @([Environment]::GetEnvironmentVariable('Path', 'User')) +
-        @([Environment]::GetEnvironmentVariable('Path', 'Machine')) |
-        ForEach-Object { $_ -split ';' } |
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-        Select-Object -Unique
+    @([Environment]::GetEnvironmentVariable('Path', 'User')) +
+    @([Environment]::GetEnvironmentVariable('Path', 'Machine')) |
+    ForEach-Object { $_ -split ';' } |
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+    Select-Object -Unique
     $env:Path = $pathParts -join ';'
 }
 
@@ -52,6 +52,9 @@ function Install-WingetPackage {
 $winget = Find-Executable -Name 'winget.exe'
 $actions = @()
 $failure = $null
+$controllerNodeVersion = '22.19.0'
+$controllerRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../src'))
+$controllerBundle = Join-Path $controllerRoot 'dist/entrypoints/main.mjs'
 Refresh-ProcessPath
 $winget = Find-Executable -Name 'winget.exe'
 
@@ -77,38 +80,68 @@ if ($Install) {
 Refresh-ProcessPath
 $pwsh = Find-Executable -Name 'pwsh.exe'
 $copilot = Find-Executable -Name 'copilot.exe'
+$fnm = Find-Executable -Name 'fnm.exe'
+$fnmNodeVersion = $null
+if ($fnm) {
+    try {
+        $nodeOutput = & $fnm.Source exec --using $controllerNodeVersion -- node --version 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            $candidateVersion = @($nodeOutput | Select-Object -Last 1)[0].Trim()
+            if ($candidateVersion -ceq "v$controllerNodeVersion") { $fnmNodeVersion = $candidateVersion }
+        }
+    }
+    catch { }
+}
+$bundleAvailable = Test-Path -LiteralPath $controllerBundle -PathType Leaf
 $missing = @()
 if (-not $pwsh) { $missing += 'pwsh.exe' }
 if (-not $copilot) { $missing += 'copilot.exe' }
+$missing += if (-not $fnm) { 'fnm.exe' }
+$missing += if (-not $fnmNodeVersion) { "Node $controllerNodeVersion via fnm" }
+$missing += if (-not $bundleAvailable) { 'bundled TypeScript controller' }
 $status = if ($failure) { 'failed' } elseif ($missing.Count -gt 0) { 'blocked' } else { 'ready' }
 
 $report = [ordered]@{
-    schemaVersion = 1
-    status = $status
+    schemaVersion    = 1
+    status           = $status
     installRequested = [bool]$Install
-    hostPowerShell = $PSVersionTable.PSVersion.ToString()
-    winget = [ordered]@{
+    hostPowerShell   = $PSVersionTable.PSVersion.ToString()
+    winget           = [ordered]@{
         available = [bool]$winget
-        version = if ($winget) { Get-ExecutableVersion -Command $winget -Arguments @('--version') } else { $null }
+        version   = if ($winget) { Get-ExecutableVersion -Command $winget -Arguments @('--version') } else { $null }
     }
-    tools = [ordered]@{
-        pwsh = [ordered]@{
+    tools            = [ordered]@{
+        pwsh           = [ordered]@{
             executable = 'pwsh.exe'
-            available = [bool]$pwsh
-            path = if ($pwsh) { $pwsh.Source } else { $null }
-            version = if ($pwsh) { Get-ExecutableVersion -Command $pwsh -Arguments @('-NoLogo', '-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()') } else { $null }
+            available  = [bool]$pwsh
+            path       = if ($pwsh) { $pwsh.Source } else { $null }
+            version    = if ($pwsh) { Get-ExecutableVersion -Command $pwsh -Arguments @('-NoLogo', '-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()') } else { $null }
         }
-        copilot = [ordered]@{
+        copilot        = [ordered]@{
             executable = 'copilot.exe'
-            available = [bool]$copilot
-            path = if ($copilot) { $copilot.Source } else { $null }
-            version = if ($copilot) { Get-ExecutableVersion -Command $copilot -Arguments @('--version') } else { $null }
+            available  = [bool]$copilot
+            path       = if ($copilot) { $copilot.Source } else { $null }
+            version    = if ($copilot) { Get-ExecutableVersion -Command $copilot -Arguments @('--version') } else { $null }
+        }
+        fnm            = [ordered]@{
+            executable = 'fnm.exe'
+            available  = [bool]$fnm
+            path       = if ($fnm) { $fnm.Source } else { $null }
+        }
+        controllerNode = [ordered]@{
+            requiredVersion = $controllerNodeVersion
+            available       = [bool]$fnmNodeVersion
+            version         = $fnmNodeVersion
         }
     }
-    actions = @($actions)
-    missing = @($missing)
-    failure = $failure
-    note = if ($status -eq 'ready') { 'Restart the terminal before running the installation smoke and real pilot.' } elseif ($Install) { 'Restart the terminal and run this script again so the refreshed PATH is observed.' } else { 'Run with -Install to use the official Windows package identifiers through winget.' }
+    controller       = [ordered]@{
+        bundle    = 'src/dist/entrypoints/main.mjs'
+        available = $bundleAvailable
+    }
+    actions          = @($actions)
+    missing          = @($missing)
+    failure          = $failure
+    note             = if ($status -eq 'ready') { 'Host tools and bundled controller are present. Host smoke and real-project pilot remain separate validation steps.' } elseif ($Install) { 'Restart the terminal and run this script again; fnm, Node 22.19.0, and the controller bundle are not installed by -Install.' } else { 'Use -Install only for pwsh.exe and copilot.exe; prepare the controller bundle with scripts/prepare-typescript-controller.ps1 -Prepare.' }
 }
 
 $report | ConvertTo-Json -Depth 8

@@ -1,7 +1,7 @@
 {
   "name": "angular-migration",
-  "version": "5.0.2",
-  "description": "Auditable Angular migration controller for sequential major upgrades on clean npm projects.",
+  "version": "6.0.0",
+  "description": "TypeScript-backed, auditable Angular migration controller for sequential major upgrades on clean npm projects.",
   "author": {
     "name": "sjashan513",
     "url": "https://github.com/sjashan513"

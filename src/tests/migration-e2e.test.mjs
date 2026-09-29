@@ -130,6 +130,7 @@ test("discovers, starts, safely resumes, and verifies a file-backed Angular 7 to
         discoveries,
         runRecords,
         lock,
+        hookRuntime: { deploy: async () => {} },
         ids: { create: () => "00000000-0000-4000-8000-000000000007" },
         hasher,
       },

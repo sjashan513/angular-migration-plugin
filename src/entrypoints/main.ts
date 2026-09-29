@@ -1,3 +1,5 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { approveCheckSkip } from "../application/approve-check-skip.js";
 import { approveRuntimeInstall } from "../application/approve-runtime-install.js";
 import {
@@ -27,6 +29,7 @@ import {
   ProjectValueHasher,
 } from "../infrastructure/discovery-persistence.js";
 import { DocumentationArtifactStoreAdapter } from "../infrastructure/documentation-store.js";
+import { HookRuntimeDeployer } from "../infrastructure/hook-runtime.js";
 import { ProjectDiscoveryReaderAdapter } from "../infrastructure/project-discovery-reader.js";
 import { ProjectFactsReaderAdapter } from "../infrastructure/project-facts-reader.js";
 import { ProjectLock } from "../infrastructure/project-lock.js";
@@ -51,6 +54,10 @@ function currentEnvironment(): Record<string, string> {
 
 async function main(): Promise<void> {
   const environment = currentEnvironment();
+  const pluginRoot =
+    environment.ANGULAR_MIGRATION_PLUGIN_ROOT ??
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+  const hookRuntime = new HookRuntimeDeployer(pluginRoot);
   const reader = new ProjectDiscoveryReaderAdapter({ environment });
   const discoveries = new DiscoveryRecordStoreAdapter();
   const runRecords = new RunRecordStoreAdapter();
@@ -203,6 +210,7 @@ async function main(): Promise<void> {
           lock,
           ids,
           hasher,
+          hookRuntime,
         },
       ),
     run: (projectRoot, runId) =>

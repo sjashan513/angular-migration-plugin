@@ -1,9 +1,0 @@
-{
-  "name": "missing-checks-fixture",
-  "dependencies": {
-    "@angular/core": "^7.2.0"
-  },
-  "scripts": {
-    "build": "echo build"
-  }
-}

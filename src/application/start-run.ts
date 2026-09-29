@@ -12,6 +12,7 @@ import type {
   ValueHasher,
 } from "./ports/project-discovery.js";
 import type {
+  RunHookRuntimeDeployer,
   RunIdGenerator,
   RunLock,
   RunRecord,
@@ -25,6 +26,7 @@ export interface StartRunPorts {
   readonly lock: RunLock;
   readonly ids: RunIdGenerator;
   readonly hasher: ValueHasher;
+  readonly hookRuntime: RunHookRuntimeDeployer;
 }
 
 export async function startRun(
@@ -85,6 +87,7 @@ export async function startRun(
     }
 
     result = await createRunRecord(plan, ports.ids, ports.hasher);
+    await ports.hookRuntime.deploy(request.projectRoot);
     await ports.runRecords.write(request.projectRoot, result);
   } catch (error) {
     failure = error;

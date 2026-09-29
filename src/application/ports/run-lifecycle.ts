@@ -86,6 +86,10 @@ export interface RunRecordStore {
   write(projectRoot: string, record: RunRecord): Promise<void>;
 }
 
+export interface RunHookRuntimeDeployer {
+  deploy(projectRoot: string): Promise<void>;
+}
+
 export type RunLockReleaseResult =
   | { readonly kind: "released" }
   | { readonly kind: "ownership-lost" }

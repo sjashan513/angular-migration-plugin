@@ -45,6 +45,7 @@ function createPorts(overrides = {}) {
   let discoveryPlan = null;
   const runRecords = { value: null };
   const locks = { released: false };
+  const lifecycle = [];
   const ports = {
     reader: { read: async () => inputs },
     discoveries: {
@@ -56,7 +57,13 @@ function createPorts(overrides = {}) {
     runRecords: {
       read: async () => runRecords.value,
       write: async (_root, value) => {
+        lifecycle.push("persist");
         runRecords.value = value;
+      },
+    },
+    hookRuntime: overrides.hookRuntime ?? {
+      deploy: async () => {
+        lifecycle.push("deploy");
       },
     },
     lock: {
@@ -77,7 +84,7 @@ function createPorts(overrides = {}) {
     runRecordsState: runRecords,
     locks,
   };
-  return { ports, inputs, runRecords, locks };
+  return { ports, inputs, runRecords, locks, lifecycle };
 }
 
 async function createReadyDiscovery(ports, inputs) {
@@ -91,8 +98,8 @@ async function createReadyDiscovery(ports, inputs) {
   );
 }
 
-test("starts only from a fresh discovery plan and records its exact runtime", async () => {
-  const { ports, inputs, runRecords, locks } = createPorts();
+test("deploys the hook runtime before persisting a run", async () => {
+  const { ports, inputs, runRecords, locks, lifecycle } = createPorts();
   const plan = await createReadyDiscovery(ports, inputs);
 
   const run = await startRun({ projectRoot, targetMajor: 8 }, ports);
@@ -106,7 +113,25 @@ test("starts only from a fresh discovery plan and records its exact runtime", as
   assert.equal(run.discoveryPlan.runtimePlan.selected.nodeVersion, "20.18.0");
   assert.equal(runRecords.value, run);
   assert.equal(locks.released, true);
+  assert.deepEqual(lifecycle, ["deploy", "persist"]);
   assert.doesNotMatch(JSON.stringify(run), /C:\\\\fixtures/);
+});
+
+test("does not persist a run when hook runtime deployment fails", async () => {
+  const { ports, inputs, runRecords, locks } = createPorts({
+    hookRuntime: {
+      deploy: async () => {
+        throw new Error("runtime asset missing");
+      },
+    },
+  });
+  await createReadyDiscovery(ports, inputs);
+
+  await assert.rejects(startRun({ projectRoot, targetMajor: 8 }, ports), {
+    message: "runtime asset missing",
+  });
+  assert.equal(runRecords.value, null);
+  assert.equal(locks.released, true);
 });
 
 test("rejects a stale discovery plan before writing a run", async () => {

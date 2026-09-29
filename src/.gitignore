@@ -1,2 +1,5 @@
-dist/
+dist/*
+!dist/entrypoints/
+dist/entrypoints/*
+!dist/entrypoints/main.mjs
 node_modules/*

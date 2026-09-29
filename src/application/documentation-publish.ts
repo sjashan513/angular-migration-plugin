@@ -50,11 +50,75 @@ export async function getDocumentationPublishContext(
   readonly researchHash: string;
   readonly outputDirectory: string;
   readonly requiredFiles: readonly string[];
-  readonly proposalHash: string;
+  readonly proposalHash: string | null;
   readonly submissionPath: string;
   readonly recovery: boolean;
 }> {
   validateRequest(request);
+  const stored = await ports.runs.read(request.projectRoot);
+  if (stored === null) {
+    throw blocked("run_not_found", "No run exists for this project.");
+  }
+  const run = await readValidatedRunRecord(stored, ports.hasher);
+  if (run.state.runId !== request.runId) {
+    throw blocked(
+      "run_context_mismatch",
+      "The run id does not match this project.",
+    );
+  }
+  if (run.state.status !== "verified" || run.state.stage !== "document") {
+    throw blocked(
+      "publish_requires_verified",
+      "Documentation publishing requires a technically verified run.",
+    );
+  }
+  const researchRecord = await ports.artifacts.readResearch(
+    request.projectRoot,
+    request.runId,
+  );
+  if (!isRecord(researchRecord)) {
+    throw blocked(
+      "documentation_research_required",
+      "Validated research must be recorded before publish.",
+    );
+  }
+  const researchHash = await validateStoredResearch(researchRecord, run, ports);
+  if (
+    !run.events.some(
+      (event) =>
+        event.type === "documentation-research-recorded" &&
+        event.documentation?.researchHash === researchHash,
+    )
+  ) {
+    throw blocked(
+      "documentation_research_required",
+      "The run has no audit event for its research record.",
+    );
+  }
+  const outputDirectory = migrationDocumentationDirectory(
+    run.state.targetMajor,
+  );
+  const submission = await ports.artifacts.readPublishSubmission(
+    request.projectRoot,
+    request.runId,
+  );
+  if (submission === null) {
+    return {
+      schemaVersion: 1,
+      mode: "publish",
+      runId: run.state.runId,
+      technicalStatus: "verified",
+      planHash: run.discoveryPlan.planHash,
+      researchHash,
+      outputDirectory,
+      requiredFiles: REQUIRED_MIGRATION_DOCUMENTS.map(
+        (name) => `${outputDirectory}/${name}`,
+      ),
+      proposalHash: null,
+      submissionPath: `.angular-migration/documentation-inbox/${request.runId}.publish.json`,
+      recovery: false,
+    };
+  }
   const prepared = await preparePublication(request, ports);
   return {
     schemaVersion: 1,
@@ -533,12 +597,10 @@ async function validatePublishSubmissionAsync(
     const expectedPath = `${outputDirectory}/${REQUIRED_MIGRATION_DOCUMENTS[index]}`;
     if (
       !isRecord(file) ||
-      !hasExactKeys(file, ["path", "content", "sha256"]) ||
+      !hasExactKeys(file, ["path", "content"]) ||
       file.path !== expectedPath ||
       typeof file.content !== "string" ||
       file.content.trim().length === 0 ||
-      typeof file.sha256 !== "string" ||
-      !/^sha256:[a-f0-9]{64}$/.test(file.sha256) ||
       SECRET_TEXT.test(file.content) ||
       EXECUTABLE_TEXT.test(file.content) ||
       !containsOnlyKnownVersions(file.content, knownVersions)
@@ -556,13 +618,14 @@ async function validatePublishSubmissionAsync(
         "The documentation exceeds its supported size limit.",
       );
     }
-    if ((await ports.contentHasher.hashText(file.content)) !== file.sha256) {
+    const sha256 = await ports.contentHasher.hashText(file.content);
+    if (!/^sha256:[a-f0-9]{64}$/.test(sha256)) {
       throw blocked(
         "documentation_file_hash_invalid",
-        "A documentation file does not match its declared hash.",
+        "A documentation file could not be integrity-bound.",
       );
     }
-    files.push({ path: file.path, content: file.content, sha256: file.sha256 });
+    files.push({ path: file.path, content: file.content, sha256 });
   }
   validateInternalLinks(files);
   const research = isRecord(researchValue) ? researchValue : {};

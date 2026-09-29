@@ -4,23 +4,24 @@
   "private": true,
   "description": "TypeScript controller for sequential Angular migrations.",
   "type": "module",
-  "main": "./dist/index.js",
+  "main": "./dist/entrypoints/main.mjs",
   "engines": {
     "node": "22.x"
   },
   "scripts": {
-    "typecheck": "tsc --project tsconfig.json --noEmit",
-    "build": "tsc --project tsconfig.json",
-    "test": "tsc --project tsconfig.json && node --test tests/angular-transition.test.mjs tests/domain-contracts.test.mjs tests/semver-constraints.test.mjs tests/runtime-planner.test.mjs tests/discover-project.test.mjs tests/start-run.test.mjs tests/run-project.test.mjs tests/documentation-research.test.mjs tests/foundation.test.mjs tests/approve-runtime-install.test.mjs",
-    "test:fast": "tsc --project tsconfig.json && node --test tests/angular-transition.test.mjs tests/domain-contracts.test.mjs tests/semver-constraints.test.mjs tests/runtime-planner.test.mjs tests/discover-project.test.mjs tests/start-run.test.mjs tests/run-project.test.mjs tests/documentation-research.test.mjs tests/foundation.test.mjs tests/approve-runtime-install.test.mjs",
-    "test:adapters": "tsc --project tsconfig.json && node --test tests/baseline-dependencies.test.mjs tests/discovery-persistence.test.mjs tests/documentation-store.test.mjs tests/fnm-runtime.test.mjs tests/project-discovery-reader.test.mjs tests/project-facts-reader.test.mjs tests/project-files.test.mjs tests/project-lock.test.mjs tests/repair-files.test.mjs tests/run-operation-executor.test.mjs tests/run-record-store.test.mjs tests/runtime-install.test.mjs",
-    "test:process": "tsc --project tsconfig.json && node --test tests/process-runner.test.mjs tests/cli.test.mjs",
-    "test:e2e": "tsc --project tsconfig.json && node --test tests/migration-e2e.test.mjs",
+    "typecheck": "node ./node_modules/typescript/lib/tsc.js --project tsconfig.json --noEmit",
+    "build": "node ./node_modules/typescript/lib/tsc.js --project tsconfig.json && esbuild entrypoints/main.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/entrypoints/main.mjs",
+    "test": "node ./node_modules/typescript/lib/tsc.js --project tsconfig.json --noEmit && node --test tests/angular-transition.test.mjs tests/domain-contracts.test.mjs tests/semver-constraints.test.mjs tests/runtime-planner.test.mjs tests/discover-project.test.mjs tests/start-run.test.mjs tests/run-project.test.mjs tests/documentation-research.test.mjs tests/foundation.test.mjs tests/approve-runtime-install.test.mjs",
+    "test:fast": "node ./node_modules/typescript/lib/tsc.js --project tsconfig.json --noEmit && node --test tests/angular-transition.test.mjs tests/domain-contracts.test.mjs tests/semver-constraints.test.mjs tests/runtime-planner.test.mjs tests/discover-project.test.mjs tests/start-run.test.mjs tests/run-project.test.mjs tests/documentation-research.test.mjs tests/foundation.test.mjs tests/approve-runtime-install.test.mjs",
+    "test:adapters": "node ./node_modules/typescript/lib/tsc.js --project tsconfig.json --noEmit && node --test tests/baseline-dependencies.test.mjs tests/discovery-persistence.test.mjs tests/documentation-store.test.mjs tests/fnm-runtime.test.mjs tests/hook-runtime.test.mjs tests/project-discovery-reader.test.mjs tests/project-facts-reader.test.mjs tests/project-files.test.mjs tests/project-lock.test.mjs tests/repair-files.test.mjs tests/run-operation-executor.test.mjs tests/run-record-store.test.mjs tests/runtime-install.test.mjs",
+    "test:process": "node ./node_modules/typescript/lib/tsc.js --project tsconfig.json --noEmit && node --test tests/copilot-policy.test.mjs tests/process-runner.test.mjs tests/cli.test.mjs",
+    "test:e2e": "node ./node_modules/typescript/lib/tsc.js --project tsconfig.json --noEmit && node --test tests/migration-e2e.test.mjs",
     "cli": "node dist/entrypoints/main.js"
   },
   "devDependencies": {
     "@types/node": "22.20.4",
     "@types/semver": "7.8.0",
+    "esbuild": "0.28.2",
     "typescript": "7.0.2"
   },
   "dependencies": {

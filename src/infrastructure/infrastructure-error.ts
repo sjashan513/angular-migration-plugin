@@ -18,6 +18,7 @@ export type InfrastructureErrorCode =
   | "repair_rollback_unconfirmed"
   | "repair_submission_invalid"
   | "repair_submission_missing"
+  | "hook_runtime_unavailable"
   | "documentation_submission_invalid"
   | "documentation_submission_missing"
   | "documentation_record_invalid"

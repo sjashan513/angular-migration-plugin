@@ -242,6 +242,7 @@ function createHarness() {
         lock,
         ids: { create: () => "00000000-0000-4000-8000-000000000001" },
         hasher,
+        hookRuntime: { deploy: async () => {} },
       },
     );
     return run;
@@ -318,7 +319,6 @@ async function preparePublishHarness() {
       return {
         path: `${outputDirectory}/${name}`,
         content,
-        sha256: await harness.ports.contentHasher.hashText(content),
       };
     }),
   );
@@ -519,6 +519,26 @@ test("blocks publication before technical verification", async () => {
   );
 });
 
+test("returns draft publish instructions before the agent submission exists", async () => {
+  const harness = createHarness();
+  const run = await harness.completeRun();
+  harness.setResearchSubmission(validResearch(run));
+  await recordDocumentationResearch(
+    { projectRoot, runId: run.state.runId },
+    harness.ports,
+  );
+
+  const context = await getDocumentationPublishContext(
+    { projectRoot, runId: run.state.runId },
+    harness.ports,
+  );
+
+  assert.equal(context.mode, "publish");
+  assert.equal(context.proposalHash, null);
+  assert.equal(context.outputDirectory, "docs/migration/v8");
+  assert.equal(context.requiredFiles.length, 8);
+});
+
 test("rejects a stale publish proposal after its approved content changes", async () => {
   const { harness, run } = await preparePublishHarness();
   const context = await getDocumentationPublishContext(
@@ -527,9 +547,6 @@ test("rejects a stale publish proposal after its approved content changes", asyn
   );
   const submission = harness.getPublishSubmission();
   submission.files[0].content = "# Revised migration\n";
-  submission.files[0].sha256 = await harness.ports.contentHasher.hashText(
-    submission.files[0].content,
-  );
 
   await assert.rejects(
     publishDocumentation(
@@ -555,9 +572,6 @@ test("rejects internal documentation links that escape the output directory", as
   const submission = harness.getPublishSubmission();
   submission.files[0].content =
     "# Migration\n\n[package](../../package.json)\n";
-  submission.files[0].sha256 = await harness.ports.contentHasher.hashText(
-    submission.files[0].content,
-  );
 
   await assert.rejects(
     getDocumentationPublishContext(
